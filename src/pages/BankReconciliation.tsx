@@ -194,7 +194,7 @@ export default function BankReconciliation() {
     };
 
 
-    const handleDirectReconciliation = async (type: string, label: string) => {
+    const handleDirectReconciliation = async (_type: string, label: string) => {
         if (!selectedTxn) return;
         setIsMatching(true);
         try {

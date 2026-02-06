@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { supabase } from "@/lib/supabase";
 import { format, differenceInDays } from "date-fns";
 import { es } from "date-fns/locale";
-import { HandCoins, MessageSquare, Phone, Mail, Search, Clock, AlertTriangle } from "lucide-react";
+import { HandCoins, MessageSquare, Mail, Search, Clock } from "lucide-react";
 
 export default function Collections() {
     const [loading, setLoading] = useState(true);
