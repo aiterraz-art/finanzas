@@ -79,7 +79,8 @@ export default function Users() {
                 body: JSON.stringify({
                     email: inviteEmail,
                     role: inviteRole,
-                    invited_by: "admin" // Could use current user email
+                    invited_by: "admin", // Could use current user email
+                    app_url: 'https://lab-finanzas.vercel.app/'
                 })
             });
 

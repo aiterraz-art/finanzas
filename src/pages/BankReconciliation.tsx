@@ -23,6 +23,7 @@ export default function BankReconciliation() {
     const [isMatching, setIsMatching] = useState(false);
     const [manualInvoices, setManualInvoices] = useState<any[]>([]);
     const [isImporting, setIsImporting] = useState(false);
+    const [otherConceptReason, setOtherConceptReason] = useState("");
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
@@ -51,6 +52,7 @@ export default function BankReconciliation() {
         setSuggestedInvoices([]);
         setManualInvoices([]);
         setManualSearch("");
+        setOtherConceptReason("");
         try {
             const absMonto = Math.abs(txn.monto);
 
@@ -193,6 +195,32 @@ export default function BankReconciliation() {
         }
     };
 
+
+
+
+    const handleOtherConceptReconciliation = async () => {
+        if (!selectedTxn || !otherConceptReason.trim()) return;
+        setIsMatching(true);
+        try {
+            await supabase
+                .from('movimientos_banco')
+                .update({
+                    estado: 'conciliado',
+                    descripcion: `${selectedTxn.descripcion} [Otros: ${otherConceptReason}]`
+                })
+                .eq('id', selectedTxn.id);
+
+            alert("Conciliación por otros conceptos exitosa.");
+            setSelectedTxn(null);
+            setSuggestedInvoices([]);
+            setOtherConceptReason("");
+            fetchData();
+        } catch (error: any) {
+            alert(`Error al conciliar: ${error.message}`);
+        } finally {
+            setIsMatching(false);
+        }
+    };
 
     const handleDirectReconciliation = async (_type: string, label: string) => {
         if (!selectedTxn) return;
@@ -612,66 +640,88 @@ export default function BankReconciliation() {
                                             <div className="space-y-2 mb-4 pt-2 border-t">
                                                 <p className="text-[10px] font-bold text-muted-foreground uppercase">Conciliación Directa:</p>
                                                 <div className="grid grid-cols-2 gap-2">
-                                                    <Button
-                                                        variant="outline"
-                                                        size="sm"
-                                                        className="w-full text-xs h-8 border-dashed"
-                                                        onClick={() => handleDirectReconciliation('remuneracion', 'Remuneración')}
-                                                    >
-                                                        Concepto Remuneraciones
-                                                    </Button>
+                                                    <div className="grid grid-cols-2 gap-2">
+                                                        <Button
+                                                            variant="outline"
+                                                            size="sm"
+                                                            className="w-full text-xs h-8 border-dashed"
+                                                            onClick={() => handleDirectReconciliation('remuneracion', 'Remuneración')}
+                                                        >
+                                                            Remuneraciones
+                                                        </Button>
+                                                    </div>
                                                 </div>
-                                            </div>
 
-                                            <div className="space-y-2">
-                                                <p className="text-[10px] font-bold text-muted-foreground uppercase">Búsqueda Manual:</p>
-                                                <div className="flex gap-2">
-                                                    <Input
-                                                        placeholder="RUT o Razón Social..."
-                                                        className="h-8 text-xs"
-                                                        value={manualSearch}
-                                                        onChange={(e) => setManualSearch(e.target.value)}
-                                                        onKeyDown={(e) => e.key === 'Enter' && handleManualSearch()}
-                                                    />
-                                                    <Button size="sm" className="h-8 w-8 p-0" variant="secondary" onClick={handleManualSearch}>
-                                                        <Search className="w-3 h-3" />
-                                                    </Button>
+                                                <div className="space-y-2 mb-4 pt-2 border-t">
+                                                    <p className="text-[10px] font-bold text-muted-foreground uppercase">Otros Conceptos:</p>
+                                                    <div className="flex gap-2">
+                                                        <Input
+                                                            placeholder="Razón del gasto (ej. Taxi, Materiales...)"
+                                                            className="h-8 text-xs"
+                                                            value={otherConceptReason}
+                                                            onChange={(e) => setOtherConceptReason(e.target.value)}
+                                                            onKeyDown={(e) => e.key === 'Enter' && handleOtherConceptReconciliation()}
+                                                        />
+                                                        <Button
+                                                            size="sm"
+                                                            className="h-8 bg-blue-600 hover:bg-blue-700"
+                                                            onClick={handleOtherConceptReconciliation}
+                                                            disabled={!otherConceptReason.trim() || isMatching}
+                                                        >
+                                                            {isMatching ? <Loader2 className="w-3 h-3 animate-spin" /> : "OK"}
+                                                        </Button>
+                                                    </div>
                                                 </div>
-                                            </div>
 
-                                            {manualInvoices.length > 0 && (
-                                                <div className="space-y-3 mt-4">
-                                                    {manualInvoices.map((doc) => (
-                                                        <div key={doc.id} className="border rounded-lg p-3 bg-white border-slate-200">
-                                                            <div className="flex justify-between items-center mb-1">
-                                                                <span className="font-bold text-xs">
-                                                                    {doc.tipo_entidad === 'rendicion' ? 'Rendición' : `#${doc.numero_documento}`}
-                                                                </span>
-                                                                <span className="font-bold text-slate-900 text-xs">{formatCurrency(doc.monto)}</span>
+                                                <div className="space-y-2">
+                                                    <p className="text-[10px] font-bold text-muted-foreground uppercase">Búsqueda Manual:</p>
+                                                    <div className="flex gap-2">
+                                                        <Input
+                                                            placeholder="RUT o Razón Social..."
+                                                            className="h-8 text-xs"
+                                                            value={manualSearch}
+                                                            onChange={(e) => setManualSearch(e.target.value)}
+                                                            onKeyDown={(e) => e.key === 'Enter' && handleManualSearch()}
+                                                        />
+                                                        <Button size="sm" className="h-8 w-8 p-0" variant="secondary" onClick={handleManualSearch}>
+                                                            <Search className="w-3 h-3" />
+                                                        </Button>
+                                                    </div>
+                                                </div>
+
+                                                {manualInvoices.length > 0 && (
+                                                    <div className="space-y-3 mt-4">
+                                                        {manualInvoices.map((doc) => (
+                                                            <div key={doc.id} className="border rounded-lg p-3 bg-white border-slate-200">
+                                                                <div className="flex justify-between items-center mb-1">
+                                                                    <span className="font-bold text-xs">
+                                                                        {doc.tipo_entidad === 'rendicion' ? 'Rendición' : `#${doc.numero_documento}`}
+                                                                    </span>
+                                                                    <span className="font-bold text-slate-900 text-xs">{formatCurrency(doc.monto)}</span>
+                                                                </div>
+                                                                <p className="text-[11px] text-muted-foreground truncate mb-2">{doc.terceros?.razon_social}</p>
+                                                                <Button
+                                                                    size="sm"
+                                                                    variant="outline"
+                                                                    className="w-full h-7 text-[10px]"
+                                                                    onClick={() => handleConfirmMatch(doc)}
+                                                                    disabled={isMatching}
+                                                                >
+                                                                    Vincular este documento
+                                                                </Button>
                                                             </div>
-                                                            <p className="text-[11px] text-muted-foreground truncate mb-2">{doc.terceros?.razon_social}</p>
-                                                            <Button
-                                                                size="sm"
-                                                                variant="outline"
-                                                                className="w-full h-7 text-[10px]"
-                                                                onClick={() => handleConfirmMatch(doc)}
-                                                                disabled={isMatching}
-                                                            >
-                                                                Vincular este documento
-                                                            </Button>
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            )}
+                                                        ))}
+                                                    </div>
+                                                )}
 
-                                            {suggestedInvoices.length === 0 && manualInvoices.length === 0 && (
-                                                <div className="p-4 bg-amber-50 border border-amber-100 rounded-lg">
-                                                    <AlertCircle className="h-4 w-4 text-amber-500 mb-2" />
-                                                    <p className="text-xs font-semibold text-amber-900">Sin calces</p>
-                                                    <p className="text-[10px] text-amber-800">Usa el buscador para encontrar documentos por RUT o nombre.</p>
-                                                </div>
-                                            )}
-                                        </div>
+                                                {suggestedInvoices.length === 0 && manualInvoices.length === 0 && (
+                                                    <div className="p-4 bg-amber-50 border border-amber-100 rounded-lg">
+                                                        <AlertCircle className="h-4 w-4 text-amber-500 mb-2" />
+                                                        <p className="text-xs font-semibold text-amber-900">Sin calces</p>
+                                                        <p className="text-[10px] text-amber-800">Usa el buscador para encontrar documentos por RUT o nombre.</p>
+                                                    </div>
+                                                )}
+                                            </div>
                                     </PopoverContent>
                                 </Popover>
                             ))}
