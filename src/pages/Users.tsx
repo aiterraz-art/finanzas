@@ -105,12 +105,16 @@ export default function Users() {
         if (!confirm("¿Estás seguro de que deseas eliminar este usuario? Esta acción no se puede deshacer.")) return;
 
         try {
-            const { error } = await supabase
+            const { error, count } = await supabase
                 .from('profiles')
-                .delete()
+                .delete({ count: 'exact' })
                 .eq('id', userId);
 
             if (error) throw error;
+
+            if (count === 0) {
+                throw new Error("No se pudo eliminar el usuario. Verifique permisos o si el usuario ya fue eliminado.");
+            }
 
             setUsers(prev => prev.filter(u => u.id !== userId));
             alert("Usuario eliminado correctamente.");
