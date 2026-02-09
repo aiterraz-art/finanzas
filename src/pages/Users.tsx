@@ -28,7 +28,7 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Plus, Mail } from 'lucide-react';
+import { Loader2, Plus, Mail, Trash2 } from 'lucide-react';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 
@@ -97,8 +97,26 @@ export default function Users() {
             }
         } catch (error: any) {
             alert(`Error: ${error.message}`);
-        } finally {
             setIsInviting(false);
+        }
+    };
+
+    const handleDeleteUser = async (userId: string) => {
+        if (!confirm("¿Estás seguro de que deseas eliminar este usuario? Esta acción no se puede deshacer.")) return;
+
+        try {
+            const { error } = await supabase
+                .from('profiles')
+                .delete()
+                .eq('id', userId);
+
+            if (error) throw error;
+
+            setUsers(prev => prev.filter(u => u.id !== userId));
+            alert("Usuario eliminado correctamente.");
+        } catch (error: any) {
+            console.error("Error deleting user:", error);
+            alert(`Error al eliminar usuario: ${error.message}`);
         }
     };
 
@@ -204,7 +222,18 @@ export default function Users() {
                                         {user.created_at ? format(new Date(user.created_at * 1000), "d 'de' MMMM, yyyy", { locale: es }) : '-'}
                                     </TableCell>
                                     <TableCell className="text-right">
-                                        <Badge variant="outline" className="border-green-500 text-green-600 bg-green-50">Activo</Badge>
+                                        <div className="flex items-center justify-end gap-2">
+                                            <Badge variant="outline" className="border-green-500 text-green-600 bg-green-50">Activo</Badge>
+                                            <Button
+                                                variant="ghost"
+                                                size="icon"
+                                                className="h-8 w-8 text-muted-foreground hover:text-red-600"
+                                                onClick={() => handleDeleteUser(user.id)}
+                                                title="Eliminar usuario"
+                                            >
+                                                <Trash2 className="h-4 w-4" />
+                                            </Button>
+                                        </div>
                                     </TableCell>
                                 </TableRow>
                             ))
