@@ -27,7 +27,7 @@ ALTER TABLE public.rendicion_detalles ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Permitir todo a usuarios autenticados" ON public.rendiciones;
 DROP POLICY IF EXISTS "Permitir todo a usuarios autenticados detalles" ON public.rendicion_detalles;
 
--- Crear políticas
+-- Crear políticas  
 CREATE POLICY "Permitir todo a usuarios autenticados" ON public.rendiciones FOR ALL TO authenticated USING (true);
 CREATE POLICY "Permitir todo a usuarios autenticados detalles" ON public.rendicion_detalles FOR ALL TO authenticated USING (true);
 

@@ -120,7 +120,7 @@ export default function Clientes() {
                 const { error: fError } = await supabase
                     .from('facturas')
                     .delete()
-                    .eq('rut', cliente.rut); // Borramos por RUT que es como están vinculadas
+                    .eq('tercero_id', cliente.id); // Borramos por ID relacional para asegurar integridad
 
                 if (fError) throw fError;
             }
