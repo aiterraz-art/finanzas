@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import * as XLSX from 'xlsx';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Card, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Upload, Check, RefreshCw, Search, Loader2, AlertCircle, Trash2 } from "lucide-react";
@@ -517,7 +517,7 @@ export default function BankReconciliation() {
         <div className="space-y-6">
             <div className="flex justify-between items-center">
                 <div>
-                    <h1 className="text-3xl font-bold tracking-tight">Banco y Conciliación</h1>
+                    <h1 className="text-3xl font-bold tracking-tight">Banco y Conciliación (Listado)</h1>
                     <p className="text-muted-foreground mt-1">
                         Vincula movimientos bancarios con documentos para saldar deudas.
                     </p>
