@@ -33,7 +33,7 @@ const navigation = [
 
 export function Sidebar() {
     const location = useLocation();
-    const { user } = useAuth();
+    const { user, signOut } = useAuth();
     const [isAdmin, setIsAdmin] = useState(false);
 
     useEffect(() => {
@@ -106,7 +106,7 @@ export function Sidebar() {
                     Configuración
                 </Link>
                 <button
-                    onClick={() => user && useAuth().signOut()}
+                    onClick={() => signOut()}
                     className="flex w-full items-center gap-3 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50 rounded-md transition-colors"
                 >
                     <LogOut className="w-5 h-5" />
