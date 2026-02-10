@@ -45,6 +45,7 @@ export default function InvoiceUpload({ targetType, fixedTercero, onSuccess }: I
     const [isDragging, setIsDragging] = useState(false);
     const [uploadQueue, setUploadQueue] = useState<FileItem[]>([]);
     const [providers, setProviders] = useState<any[]>([]);
+    const [clients, setClients] = useState<any[]>([]);
     const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
     const [isSaving, setIsSaving] = useState(false);
     const [isProcessingQueue, setIsProcessingQueue] = useState(false);
@@ -54,6 +55,8 @@ export default function InvoiceUpload({ targetType, fixedTercero, onSuccess }: I
     useEffect(() => {
         if (targetType === 'proveedor') {
             fetchProviders();
+        } else if (targetType === 'cliente') {
+            fetchClients();
         }
     }, [targetType]);
 
@@ -65,6 +68,17 @@ export default function InvoiceUpload({ targetType, fixedTercero, onSuccess }: I
             .order('razon_social', { ascending: true });
         if (!error && data) {
             setProviders(data);
+        }
+    };
+
+    const fetchClients = async () => {
+        const { data, error } = await supabase
+            .from('terceros')
+            .select('*')
+            .eq('tipo', 'cliente')
+            .order('razon_social', { ascending: true });
+        if (!error && data) {
+            setClients(data);
         }
     };
 
@@ -620,6 +634,37 @@ export default function InvoiceUpload({ targetType, fixedTercero, onSuccess }: I
                                                                 <option value="">-- Seleccionar Proveedor --</option>
                                                                 {providers.map(p => (
                                                                     <option key={p.id} value={p.id}>{p.razon_social} ({formatRut(p.rut)})</option>
+                                                                ))}
+                                                            </select>
+                                                        ) : targetType === 'cliente' ? (
+                                                            <select
+                                                                className="w-full h-11 px-3 rounded-md border-2 border-primary/20 focus:border-primary focus:ring-1 focus:ring-primary outline-none text-sm font-semibold bg-white shadow-sm ring-1 ring-primary/5"
+                                                                value={currentItem.terceroEncontrado?.id || ""}
+                                                                onChange={async (e) => {
+                                                                    const clientId = e.target.value;
+                                                                    const selectedClient = clients.find(c => c.id === clientId);
+                                                                    if (selectedClient) {
+                                                                        const newQueue = uploadQueue.map(i =>
+                                                                            i.id === currentItem.id ? {
+                                                                                ...i,
+                                                                                terceroEncontrado: selectedClient,
+                                                                                extractedData: {
+                                                                                    ...i.extractedData,
+                                                                                    tercero_nombre: selectedClient.razon_social,
+                                                                                    rut: formatRut(selectedClient.rut),
+                                                                                    email: selectedClient.email || i.extractedData.email,
+                                                                                    telefono: selectedClient.telefono || i.extractedData.telefono
+                                                                                }
+                                                                            } : i
+                                                                        );
+                                                                        setUploadQueue(newQueue);
+                                                                        checkInvoiceDuplicate(currentItem.extractedData.numero_documento, selectedClient.id, currentItem.id);
+                                                                    }
+                                                                }}
+                                                            >
+                                                                <option value="">-- Seleccionar Cliente --</option>
+                                                                {clients.map(c => (
+                                                                    <option key={c.id} value={c.id}>{c.razon_social} ({formatRut(c.rut)})</option>
                                                                 ))}
                                                             </select>
                                                         ) : (

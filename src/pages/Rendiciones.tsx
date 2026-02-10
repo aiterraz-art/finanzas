@@ -8,7 +8,9 @@ import {
     Trash2,
     Receipt,
     X,
-    Upload
+    Upload,
+    Paperclip,
+    Printer
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -49,7 +51,7 @@ export default function Rendiciones() {
     const [selectedTercero, setSelectedTercero] = useState("");
     const [descripcion, setDescripcion] = useState("");
     const [items, setItems] = useState<RendicionItem[]>([{ descripcion: "", monto: 0 }]);
-    const [file, setFile] = useState<File | null>(null);
+    const [files, setFiles] = useState<File[]>([]);
 
     // Quick-add employee state
     const [isAddEmployeeOpen, setIsAddEmployeeOpen] = useState(false);
@@ -145,9 +147,14 @@ export default function Rendiciones() {
     const totalMonto = items.reduce((sum, item) => sum + Number(item.monto || 0), 0);
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.files && e.target.files[0]) {
-            setFile(e.target.files[0]);
+        if (e.target.files) {
+            const newFiles = Array.from(e.target.files);
+            setFiles([...files, ...newFiles]);
         }
+    };
+
+    const removeFile = (index: number) => {
+        setFiles(files.filter((_, i) => i !== index));
     };
 
     const handleSubmit = async () => {
@@ -158,15 +165,16 @@ export default function Rendiciones() {
 
         setIsSubmitting(true);
         try {
-            let archivoUrl = null;
+            const uploadedUrls: string[] = [];
 
-            if (file) {
+            // Upload all files
+            for (const file of files) {
                 const fileExt = file.name.split('.').pop();
-                const fileName = `${Date.now()}.${fileExt}`;
+                const fileName = `${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
                 const filePath = `rendiciones/${fileName}`;
 
                 const { error: uploadError } = await supabase.storage
-                    .from('invoices') // Reusing the invoices bucket
+                    .from('invoices')
                     .upload(filePath, file);
 
                 if (uploadError) throw uploadError;
@@ -175,7 +183,7 @@ export default function Rendiciones() {
                     .from('invoices')
                     .getPublicUrl(filePath);
 
-                archivoUrl = publicUrl;
+                uploadedUrls.push(publicUrl);
             }
 
             // 1. Insert Rendición Header
@@ -186,7 +194,7 @@ export default function Rendiciones() {
                     tercero_nombre: terceros.find(t => t.id === selectedTercero)?.razon_social,
                     descripcion: descripcion,
                     monto_total: totalMonto,
-                    archivo_url: archivoUrl,
+                    archivos_urls: uploadedUrls, // Updated column name
                     estado: 'pendiente'
                 })
                 .select()
@@ -222,7 +230,7 @@ export default function Rendiciones() {
         setSelectedTercero("");
         setDescripcion("");
         setItems([{ descripcion: "", monto: 0 }]);
-        setFile(null);
+        setFiles([]);
     };
 
     const formatCurrency = (amount: number) => {
@@ -340,20 +348,43 @@ export default function Rendiciones() {
                             </div>
 
                             <div className="space-y-2">
-                                <Label>Comprobante / Recibo (Imagen o PDF)</Label>
+                                <Label>Comprobantes (Imágenes o PDFs)</Label>
                                 <div className="border-2 border-dashed rounded-lg p-6 flex flex-col items-center justify-center gap-2 hover:bg-muted/50 transition-colors cursor-pointer relative">
                                     <input
                                         type="file"
                                         className="absolute inset-0 opacity-0 cursor-pointer"
                                         onChange={handleFileChange}
                                         accept="image/*,application/pdf"
+                                        multiple // Allow multiple files
                                     />
                                     <Upload className="w-8 h-8 text-muted-foreground" />
                                     <p className="text-sm font-medium">
-                                        {file ? file.name : "Haga clic o arrastre para subir"}
+                                        Haga clic o arrastre archivos aquí
                                     </p>
-                                    <p className="text-xs text-muted-foreground">PNG, JPG o PDF hasta 5MB</p>
+                                    <p className="text-xs text-muted-foreground">Soporta múltiples archivos</p>
                                 </div>
+
+                                {/* File List */}
+                                {files.length > 0 && (
+                                    <div className="space-y-2 mt-2">
+                                        {files.map((f, idx) => (
+                                            <div key={idx} className="flex items-center justify-between p-2 bg-muted rounded-md text-sm">
+                                                <div className="flex items-center gap-2">
+                                                    <Paperclip className="w-4 h-4 text-muted-foreground" />
+                                                    <span className="truncate max-w-[200px]">{f.name}</span>
+                                                </div>
+                                                <Button
+                                                    variant="ghost"
+                                                    size="icon"
+                                                    className="h-6 w-6 hover:text-red-500"
+                                                    onClick={() => removeFile(idx)}
+                                                >
+                                                    <X className="w-3 h-3" />
+                                                </Button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
                         </div>
 
@@ -467,6 +498,7 @@ export default function Rendiciones() {
                                                 <th className="text-left p-3 font-semibold">Descripción</th>
                                                 <th className="text-right p-3 font-semibold">Monto</th>
                                                 <th className="text-center p-3 font-semibold">Estado</th>
+                                                <th className="text-right p-3 font-semibold">Archivos</th>
                                                 <th className="p-3"></th>
                                             </tr>
                                         </thead>
@@ -483,18 +515,28 @@ export default function Rendiciones() {
                                                         </Badge>
                                                     </td>
                                                     <td className="p-3 text-right">
-                                                        <div className="flex gap-2 justify-end">
-                                                            {r.archivo_url && (
-                                                                <Button variant="ghost" size="icon" className="h-8 w-8" asChild>
-                                                                    <a href={r.archivo_url} target="_blank" rel="noopener noreferrer">
-                                                                        <FileText className="w-4 h-4" />
-                                                                    </a>
-                                                                </Button>
-                                                            )}
-                                                            <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-red-500">
-                                                                <Trash2 className="w-4 h-4" />
-                                                            </Button>
+                                                        <div className="flex gap-1 justify-end flex-wrap max-w-[100px]">
+                                                            {/* Support both old single file and new array */}
+                                                            {r.archivos_urls?.map((url: string, idx: number) => (
+                                                                <a key={idx} href={url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                                                                    <FileText className="w-4 h-4 inline" />
+                                                                </a>
+                                                            ))}
                                                         </div>
+                                                    </td>
+                                                    <td className="p-3 text-right">
+                                                        <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-red-500">
+                                                            <Trash2 className="w-4 h-4" />
+                                                        </Button>
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="icon"
+                                                            className="h-8 w-8 text-muted-foreground hover:text-primary"
+                                                            onClick={() => window.open(`/rendiciones/print/${r.id}`, '_blank')}
+                                                            title="Imprimir / Guardar PDF"
+                                                        >
+                                                            <Printer className="w-4 h-4" />
+                                                        </Button>
                                                     </td>
                                                 </tr>
                                             ))}

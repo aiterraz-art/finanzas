@@ -36,7 +36,20 @@ export default function BankReconciliation() {
         try {
             const { data: txns, error: txnsError } = await supabase
                 .from('movimientos_banco')
-                .select('*')
+                .select(`
+                    *,
+                    facturas_pagos (
+                        facturas (
+                            numero_documento,
+                            terceros (razon_social)
+                        ),
+                        rendiciones (
+                            id,
+                            descripcion,
+                            terceros (razon_social)
+                        )
+                    )
+                `)
                 .order('fecha_movimiento', { ascending: false });
 
             if (txnsError) throw txnsError;
@@ -47,6 +60,17 @@ export default function BankReconciliation() {
             setLoading(false);
         }
     };
+
+    // ... (keep existing helper functions like fetchSuggestions, handleManualSearch, etc. - I will need to be careful not to delete them if I'm not careful with replacement ranges, but here I am creating a large replacement for the render part mainly)
+
+    // WAIT, replacing the whole file or large chunks is risky if I miss functions.
+    // I will replace specific parts.
+
+    // Part 1: Update fetchData
+    // Part 2: Update Render
+
+    // Actually, I'll do this in multiple steps to be safe.
+    // First, update fetchData.
 
     const fetchSuggestions = async (txn: any) => {
         setSelectedTxn(txn);
@@ -535,231 +559,280 @@ export default function BankReconciliation() {
                 </Card>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                <div className="lg:col-span-3 space-y-4">
-                    <div className="flex gap-2 pb-2 border-b">
-                        <Button variant={filter === "all" ? "default" : "outline"} size="sm" onClick={() => setFilter("all")}>Todos</Button>
-                        <Button variant={filter === "unmatched" ? "default" : "outline"} size="sm" onClick={() => setFilter("unmatched")}>Por Conciliar</Button>
-                        <Button variant={filter === "matched" ? "default" : "outline"} size="sm" onClick={() => setFilter("matched")}>Conciliados</Button>
-                        <Button variant={filter === "abonos" ? "default" : "outline"} size="sm" onClick={() => setFilter("abonos")}>Abonos</Button>
-                        <Button variant={filter === "egresos" ? "default" : "outline"} size="sm" onClick={() => setFilter("egresos")}>Egresos</Button>
-                    </div>
+            <div className="space-y-4">
+                <div className="flex flex-wrap gap-2 pb-2 border-b">
+                    <Button variant={filter === "all" ? "default" : "outline"} size="sm" onClick={() => setFilter("all")}>Todos</Button>
+                    <Button variant={filter === "unmatched" ? "default" : "outline"} size="sm" onClick={() => setFilter("unmatched")}>Por Conciliar</Button>
+                    <Button variant={filter === "matched" ? "default" : "outline"} size="sm" onClick={() => setFilter("matched")}>Conciliados</Button>
+                    <Button variant={filter === "abonos" ? "default" : "outline"} size="sm" onClick={() => setFilter("abonos")}>Abonos</Button>
+                    <Button variant={filter === "egresos" ? "default" : "outline"} size="sm" onClick={() => setFilter("egresos")}>Egresos</Button>
+                </div>
 
-                    {loading ? (
-                        <div className="flex justify-center py-20">
-                            <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                        </div>
-                    ) : (
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            {filteredTransactions.map((txn) => (
-                                <Popover key={txn.id} onOpenChange={(open) => {
-                                    if (open) fetchSuggestions(txn);
-                                    else setSelectedTxn(null);
-                                }}>
-                                    <PopoverTrigger asChild>
-                                        <Card
+                {loading ? (
+                    <div className="flex justify-center py-20">
+                        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                    </div>
+                ) : (
+                    <div className="border rounded-lg overflow-hidden bg-white shadow-sm">
+                        <table className="w-full text-sm">
+                            <thead className="bg-muted/50 border-b">
+                                <tr>
+                                    <th className="text-left p-3 font-semibold w-24">Fecha</th>
+                                    <th className="text-left p-3 font-semibold">Descripción Movimiento</th>
+                                    <th className="text-right p-3 font-semibold w-32">Monto</th>
+                                    <th className="text-left p-3 font-semibold w-64">Estado / Conciliación</th>
+                                    <th className="p-3 w-10"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {filteredTransactions.map((txn) => {
+                                    // Extract match info
+                                    const match = txn.facturas_pagos?.[0];
+                                    const matchedFactura = match?.facturas;
+                                    const matchedRendicion = match?.rendiciones;
+
+                                    return (
+                                        <tr
+                                            key={txn.id}
                                             className={cn(
-                                                "transition-all cursor-pointer hover:shadow-md",
-                                                txn.estado === "conciliado" ? "opacity-60 bg-muted/20" : "bg-card border-l-4",
-                                                txn.estado !== "conciliado" && (txn.monto > 0 ? "border-l-green-500" : "border-l-red-500")
+                                                "border-b last:border-0 hover:bg-muted/30 transition-colors cursor-pointer",
+                                                selectedTxn?.id === txn.id && "bg-blue-50 hover:bg-blue-50"
                                             )}
                                         >
-                                            <CardContent className="p-4 flex items-center gap-4">
-                                                <div className="flex-1 min-w-0">
-                                                    <div className="flex justify-between items-start">
-                                                        <div className="flex items-center gap-2">
-                                                            <p className="font-semibold text-sm truncate uppercase">{txn.description}</p>
-                                                            <Badge variant="outline" className={cn("text-[8px] px-1", txn.monto > 0 ? "text-green-600 border-green-200" : "text-red-600 border-red-200")}>
-                                                                {txn.monto > 0 ? "ABONO" : "CARGO"}
-                                                            </Badge>
-                                                        </div>
-                                                        <span className={cn("font-bold text-sm", txn.monto > 0 ? "text-green-600" : "text-slate-900")}>
-                                                            {txn.monto < 0 ? "-" : ""}{formatCurrency(Math.abs(txn.monto))}
-                                                        </span>
+                                            <Popover open={selectedTxn?.id === txn.id} onOpenChange={(open) => {
+                                                if (open) fetchSuggestions(txn);
+                                                else setSelectedTxn(null);
+                                            }}>
+                                                <PopoverTrigger asChild>
+                                                    <td className="p-3 align-top" onClick={() => fetchSuggestions(txn)}>
+                                                        <div className="font-mono text-xs text-muted-foreground">{txn.fecha_movimiento}</div>
+                                                        {txn.n_operacion && <div className="text-[10px] text-muted-foreground">OP: {txn.n_operacion}</div>}
+                                                    </td>
+                                                </PopoverTrigger>
+
+                                                <td className="p-3 align-top" onClick={() => fetchSuggestions(txn)}>
+                                                    <div className="font-medium text-slate-700">{txn.descripcion}</div>
+                                                    <div className="text-xs text-muted-foreground">{txn.sucursal}</div>
+                                                </td>
+
+                                                <td className="p-3 align-top text-right" onClick={() => fetchSuggestions(txn)}>
+                                                    <div className={cn("font-bold", txn.monto > 0 ? "text-green-600" : "text-slate-900")}>
+                                                        {formatCurrency(txn.monto)}
                                                     </div>
-                                                    <div className="flex justify-between items-center mt-1">
-                                                        <div>
-                                                            <p className="text-xs text-muted-foreground">{txn.fecha_movimiento}</p>
-                                                            {txn.n_operacion && (
-                                                                <p className="text-[10px] text-muted-foreground font-mono">ID: {txn.n_operacion}</p>
+                                                    <Badge variant="outline" className={cn("text-[8px] h-4 px-1", txn.monto > 0 ? "text-green-600 border-green-200" : "text-red-600 border-red-200")}>
+                                                        {txn.monto > 0 ? "ABONO" : "CARGO"}
+                                                    </Badge>
+                                                </td>
+
+                                                <td className="p-3 align-top" onClick={() => fetchSuggestions(txn)}>
+                                                    {txn.estado === 'conciliado' ? (
+                                                        <div className="space-y-1">
+                                                            <Badge variant="default" className="bg-green-100 text-green-700 hover:bg-green-200 border-green-200 shadow-none">
+                                                                <Check className="w-3 h-3 mr-1" /> CONCILIADO
+                                                            </Badge>
+
+                                                            {matchedFactura && (
+                                                                <div className="text-xs flex items-center gap-1 text-slate-600">
+                                                                    <span className="font-bold">Factura #{matchedFactura.numero_documento}</span>
+                                                                    <span className="text-muted-foreground">({matchedFactura.terceros?.razon_social})</span>
+                                                                </div>
+                                                            )}
+
+                                                            {matchedRendicion && (
+                                                                <div className="text-xs flex items-center gap-1 text-slate-600">
+                                                                    <span className="font-bold">Rendición</span>
+                                                                    <span className="text-muted-foreground">({matchedRendicion.terceros?.razon_social})</span>
+                                                                </div>
+                                                            )}
+
+                                                            {/* Manual description fallback if no relational match but text was updated */}
+                                                            {!matchedFactura && !matchedRendicion && txn.descripcion.includes('[') && (
+                                                                <div className="text-xs text-muted-foreground italic">
+                                                                    {txn.descripcion.match(/\[(.*?)\]/)?.[1] || 'Conciliación Manual'}
+                                                                </div>
                                                             )}
                                                         </div>
-                                                        <div className="flex items-center gap-1">
-                                                            <Badge variant={txn.estado === "conciliado" ? "default" : "secondary"} className="text-[10px] uppercase">
-                                                                {txn.estado === "conciliado" ? "Conciliado" : "Pendiente"}
-                                                            </Badge>
-                                                            <Button
-                                                                variant="ghost"
-                                                                size="icon"
-                                                                className="h-6 w-6 text-muted-foreground hover:text-red-600"
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
-                                                                    handleDeleteMovimiento(txn.id);
-                                                                }}
-                                                            >
-                                                                <Trash2 className="w-3 h-3" />
-                                                            </Button>
-                                                        </div>
+                                                    ) : (
+                                                        <Badge variant="secondary" className="animate-pulse bg-amber-100 text-amber-700 hover:bg-amber-200 border-amber-200">
+                                                            PENDIENTE
+                                                        </Badge>
+                                                    )}
+                                                </td>
+
+                                                <td className="p-3 align-top text-right">
+                                                    <Button
+                                                        variant="ghost"
+                                                        size="icon"
+                                                        className="h-8 w-8 text-muted-foreground hover:text-red-600"
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            handleDeleteMovimiento(txn.id);
+                                                        }}
+                                                    >
+                                                        <Trash2 className="w-4 h-4" />
+                                                    </Button>
+                                                </td>
+
+                                                {/* Popover Content embedded here but shown absolutely positioned by Radix */}
+                                                <PopoverContent className="w-[450px] p-0" align="end" side="left">
+                                                    <div className="p-4 border-b bg-muted/10">
+                                                        <h4 className="font-bold text-sm">Conciliar Movimiento</h4>
+                                                        <p className="text-xs text-muted-foreground">Monto: {formatCurrency(Math.abs(txn.monto))}</p>
+                                                        <p className="text-xs text-slate-700 mt-1 font-medium">{txn.descripcion}</p>
                                                     </div>
-                                                </div>
-                                            </CardContent>
-                                        </Card>
-                                    </PopoverTrigger>
-
-                                    <PopoverContent className="w-[400px] p-0" align="start">
-                                        <div className="p-4 border-b bg-muted/10">
-                                            <h4 className="font-bold text-sm">Conciliar Movimiento</h4>
-                                            <p className="text-xs text-muted-foreground">Monto: {formatCurrency(Math.abs(txn.monto))}</p>
-                                        </div>
-                                        <div className="p-4 space-y-4 max-h-[400px] overflow-y-auto">
-                                            {suggestedInvoices.length > 0 && (
-                                                <div className="space-y-3">
-                                                    <p className="text-[10px] font-bold text-primary uppercase flex items-center gap-2">
-                                                        <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-                                                        Calces Exactos:
-                                                    </p>
-                                                    {suggestedInvoices.map((doc) => (
-                                                        <div key={doc.id} className="border rounded-lg p-3 bg-white shadow-sm border-primary/10 transition-colors hover:bg-slate-50">
-                                                            <div className="flex justify-between items-center mb-1">
-                                                                <span className="font-bold text-xs">
-                                                                    {doc.tipo_entidad === 'rendicion' ? 'Rendición' : `Factura #${doc.numero_documento || '---'}`}
-                                                                </span>
-                                                                <span className="font-bold text-green-600 text-xs">{formatCurrency(doc.monto)}</span>
+                                                    <div className="p-4 space-y-4 max-h-[400px] overflow-y-auto">
+                                                        {suggestedInvoices.length > 0 && (
+                                                            <div className="space-y-3">
+                                                                <p className="text-[10px] font-bold text-primary uppercase flex items-center gap-2">
+                                                                    <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                                                                    Calces Exactos:
+                                                                </p>
+                                                                {suggestedInvoices.map((doc) => (
+                                                                    <div key={doc.id} className="border rounded-lg p-3 bg-white shadow-sm border-primary/10 transition-colors hover:bg-slate-50">
+                                                                        <div className="flex justify-between items-center mb-1">
+                                                                            <span className="font-bold text-xs">
+                                                                                {doc.tipo_entidad === 'rendicion' ? 'Rendición' : `Factura #${doc.numero_documento || '---'}`}
+                                                                            </span>
+                                                                            <span className="font-bold text-green-600 text-xs">{formatCurrency(doc.monto)}</span>
+                                                                        </div>
+                                                                        <p className="text-[11px] text-slate-900 font-semibold mb-2">{doc.terceros?.razon_social || 'Desconocido'}</p>
+                                                                        <Button
+                                                                            size="sm"
+                                                                            className="w-full bg-green-600 hover:bg-green-700 h-7 text-[10px]"
+                                                                            onClick={() => handleConfirmMatch(doc)}
+                                                                            disabled={isMatching}
+                                                                        >
+                                                                            {isMatching ? <Loader2 className="h-3 w-3 animate-spin" /> : <><Check className="w-3 h-3 mr-1" /> Vincular Pago</>}
+                                                                        </Button>
+                                                                    </div>
+                                                                ))}
                                                             </div>
-                                                            <p className="text-[11px] text-slate-900 font-semibold mb-2">{doc.terceros?.razon_social || 'Desconocido'}</p>
-                                                            <Button
-                                                                size="sm"
-                                                                className="w-full bg-green-600 hover:bg-green-700 h-7 text-[10px]"
-                                                                onClick={() => handleConfirmMatch(doc)}
-                                                                disabled={isMatching}
-                                                            >
-                                                                {isMatching ? <Loader2 className="h-3 w-3 animate-spin" /> : <><Check className="w-3 h-3 mr-1" /> Vincular Pago</>}
-                                                            </Button>
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            )}
+                                                        )}
 
-                                            <div className="space-y-2 mb-4 pt-2 border-t">
-                                                <p className="text-[10px] font-bold text-muted-foreground uppercase">Rendiciones Disponibles:</p>
-                                                {suggestedRendiciones.length > 0 ? (
-                                                    <div className="space-y-2">
-                                                        {suggestedRendiciones.map((doc) => (
-                                                            <div key={doc.id} className="border rounded-lg p-3 bg-white shadow-sm border-orange-100 transition-colors hover:bg-orange-50">
-                                                                <div className="flex justify-between items-center mb-1">
-                                                                    <span className="font-bold text-xs">Rendición</span>
-                                                                    <span className="font-bold text-orange-600 text-xs">{formatCurrency(doc.monto)}</span>
+                                                        <div className="space-y-2 mb-4 pt-2 border-t">
+                                                            <p className="text-[10px] font-bold text-muted-foreground uppercase">Rendiciones Disponibles:</p>
+                                                            {suggestedRendiciones.length > 0 ? (
+                                                                <div className="space-y-2">
+                                                                    {suggestedRendiciones.map((doc) => (
+                                                                        <div key={doc.id} className="border rounded-lg p-3 bg-white shadow-sm border-orange-100 transition-colors hover:bg-orange-50">
+                                                                            <div className="flex justify-between items-center mb-1">
+                                                                                <span className="font-bold text-xs">Rendición</span>
+                                                                                <span className="font-bold text-orange-600 text-xs">{formatCurrency(doc.monto)}</span>
+                                                                            </div>
+                                                                            <p className="text-[11px] text-slate-900 font-semibold mb-2">{doc.terceros?.razon_social || 'Desconocido'}</p>
+                                                                            <Button
+                                                                                size="sm"
+                                                                                className="w-full bg-orange-600 hover:bg-orange-700 h-7 text-[10px]"
+                                                                                onClick={() => handleConfirmMatch(doc)}
+                                                                                disabled={isMatching}
+                                                                            >
+                                                                                {isMatching ? <Loader2 className="h-3 w-3 animate-spin" /> : <><Check className="w-3 h-3 mr-1" /> Vincular Rendición</>}
+                                                                            </Button>
+                                                                        </div>
+                                                                    ))}
                                                                 </div>
-                                                                <p className="text-[11px] text-slate-900 font-semibold mb-2">{doc.terceros?.razon_social || 'Desconocido'}</p>
+                                                            ) : (
+                                                                <div className="p-3 bg-slate-50 border border-dashed rounded-lg text-center">
+                                                                    <p className="text-[10px] text-muted-foreground italic">No hay rendiciones pendientes para este monto.</p>
+                                                                </div>
+                                                            )}
+                                                        </div>
+
+                                                        <div className="space-y-2 mb-4 pt-2 border-t">
+                                                            <p className="text-[10px] font-bold text-muted-foreground uppercase">Conciliación Directa:</p>
+                                                            <div className="grid grid-cols-2 gap-2">
                                                                 <Button
+                                                                    variant="outline"
                                                                     size="sm"
-                                                                    className="w-full bg-orange-600 hover:bg-orange-700 h-7 text-[10px]"
-                                                                    onClick={() => handleConfirmMatch(doc)}
-                                                                    disabled={isMatching}
+                                                                    className="w-full text-xs h-8 border-dashed"
+                                                                    onClick={() => handleDirectReconciliation('remuneracion', 'Remuneración')}
                                                                 >
-                                                                    {isMatching ? <Loader2 className="h-3 w-3 animate-spin" /> : <><Check className="w-3 h-3 mr-1" /> Vincular Rendición</>}
+                                                                    Remuneraciones
                                                                 </Button>
                                                             </div>
-                                                        ))}
-                                                    </div>
-                                                ) : (
-                                                    <div className="p-3 bg-slate-50 border border-dashed rounded-lg text-center">
-                                                        <p className="text-[10px] text-muted-foreground italic">No hay rendiciones pendientes para este monto.</p>
-                                                    </div>
-                                                )}
-                                            </div>
-
-                                            <div className="space-y-2 mb-4 pt-2 border-t">
-                                                <p className="text-[10px] font-bold text-muted-foreground uppercase">Conciliación Directa:</p>
-                                                <div className="grid grid-cols-2 gap-2">
-                                                    <Button
-                                                        variant="outline"
-                                                        size="sm"
-                                                        className="w-full text-xs h-8 border-dashed"
-                                                        onClick={() => handleDirectReconciliation('remuneracion', 'Remuneración')}
-                                                    >
-                                                        Remuneraciones
-                                                    </Button>
-                                                </div>
-                                            </div>
-
-                                            <div className="space-y-2 mb-4 pt-2 border-t">
-                                                <p className="text-[10px] font-bold text-muted-foreground uppercase">Otros Conceptos:</p>
-                                                <div className="flex gap-2">
-                                                    <Input
-                                                        placeholder="Razón del gasto (ej. Taxi, Materiales...)"
-                                                        className="h-8 text-xs"
-                                                        value={otherConceptReason}
-                                                        onChange={(e) => setOtherConceptReason(e.target.value)}
-                                                        onKeyDown={(e) => e.key === 'Enter' && handleOtherConceptReconciliation()}
-                                                    />
-                                                    <Button
-                                                        size="sm"
-                                                        className="h-8 bg-blue-600 hover:bg-blue-700"
-                                                        onClick={handleOtherConceptReconciliation}
-                                                        disabled={!otherConceptReason.trim() || isMatching}
-                                                    >
-                                                        {isMatching ? <Loader2 className="w-3 h-3 animate-spin" /> : "OK"}
-                                                    </Button>
-                                                </div>
-                                            </div>
-
-                                            <div className="space-y-2">
-                                                <p className="text-[10px] font-bold text-muted-foreground uppercase">Búsqueda Manual:</p>
-                                                <div className="flex gap-2">
-                                                    <Input
-                                                        placeholder="RUT o Razón Social..."
-                                                        className="h-8 text-xs"
-                                                        value={manualSearch}
-                                                        onChange={(e) => setManualSearch(e.target.value)}
-                                                        onKeyDown={(e) => e.key === 'Enter' && handleManualSearch()}
-                                                    />
-                                                    <Button size="sm" className="h-8 w-8 p-0" variant="secondary" onClick={handleManualSearch}>
-                                                        <Search className="w-3 h-3" />
-                                                    </Button>
-                                                </div>
-                                            </div>
-
-                                            {manualInvoices.length > 0 && (
-                                                <div className="space-y-3 mt-4">
-                                                    {manualInvoices.map((doc) => (
-                                                        <div key={doc.id} className="border rounded-lg p-3 bg-white border-slate-200">
-                                                            <div className="flex justify-between items-center mb-1">
-                                                                <span className="font-bold text-xs">
-                                                                    {doc.tipo_entidad === 'rendicion' ? 'Rendición' : `#${doc.numero_documento}`}
-                                                                </span>
-                                                                <span className="font-bold text-slate-900 text-xs">{formatCurrency(doc.monto)}</span>
-                                                            </div>
-                                                            <p className="text-[11px] text-muted-foreground truncate mb-2">{doc.terceros?.razon_social}</p>
-                                                            <Button
-                                                                size="sm"
-                                                                variant="outline"
-                                                                className="w-full h-7 text-[10px]"
-                                                                onClick={() => handleConfirmMatch(doc)}
-                                                                disabled={isMatching}
-                                                            >
-                                                                Vincular este documento
-                                                            </Button>
                                                         </div>
-                                                    ))}
-                                                </div>
-                                            )}
 
-                                            {suggestedInvoices.length === 0 && manualInvoices.length === 0 && (
-                                                <div className="p-4 bg-amber-50 border border-amber-100 rounded-lg">
-                                                    <AlertCircle className="h-4 w-4 text-amber-500 mb-2" />
-                                                    <p className="text-xs font-semibold text-amber-900">Sin calces</p>
-                                                    <p className="text-[10px] text-amber-800">Usa el buscador para encontrar documentos por RUT o nombre.</p>
-                                                </div>
-                                            )}
-                                        </div>
-                                    </PopoverContent>
-                                </Popover>
-                            ))}
-                        </div>
-                    )}
-                </div>
+                                                        <div className="space-y-2 mb-4 pt-2 border-t">
+                                                            <p className="text-[10px] font-bold text-muted-foreground uppercase">Otros Conceptos:</p>
+                                                            <div className="flex gap-2">
+                                                                <Input
+                                                                    placeholder="Razón del gasto (ej. Taxi, Materiales...)"
+                                                                    className="h-8 text-xs"
+                                                                    value={otherConceptReason}
+                                                                    onChange={(e) => setOtherConceptReason(e.target.value)}
+                                                                    onKeyDown={(e) => e.key === 'Enter' && handleOtherConceptReconciliation()}
+                                                                />
+                                                                <Button
+                                                                    size="sm"
+                                                                    className="h-8 bg-blue-600 hover:bg-blue-700"
+                                                                    onClick={handleOtherConceptReconciliation}
+                                                                    disabled={!otherConceptReason.trim() || isMatching}
+                                                                >
+                                                                    {isMatching ? <Loader2 className="w-3 h-3 animate-spin" /> : "OK"}
+                                                                </Button>
+                                                            </div>
+                                                        </div>
+
+                                                        <div className="space-y-2">
+                                                            <p className="text-[10px] font-bold text-muted-foreground uppercase">Búsqueda Manual:</p>
+                                                            <div className="flex gap-2">
+                                                                <Input
+                                                                    placeholder="RUT o Razón Social..."
+                                                                    className="h-8 text-xs"
+                                                                    value={manualSearch}
+                                                                    onChange={(e) => setManualSearch(e.target.value)}
+                                                                    onKeyDown={(e) => e.key === 'Enter' && handleManualSearch()}
+                                                                />
+                                                                <Button size="sm" className="h-8 w-8 p-0" variant="secondary" onClick={handleManualSearch}>
+                                                                    <Search className="w-3 h-3" />
+                                                                </Button>
+                                                            </div>
+                                                        </div>
+
+                                                        {manualInvoices.length > 0 && (
+                                                            <div className="space-y-3 mt-4">
+                                                                {manualInvoices.map((doc) => (
+                                                                    <div key={doc.id} className="border rounded-lg p-3 bg-white border-slate-200">
+                                                                        <div className="flex justify-between items-center mb-1">
+                                                                            <span className="font-bold text-xs">
+                                                                                {doc.tipo_entidad === 'rendicion' ? 'Rendición' : `#${doc.numero_documento}`}
+                                                                            </span>
+                                                                            <span className="font-bold text-slate-900 text-xs">{formatCurrency(doc.monto)}</span>
+                                                                        </div>
+                                                                        <p className="text-[11px] text-muted-foreground truncate mb-2">{doc.terceros?.razon_social}</p>
+                                                                        <Button
+                                                                            size="sm"
+                                                                            variant="outline"
+                                                                            className="w-full h-7 text-[10px]"
+                                                                            onClick={() => handleConfirmMatch(doc)}
+                                                                            disabled={isMatching}
+                                                                        >
+                                                                            Vincular este documento
+                                                                        </Button>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        )}
+
+                                                        {suggestedInvoices.length === 0 && manualInvoices.length === 0 && (
+                                                            <div className="p-4 bg-amber-50 border border-amber-100 rounded-lg">
+                                                                <AlertCircle className="h-4 w-4 text-amber-500 mb-2" />
+                                                                <p className="text-xs font-semibold text-amber-900">Sin calces</p>
+                                                                <p className="text-[10px] text-amber-800">Usa el buscador para encontrar documentos por RUT o nombre.</p>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </PopoverContent>
+                                            </Popover>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
             </div>
+            {/* End of content replacement */}
         </div>
     );
 }

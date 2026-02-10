@@ -18,6 +18,7 @@ import Users from "@/pages/Users";
 
 import Login from "@/pages/Login";
 import ResetPassword from "@/pages/ResetPassword";
+import RendicionPrint from "@/pages/RendicionPrint";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { Navigate, Outlet } from "react-router-dom";
 
@@ -62,6 +63,7 @@ function App() {
               <Route path="budgets" element={<Budgets />} />
               <Route path="audit" element={<ReconciliationAudit />} />
               <Route path="rendiciones" element={<Rendiciones />} />
+              <Route path="rendiciones/print/:id" element={<RendicionPrint />} />
               <Route path="users" element={<Users />} />
               <Route path="invoices/new" element={<ManualInvoiceEntry />} />
               <Route path="facturas/nueva" element={<ManualInvoiceEntry />} />
