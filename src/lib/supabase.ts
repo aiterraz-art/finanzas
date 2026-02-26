@@ -13,6 +13,11 @@ const resolveSupabaseUrl = (url?: string) => {
         return fallback;
     }
 
+    // Common misconfiguration: frontend domain used as Supabase URL
+    if (url.includes('lab-finanzas.atapp.cl') || url.includes('lab-finanzas.vercel.app')) {
+        return fallback;
+    }
+
     // Avoid mixed-content failures when app runs over https
     if (typeof window !== 'undefined' && window.location.protocol === 'https:' && url.startsWith('http://')) {
         try {
