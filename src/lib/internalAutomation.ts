@@ -70,11 +70,12 @@ const fileToBase64 = async (file: File) => {
 };
 
 export const inviteUserInternal = async (email: string, role: InviteRole) => {
+  const appUrl = import.meta.env.VITE_APP_URL || window.location.origin;
   const { data, error } = await supabase.functions.invoke("invite-user", {
     body: {
       email,
       role,
-      app_url: window.location.origin,
+      app_url: appUrl,
     },
   });
 
