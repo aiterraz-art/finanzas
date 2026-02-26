@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { supabase } from "@/lib/supabase";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
+import { processInvoiceDocument } from "@/lib/internalAutomation";
 
 interface FileItem {
     id: string;
@@ -199,7 +200,11 @@ export default function InvoiceUpload({ targetType, fixedTercero, onSuccess }: I
             // 1. Subir archivo al storage si no se ha subido ya
             let archivoUrl = "";
             const fileExt = item.file.name.split('.').pop();
-            const fileName = `${item.terceroEncontrado.rut}/${item.extractedData.numero_documento}_${Date.now()}.${fileExt}`;
+            const terceroRut = fixedTercero?.rut || item.terceroEncontrado?.rut;
+            if (!terceroRut) {
+                throw new Error("No se encontró RUT del tercero para guardar el archivo.");
+            }
+            const fileName = `${terceroRut}/${item.extractedData.numero_documento}_${Date.now()}.${fileExt}`;
             const filePath = `${fileName}`;
 
             const { data: uploadData, error: uploadError } = await supabase.storage
@@ -288,35 +293,16 @@ export default function InvoiceUpload({ targetType, fixedTercero, onSuccess }: I
     };
 
     const handleProcessSingleOCR = async (id: string): Promise<boolean> => {
-        const n8nWebhookUrl = import.meta.env.VITE_N8N_WEBHOOK_URL;
         const item = queueRef.current.find(i => i.id === id);
         if (!item) return false;
 
         console.log("Iniciando procesamiento OCR para:", item.file.name);
 
-        if (!n8nWebhookUrl) {
-            updateItemStatus(id, 'failed', 0, undefined, "Falta VITE_N8N_WEBHOOK_URL");
-            return false;
-        }
-
         updateItemStatus(id, 'processing', 10);
 
         try {
-            const formData = new FormData();
-            formData.append('file', item.file);
-
-            const response = await fetch(n8nWebhookUrl, {
-                method: 'POST',
-                body: formData
-            });
-
-            if (!response.ok) {
-                const errorMsg = `Error HTTP ${response.status}`;
-                throw new Error(errorMsg);
-            }
-
-            const rawData = await response.json();
-            const data = Array.isArray(rawData) ? rawData[0] : rawData;
+            const defaultType = targetType === 'proveedor' ? 'compra' : 'venta';
+            const data = await processInvoiceDocument(item.file, defaultType);
 
             if (!data || Object.keys(data).length === 0) {
                 throw new Error("Respuesta IA vacía.");
@@ -327,7 +313,7 @@ export default function InvoiceUpload({ targetType, fixedTercero, onSuccess }: I
             const isOwnRut = cleanedExtractedRut === OWN_LAB_RUT;
 
             const today = new Date().toISOString().split('T')[0];
-            const detectedDate = data.fecha_emision || data.fecha || data.date || data.emision || today;
+            const detectedDate = data.fecha_emision || today;
             const isToday = detectedDate === today;
 
             const finalExtracted = {
@@ -350,6 +336,9 @@ export default function InvoiceUpload({ targetType, fixedTercero, onSuccess }: I
             } else if (isToday) {
                 // Warning suave, no bloqueante
                 console.log("Fecha de hoy detectada como emisión.");
+            }
+            if (data.warning) {
+                customError = customError ? `${customError} ${data.warning}` : data.warning;
             }
 
             updateItemStatus(id, 'completed', 100, finalExtracted, customError);
@@ -803,7 +792,7 @@ export default function InvoiceUpload({ targetType, fixedTercero, onSuccess }: I
                                             <h4 className="font-bold text-lg mb-2">Error al procesar el archivo</h4>
                                             <div className="bg-red-50 border border-red-100 rounded-md p-3 mb-6">
                                                 <p className="text-xs font-mono break-all line-clamp-4">
-                                                    {currentItem.errorMessage || "Error desconocido durante la comunicación con n8n."}
+                                                    {currentItem.errorMessage || "Error desconocido durante la comunicación con el motor interno."}
                                                 </p>
                                             </div>
                                             <div className="flex flex-col gap-2">
@@ -815,7 +804,7 @@ export default function InvoiceUpload({ targetType, fixedTercero, onSuccess }: I
                                                     Reintentar
                                                 </Button>
                                                 <p className="text-[10px] text-muted-foreground mt-2">
-                                                    Si el error persiste, revisa que el flujo en n8n esté activo o que la URL del Webhook sea correcta en el .env.
+                                                    Si el error persiste, revisa la configuración del OCR interno en Supabase Functions.
                                                 </p>
                                             </div>
                                         </div>

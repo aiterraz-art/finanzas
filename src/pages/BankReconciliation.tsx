@@ -3,7 +3,7 @@ import * as XLSX from 'xlsx';
 import { Card, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Upload, Check, RefreshCw, Search, Loader2, AlertCircle, Trash2 } from "lucide-react";
+import { Upload, Check, RefreshCw, Search, Loader2, AlertCircle, Trash2, RotateCcw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { supabase } from "@/lib/supabase";
 import { Input } from "@/components/ui/input";
@@ -315,6 +315,59 @@ export default function BankReconciliation() {
             fetchData();
         } catch (error: any) {
             alert(`Error al conciliar: ${error.message}`);
+        } finally {
+            setIsMatching(false);
+        }
+    };
+
+    const handleUndoReconciliation = async (txn: any) => {
+        if (!confirm("¿Deseas deshacer esta conciliación?")) return;
+        setIsMatching(true);
+        try {
+            const { data: links, error: linkError } = await supabase
+                .from('facturas_pagos')
+                .select('id, factura_id, rendicion_id')
+                .eq('movimiento_banco_id', txn.id);
+
+            if (linkError) throw linkError;
+
+            const facturaIds = (links || []).map(l => l.factura_id).filter(Boolean);
+            const rendicionIds = (links || []).map(l => l.rendicion_id).filter(Boolean);
+
+            if (facturaIds.length > 0) {
+                const { error } = await supabase
+                    .from('facturas')
+                    .update({ estado: 'pendiente' })
+                    .in('id', facturaIds);
+                if (error) throw error;
+            }
+
+            if (rendicionIds.length > 0) {
+                const { error } = await supabase
+                    .from('rendiciones')
+                    .update({ estado: 'pendiente' })
+                    .in('id', rendicionIds);
+                if (error) throw error;
+            }
+
+            if ((links || []).length > 0) {
+                const { error } = await supabase
+                    .from('facturas_pagos')
+                    .delete()
+                    .eq('movimiento_banco_id', txn.id);
+                if (error) throw error;
+            }
+
+            const { error: updateTxnError } = await supabase
+                .from('movimientos_banco')
+                .update({ estado: 'no_conciliado' })
+                .eq('id', txn.id);
+            if (updateTxnError) throw updateTxnError;
+
+            alert("Conciliación deshecha correctamente.");
+            fetchData();
+        } catch (error: any) {
+            alert(`Error al deshacer conciliación: ${error.message}`);
         } finally {
             setIsMatching(false);
         }
@@ -660,17 +713,33 @@ export default function BankReconciliation() {
                                                 </td>
 
                                                 <td className="p-3 align-top text-right">
-                                                    <Button
-                                                        variant="ghost"
-                                                        size="icon"
-                                                        className="h-8 w-8 text-muted-foreground hover:text-red-600"
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            handleDeleteMovimiento(txn.id);
-                                                        }}
-                                                    >
-                                                        <Trash2 className="w-4 h-4" />
-                                                    </Button>
+                                                    <div className="flex justify-end gap-1">
+                                                        {txn.estado === 'conciliado' && (
+                                                            <Button
+                                                                variant="ghost"
+                                                                size="icon"
+                                                                className="h-8 w-8 text-amber-600 hover:text-amber-700 hover:bg-amber-50"
+                                                                title="Deshacer Conciliación"
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    handleUndoReconciliation(txn);
+                                                                }}
+                                                            >
+                                                                <RotateCcw className="w-4 h-4" />
+                                                            </Button>
+                                                        )}
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="icon"
+                                                            className="h-8 w-8 text-muted-foreground hover:text-red-600"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                handleDeleteMovimiento(txn.id);
+                                                            }}
+                                                        >
+                                                            <Trash2 className="w-4 h-4" />
+                                                        </Button>
+                                                    </div>
                                                 </td>
 
                                                 {/* Popover Content embedded here but shown absolutely positioned by Radix */}

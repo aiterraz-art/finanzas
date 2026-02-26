@@ -138,7 +138,7 @@ export default function Rendiciones() {
         setItems(items.filter((_, i) => i !== index));
     };
 
-    const handleUpdateItem = (index: number, field: keyof RendicionItem, value: any) => {
+    const handleUpdateItem = (index: number, field: keyof RendicionItem, value: string | number) => {
         const newItems = [...items];
         newItems[index] = { ...newItems[index], [field]: value };
         setItems(newItems);
@@ -217,7 +217,6 @@ export default function Rendiciones() {
 
             setIsCreateOpen(false);
             resetForm();
-            fetchRendiciones();
             fetchRendiciones();
         } catch (error: any) {
             console.error("Error saving rendicion:", error);

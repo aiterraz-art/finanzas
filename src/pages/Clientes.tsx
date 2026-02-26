@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { supabase } from "@/lib/supabase";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import InvoiceUpload from "@/components/InvoiceUpload";
+import { queueCollectionReminder } from "@/lib/internalAutomation";
 
 import { useNavigate } from "react-router-dom";
 
@@ -43,28 +44,15 @@ export default function Clientes() {
         const confirm = window.confirm(`¿Deseas enviar un recordatorio de cobranza por ${formatCurrency(saldo)} a ${cliente.razon_social}?`);
         if (!confirm) return;
 
-        const n8nWebhookUrl = import.meta.env.VITE_N8N_COLLECTION_WEBHOOK_URL;
-        if (!n8nWebhookUrl) {
-            alert("No se ha configurado la URL del Webhook de cobranza (VITE_N8N_COLLECTION_WEBHOOK_URL).");
-            return;
-        }
-
         try {
-            const response = await fetch(n8nWebhookUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    tercero_id: cliente.id,
-                    nombre: cliente.razon_social,
-                    email: cliente.email || 'no-email@example.com',
-                    saldo_total: saldo,
-                    antiguedad: getAgingData(cliente)?.diffDays || 0
-                })
+            await queueCollectionReminder({
+                tercero_id: cliente.id,
+                nombre: cliente.razon_social,
+                email: cliente.email || 'no-email@example.com',
+                saldo_total: saldo,
+                antiguedad: getAgingData(cliente)?.diffDays || 0
             });
-
-            if (!response.ok) throw new Error("Error al contactar con n8n");
-
-            alert("Recordatorio de cobranza enviado exitosamente a la cola de procesamiento.");
+            alert("Recordatorio de cobranza encolado en el sistema interno.");
         } catch (error: any) {
             console.error("Error enviando cobranza:", error);
             alert(`No se pudo enviar la cobranza: ${error.message}`);

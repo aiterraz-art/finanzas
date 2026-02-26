@@ -31,8 +31,21 @@ import { Badge } from "@/components/ui/badge";
 import { Loader2, Plus, Mail, Trash2 } from 'lucide-react';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
+import { inviteUserInternal } from '@/lib/internalAutomation';
 
-const INVITE_WEBHOOK_URL = import.meta.env.VITE_N8N_INVITE_WEBHOOK_URL;
+const formatProfileCreatedAt = (raw: unknown) => {
+    if (raw === null || raw === undefined) return '-';
+    if (typeof raw === 'number') {
+        return format(new Date(raw * 1000), "d 'de' MMMM, yyyy", { locale: es });
+    }
+    if (typeof raw === 'string') {
+        const date = new Date(raw);
+        if (!Number.isNaN(date.getTime())) {
+            return format(date, "d 'de' MMMM, yyyy", { locale: es });
+        }
+    }
+    return '-';
+};
 
 export default function Users() {
     const [users, setUsers] = useState<any[]>([]);
@@ -67,36 +80,14 @@ export default function Users() {
         if (!inviteEmail) return;
         setIsInviting(true);
         try {
-            // Trigger n8n webhook
-            if (!INVITE_WEBHOOK_URL) {
-                alert("Webhook URL not configured (VITE_N8N_INVITE_WEBHOOK_URL)");
-                return;
-            }
-
-            const response = await fetch(INVITE_WEBHOOK_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    email: inviteEmail,
-                    role: inviteRole,
-                    invited_by: "admin", // Could use current user email
-                    app_url: 'https://lab-finanzas.vercel.app/'
-                })
-            });
-
-            if (response.ok) {
-                alert("Invitación enviada con éxito.");
-                setIsInviteOpen(false);
-                setInviteEmail("");
-                // Optionally refetch if the webhook creates the user immediately, 
-                // but usually the user is created when they sign up or the webhook does it.
-                // We'll refetch just in case.
-                fetchUsers();
-            } else {
-                throw new Error("Error al comunicarse con el servidor de invitaciones.");
-            }
+            await inviteUserInternal(inviteEmail, inviteRole as "user" | "admin");
+            alert("Invitación enviada con éxito.");
+            setIsInviteOpen(false);
+            setInviteEmail("");
+            fetchUsers();
         } catch (error: any) {
             alert(`Error: ${error.message}`);
+        } finally {
             setIsInviting(false);
         }
     };
@@ -217,7 +208,7 @@ export default function Users() {
                                         </Badge>
                                     </TableCell>
                                     <TableCell>
-                                        {user.created_at ? format(new Date(user.created_at * 1000), "d 'de' MMMM, yyyy", { locale: es }) : '-'}
+                                        {formatProfileCreatedAt(user.created_at)}
                                     </TableCell>
                                     <TableCell className="text-right">
                                         <div className="flex items-center justify-end gap-2">
