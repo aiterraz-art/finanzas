@@ -29,10 +29,10 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Building2, Loader2, Mail, Pencil, Plus, Save, ShieldPlus, Trash2, Upload } from 'lucide-react';
+import { Building2, Copy, Loader2, Pencil, Plus, Save, ShieldPlus, Trash2, Upload } from 'lucide-react';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
-import { inviteUserInternal } from '@/lib/internalAutomation';
+import { createUserInternal } from '@/lib/internalAutomation';
 import { useCompany } from '@/contexts/CompanyContext';
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -70,6 +70,24 @@ const EMPTY_COMPANY_FORM: CompanyForm = {
     activa: true,
 };
 
+type NewUserForm = {
+    email: string;
+    role: "user" | "admin";
+    full_name: string;
+    phone: string;
+    job_title: string;
+    company_role: CompanyRole;
+};
+
+const EMPTY_NEW_USER_FORM: NewUserForm = {
+    email: "",
+    role: "user",
+    full_name: "",
+    phone: "",
+    job_title: "",
+    company_role: "user",
+};
+
 const formatProfileCreatedAt = (raw: unknown) => {
     if (raw === null || raw === undefined) return '-';
     if (typeof raw === 'number') {
@@ -94,10 +112,10 @@ export default function Users() {
     const [loading, setLoading] = useState(true);
     const [loadingCompanies, setLoadingCompanies] = useState(true);
 
-    const [isInviteOpen, setIsInviteOpen] = useState(false);
-    const [inviteEmail, setInviteEmail] = useState("");
-    const [inviteRole, setInviteRole] = useState("user");
-    const [isInviting, setIsInviting] = useState(false);
+    const [isCreateUserOpen, setIsCreateUserOpen] = useState(false);
+    const [isCreatingUser, setIsCreatingUser] = useState(false);
+    const [newUserForm, setNewUserForm] = useState<NewUserForm>(EMPTY_NEW_USER_FORM);
+    const [createdCredentials, setCreatedCredentials] = useState<{ email: string; password: string } | null>(null);
 
     const [isCompanyDialogOpen, setIsCompanyDialogOpen] = useState(false);
     const [isSavingCompany, setIsSavingCompany] = useState(false);
@@ -169,19 +187,53 @@ export default function Users() {
         }
     };
 
-    const handleInvite = async () => {
-        if (!inviteEmail) return;
-        setIsInviting(true);
+    const handleCreateUser = async () => {
+        if (!newUserForm.email.trim()) return;
+        setIsCreatingUser(true);
         try {
-            await inviteUserInternal(inviteEmail, inviteRole as "user" | "admin");
-            alert("Invitación enviada con éxito.");
-            setIsInviteOpen(false);
-            setInviteEmail("");
+            const created = await createUserInternal({
+                email: newUserForm.email.trim(),
+                role: newUserForm.role,
+                full_name: newUserForm.full_name.trim() || undefined,
+                phone: newUserForm.phone.trim() || undefined,
+                job_title: newUserForm.job_title.trim() || undefined,
+            });
+
+            if (selectedEmpresaId) {
+                const { error: membershipError } = await supabase
+                    .from('user_empresas')
+                    .upsert(
+                        [{ user_id: created.user_id, empresa_id: selectedEmpresaId, role: newUserForm.company_role }],
+                        { onConflict: 'user_id,empresa_id' }
+                    );
+                if (membershipError) throw membershipError;
+            }
+
+            setCreatedCredentials({ email: created.email, password: created.password });
+            setNewUserForm(EMPTY_NEW_USER_FORM);
             fetchUsers();
         } catch (error: any) {
             alert(`Error: ${error.message}`);
         } finally {
-            setIsInviting(false);
+            setIsCreatingUser(false);
+        }
+    };
+
+    const closeCreateUserDialog = (open: boolean) => {
+        setIsCreateUserOpen(open);
+        if (!open) {
+            setCreatedCredentials(null);
+            setNewUserForm(EMPTY_NEW_USER_FORM);
+        }
+    };
+
+    const copyPassword = async () => {
+        if (!createdCredentials?.password) return;
+        try {
+            await navigator.clipboard.writeText(createdCredentials.password);
+            alert("Clave copiada al portapapeles.");
+        } catch {
+            alert("No se pudo copiar automáticamente. Copia manualmente la clave.");
         }
     };
 
@@ -524,34 +576,61 @@ export default function Users() {
                             Empresa activa: <span className="font-semibold">{selectedEmpresa?.nombre || 'Ninguna seleccionada'}</span>
                         </CardDescription>
                     </div>
-                    <Dialog open={isInviteOpen} onOpenChange={setIsInviteOpen}>
+                    <Dialog open={isCreateUserOpen} onOpenChange={closeCreateUserDialog}>
                         <DialogTrigger asChild>
                             <Button className="gap-2">
-                                <Plus className="w-4 h-4" /> Invitar Usuario
+                                <Plus className="w-4 h-4" /> Crear Usuario
                             </Button>
                         </DialogTrigger>
-                        <DialogContent className="sm:max-w-[425px]">
+                        <DialogContent className="sm:max-w-[560px]">
                             <DialogHeader>
-                                <DialogTitle>Invitar Nuevo Usuario</DialogTitle>
+                                <DialogTitle>Crear Nuevo Usuario</DialogTitle>
                                 <DialogDescription>
-                                    Se enviará un correo con instrucciones para acceder al sistema.
+                                    Crea el usuario internamente y entrega la clave temporal al colaborador.
                                 </DialogDescription>
                             </DialogHeader>
-                            <div className="grid gap-4 py-4">
-                                <div className="grid gap-2">
-                                    <Label htmlFor="email">Correo Electrónico</Label>
+                            <div className="grid gap-4 py-4 md:grid-cols-2">
+                                <div className="grid gap-2 md:col-span-2">
+                                    <Label htmlFor="new-user-email">Correo Electrónico *</Label>
                                     <Input
-                                        id="email"
+                                        id="new-user-email"
                                         type="email"
-                                        placeholder="usuario@lab3d.cl"
-                                        value={inviteEmail}
-                                        onChange={(e) => setInviteEmail(e.target.value)}
+                                        placeholder="usuario@empresa.cl"
+                                        value={newUserForm.email}
+                                        onChange={(e) => setNewUserForm({ ...newUserForm, email: e.target.value })}
                                     />
                                 </div>
                                 <div className="grid gap-2">
-                                    <Label htmlFor="role">Rol Global</Label>
-                                    <Select value={inviteRole} onValueChange={setInviteRole}>
-                                        <SelectTrigger>
+                                    <Label htmlFor="new-user-name">Nombre Completo</Label>
+                                    <Input
+                                        id="new-user-name"
+                                        placeholder="Nombre Apellido"
+                                        value={newUserForm.full_name}
+                                        onChange={(e) => setNewUserForm({ ...newUserForm, full_name: e.target.value })}
+                                    />
+                                </div>
+                                <div className="grid gap-2">
+                                    <Label htmlFor="new-user-phone">Teléfono</Label>
+                                    <Input
+                                        id="new-user-phone"
+                                        placeholder="+56 9 ..."
+                                        value={newUserForm.phone}
+                                        onChange={(e) => setNewUserForm({ ...newUserForm, phone: e.target.value })}
+                                    />
+                                </div>
+                                <div className="grid gap-2">
+                                    <Label htmlFor="new-user-job">Cargo</Label>
+                                    <Input
+                                        id="new-user-job"
+                                        placeholder="Tesorero / Contador / etc."
+                                        value={newUserForm.job_title}
+                                        onChange={(e) => setNewUserForm({ ...newUserForm, job_title: e.target.value })}
+                                    />
+                                </div>
+                                <div className="grid gap-2">
+                                    <Label htmlFor="new-user-role">Rol Global</Label>
+                                    <Select value={newUserForm.role} onValueChange={(value) => setNewUserForm({ ...newUserForm, role: value as "user" | "admin" })}>
+                                        <SelectTrigger id="new-user-role">
                                             <SelectValue placeholder="Selecciona un rol" />
                                         </SelectTrigger>
                                         <SelectContent>
@@ -560,12 +639,55 @@ export default function Users() {
                                         </SelectContent>
                                     </Select>
                                 </div>
+                                <div className="grid gap-2 md:col-span-2">
+                                    <Label htmlFor="new-user-company-role">Permiso en Empresa Activa ({selectedEmpresa?.nombre || 'Sin empresa'})</Label>
+                                    <Select
+                                        value={newUserForm.company_role}
+                                        onValueChange={(value) => setNewUserForm({ ...newUserForm, company_role: value as CompanyRole })}
+                                        disabled={!selectedEmpresaId}
+                                    >
+                                        <SelectTrigger id="new-user-company-role">
+                                            <SelectValue placeholder="Selecciona permiso" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {COMPANY_ROLES.map((role) => (
+                                                <SelectItem key={role} value={role}>
+                                                    {role}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
                             </div>
+
+                            {createdCredentials && (
+                                <div className="rounded-md border p-3 bg-muted/30 space-y-3">
+                                    <p className="text-sm font-medium">Usuario creado. Entrega estas credenciales:</p>
+                                    <div className="grid gap-2">
+                                        <Label>Correo</Label>
+                                        <Input value={createdCredentials.email} readOnly />
+                                    </div>
+                                    <div className="grid gap-2">
+                                        <Label>Clave temporal</Label>
+                                        <div className="flex gap-2">
+                                            <Input value={createdCredentials.password} readOnly />
+                                            <Button type="button" variant="outline" onClick={copyPassword} className="gap-2">
+                                                <Copy className="h-4 w-4" />
+                                                Copiar
+                                            </Button>
+                                        </div>
+                                    </div>
+                                    <p className="text-xs text-muted-foreground">
+                                        El usuario deberá cambiar la clave al iniciar sesión.
+                                    </p>
+                                </div>
+                            )}
+
                             <DialogFooter>
-                                <Button variant="outline" onClick={() => setIsInviteOpen(false)}>Cancelar</Button>
-                                <Button onClick={handleInvite} disabled={isInviting}>
-                                    {isInviting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Mail className="mr-2 h-4 w-4" />}
-                                    Enviar Invitación
+                                <Button variant="outline" onClick={() => closeCreateUserDialog(false)}>Cerrar</Button>
+                                <Button onClick={handleCreateUser} disabled={isCreatingUser || !newUserForm.email.trim()}>
+                                    {isCreatingUser ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
+                                    Crear Usuario
                                 </Button>
                             </DialogFooter>
                         </DialogContent>
@@ -612,7 +734,14 @@ export default function Users() {
                                                         <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-xs">
                                                             {profile.email?.substring(0, 2).toUpperCase()}
                                                         </div>
-                                                        {profile.email}
+                                                        <div>
+                                                            <p>{profile.email}</p>
+                                                            {(profile.full_name || profile.job_title || profile.phone) && (
+                                                                <p className="text-xs text-muted-foreground">
+                                                                    {profile.full_name || '-'} {profile.job_title ? `· ${profile.job_title}` : ''} {profile.phone ? `· ${profile.phone}` : ''}
+                                                                </p>
+                                                            )}
+                                                        </div>
                                                     </div>
                                                 </TableCell>
                                                 <TableCell>
