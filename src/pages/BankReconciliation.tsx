@@ -28,6 +28,9 @@ export default function BankReconciliation() {
     const [manualInvoices, setManualInvoices] = useState<any[]>([]);
     const [isImporting, setIsImporting] = useState(false);
     const [otherConceptReason, setOtherConceptReason] = useState("");
+    const [daysFilter, setDaysFilter] = useState("");
+    const [dateFrom, setDateFrom] = useState("");
+    const [dateTo, setDateTo] = useState("");
     const [newColumnName, setNewColumnName] = useState("");
     const [newColumnKey, setNewColumnKey] = useState("");
     const [newColumnType, setNewColumnType] = useState("texto");
@@ -809,13 +812,41 @@ export default function BankReconciliation() {
         return null;
     };
 
-    const filteredTransactions = transactions.filter(t => {
+    const inDateRange = (txnDate: string) => {
+        if (!txnDate) return false;
+        const tx = new Date(`${txnDate}T12:00:00`);
+        if (Number.isNaN(tx.getTime())) return false;
+
+        if (daysFilter) {
+            const days = Number(daysFilter);
+            if (Number.isFinite(days) && days > 0) {
+                const fromByDays = new Date();
+                fromByDays.setHours(12, 0, 0, 0);
+                fromByDays.setDate(fromByDays.getDate() - days);
+                if (tx < fromByDays) return false;
+            }
+        }
+
+        if (dateFrom) {
+            const from = new Date(`${dateFrom}T00:00:00`);
+            if (tx < from) return false;
+        }
+
+        if (dateTo) {
+            const to = new Date(`${dateTo}T23:59:59`);
+            if (tx > to) return false;
+        }
+
+        return true;
+    };
+
+    const filteredTransactions = transactions.filter((t) => {
         if (filter === "unmatched") return t.estado === "no_conciliado";
         if (filter === "matched") return t.estado === "conciliado";
         if (filter === "abonos") return t.monto > 0;
         if (filter === "egresos") return t.monto < 0;
         return true;
-    });
+    }).filter((t) => inDateRange(t.fecha_movimiento));
 
     return (
         <div className="space-y-6">
@@ -942,6 +973,50 @@ export default function BankReconciliation() {
                             </div>
                         </PopoverContent>
                     </Popover>
+                </div>
+
+                <div className="flex flex-wrap items-end gap-2 pb-2 border-b">
+                    <div className="space-y-1">
+                        <p className="text-[10px] uppercase text-muted-foreground font-semibold">Últimos días</p>
+                        <Input
+                            type="number"
+                            min="1"
+                            placeholder="Ej: 30"
+                            value={daysFilter}
+                            onChange={(e) => setDaysFilter(e.target.value)}
+                            className="h-8 w-28"
+                        />
+                    </div>
+                    <div className="space-y-1">
+                        <p className="text-[10px] uppercase text-muted-foreground font-semibold">Desde</p>
+                        <Input
+                            type="date"
+                            value={dateFrom}
+                            onChange={(e) => setDateFrom(e.target.value)}
+                            className="h-8"
+                        />
+                    </div>
+                    <div className="space-y-1">
+                        <p className="text-[10px] uppercase text-muted-foreground font-semibold">Hasta</p>
+                        <Input
+                            type="date"
+                            value={dateTo}
+                            onChange={(e) => setDateTo(e.target.value)}
+                            className="h-8"
+                        />
+                    </div>
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8"
+                        onClick={() => {
+                            setDaysFilter("");
+                            setDateFrom("");
+                            setDateTo("");
+                        }}
+                    >
+                        Limpiar fechas
+                    </Button>
                 </div>
 
                 {loading ? (
