@@ -27,7 +27,6 @@ import {
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import InvoiceUpload from "@/components/InvoiceUpload";
 import { useCompany } from "@/contexts/CompanyContext";
 
 export default function TerceroDetalle() {
@@ -339,20 +338,9 @@ export default function TerceroDetalle() {
                             </CardTitle>
                         </CardHeader>
                         <CardContent className="p-4 pt-2 flex justify-center gap-2">
-                            <Dialog>
-                                <DialogTrigger asChild>
-                                    <Button size="sm" className="w-full">
-                                        <Plus className="mr-1 h-3 w-3" /> Cargar Documento
-                                    </Button>
-                                </DialogTrigger>
-                                <DialogContent className="max-w-[95vw] w-full max-h-[95vh] overflow-y-auto">
-                                    <InvoiceUpload
-                                        targetType={tercero.tipo}
-                                        fixedTercero={tercero}
-                                        onSuccess={fetchData}
-                                    />
-                                </DialogContent>
-                            </Dialog>
+                            <Button size="sm" className="w-full" onClick={() => navigate('/facturas/nueva')}>
+                                <Plus className="mr-1 h-3 w-3" /> Ingresar Factura Manual
+                            </Button>
                         </CardContent>
                     </Card>
                 </div>

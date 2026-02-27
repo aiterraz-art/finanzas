@@ -12,11 +12,10 @@ import {
     TableHeader,
     TableRow,
 } from "@/components/ui/table";
-import { FileUp, ArrowRight, Plus, Loader2, Search, Trash2 } from "lucide-react";
+import { ArrowRight, Plus, Loader2, Search, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { supabase } from "@/lib/supabase";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import InvoiceUpload from "@/components/InvoiceUpload";
 import { useCompany } from "@/contexts/CompanyContext";
 
 import { useNavigate } from "react-router-dom";
@@ -27,7 +26,6 @@ export default function Proveedores() {
     const [proveedores, setProveedores] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchQuery, setSearchQuery] = useState("");
-    const [isUploadOpen, setIsUploadOpen] = useState(false);
     const [isNewProvOpen, setIsNewProvOpen] = useState(false);
     const [isSavingProv, setIsSavingProv] = useState(false);
     const [newProvData, setNewProvData] = useState({
@@ -206,22 +204,6 @@ export default function Proveedores() {
                     <p className="text-muted-foreground">Administra tus compras y cuentas por pagar.</p>
                 </div>
                 <div className="flex gap-2 w-full md:w-auto">
-                    <Dialog open={isUploadOpen} onOpenChange={setIsUploadOpen}>
-                        <DialogTrigger asChild>
-                            <Button variant="outline" className="flex-1 md:flex-none border-primary text-primary hover:bg-primary/5">
-                                <FileUp className="mr-2 h-4 w-4" /> Cargar Factura Gasto
-                            </Button>
-                        </DialogTrigger>
-                        <DialogContent className="max-w-[95vw] w-full max-h-[95vh] overflow-y-auto">
-                            <DialogHeader>
-                                <DialogTitle>Procesar Documento (OCR)</DialogTitle>
-                            </DialogHeader>
-                            <InvoiceUpload
-                                targetType="proveedor"
-                                onSuccess={fetchProveedores}
-                            />
-                        </DialogContent>
-                    </Dialog>
                     <Dialog open={isNewProvOpen} onOpenChange={setIsNewProvOpen}>
                         <DialogTrigger asChild>
                             <Button className="flex-1 md:flex-none">

@@ -4,11 +4,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Search, FileUp, ArrowRight, Plus, Loader2, MapPin, Trash2, Mail } from "lucide-react";
+import { Search, ArrowRight, Plus, Loader2, MapPin, Trash2, Mail } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { supabase } from "@/lib/supabase";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import InvoiceUpload from "@/components/InvoiceUpload";
 import { queueCollectionReminder } from "@/lib/internalAutomation";
 import { useCompany } from "@/contexts/CompanyContext";
 
@@ -20,7 +19,6 @@ export default function Clientes() {
     const [clientes, setClientes] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchQuery, setSearchQuery] = useState("");
-    const [isUploadOpen, setIsUploadOpen] = useState(false);
     const [isNewClienteOpen, setIsNewClienteOpen] = useState(false);
     const [isSavingCliente, setIsSavingCliente] = useState(false);
     const [newClienteData, setNewClienteData] = useState({
@@ -296,22 +294,6 @@ export default function Clientes() {
                     <p className="text-muted-foreground">Administra las cuentas corrientes y documentos de tus clínicas.</p>
                 </div>
                 <div className="flex gap-2 w-full md:w-auto">
-                    <Dialog open={isUploadOpen} onOpenChange={setIsUploadOpen}>
-                        <DialogTrigger asChild>
-                            <Button variant="outline" className="flex-1 md:flex-none border-primary text-primary hover:bg-primary/5">
-                                <FileUp className="mr-2 h-4 w-4" /> Cargar Factura/NC
-                            </Button>
-                        </DialogTrigger>
-                        <DialogContent className="max-w-[95vw] w-full max-h-[95vh] overflow-y-auto">
-                            <DialogHeader>
-                                <DialogTitle>Procesar Documento (OCR)</DialogTitle>
-                            </DialogHeader>
-                            <InvoiceUpload
-                                targetType="cliente"
-                                onSuccess={fetchClientes}
-                            />
-                        </DialogContent>
-                    </Dialog>
                     <Dialog open={isNewClienteOpen} onOpenChange={setIsNewClienteOpen}>
                         <DialogTrigger asChild>
                             <Button className="flex-1 md:flex-none">
