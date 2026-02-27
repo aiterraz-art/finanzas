@@ -15,7 +15,6 @@ import Rendiciones from "@/pages/Rendiciones";
 
 import ManualInvoiceEntry from "@/pages/ManualInvoiceEntry";
 import Users from "@/pages/Users";
-import Companies from "@/pages/Companies";
 
 import Login from "@/pages/Login";
 import ResetPassword from "@/pages/ResetPassword";
@@ -68,7 +67,7 @@ function App() {
                 <Route path="rendiciones" element={<Rendiciones />} />
                 <Route path="rendiciones/print/:id" element={<RendicionPrint />} />
                 <Route path="users" element={<Users />} />
-                <Route path="empresas" element={<Companies />} />
+                <Route path="empresas" element={<Navigate to="/users" replace />} />
                 <Route path="invoices/new" element={<ManualInvoiceEntry />} />
                 <Route path="facturas/nueva" element={<ManualInvoiceEntry />} />
                 <Route path="*" element={<Dashboard />} />
