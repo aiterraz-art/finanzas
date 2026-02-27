@@ -71,8 +71,8 @@ export default function Proveedores() {
 
     const handleCreateProvManual = async () => {
         if (!selectedEmpresaId) return;
-        if (!newProvData.rut || !newProvData.razon_social || !newProvData.direccion) {
-            alert("RUT, Razón Social y Dirección son obligatorios para registrar un nuevo proveedor.");
+        if (!newProvData.rut || !newProvData.razon_social || !newProvData.direccion || !newProvData.email || !newProvData.telefono) {
+            alert("RUT, Razón Social, Dirección, Email y Teléfono son obligatorios para registrar un nuevo proveedor.");
             return;
         }
 

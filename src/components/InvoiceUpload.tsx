@@ -51,6 +51,7 @@ export default function InvoiceUpload({ targetType, fixedTercero, onSuccess }: I
     const [clients, setClients] = useState<any[]>([]);
     const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
     const [isSaving, setIsSaving] = useState(false);
+    const [creatingTerceroId, setCreatingTerceroId] = useState<string | null>(null);
     const [isProcessingQueue, setIsProcessingQueue] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const queueRef = useRef<FileItem[]>(uploadQueue);
@@ -166,6 +167,81 @@ export default function InvoiceUpload({ targetType, fixedTercero, onSuccess }: I
         } catch (error: any) {
             console.error("Excepción al buscar tercero:", error);
             return null;
+        }
+    };
+
+    const createTerceroFromOCR = async (item: FileItem) => {
+        if (!selectedEmpresaId || !item.extractedData || fixedTercero) return;
+        const rawRut = item.extractedData.rut || "";
+        const cleanRut = rawRut.replace(/\./g, '').replace(/-/g, '').toUpperCase();
+        const razonSocial = (item.extractedData.tercero_nombre || "").trim();
+
+        if (!cleanRut || !razonSocial) {
+            alert("Para crear el tercero necesitas RUT y Razón Social.");
+            return;
+        }
+
+        setCreatingTerceroId(item.id);
+        try {
+            let tercero = null;
+            const insertPayload = {
+                empresa_id: selectedEmpresaId,
+                rut: cleanRut,
+                razon_social: razonSocial,
+                email: item.extractedData.email || null,
+                telefono: item.extractedData.telefono || null,
+                tipo: targetType === 'proveedor' ? 'proveedor' : 'cliente',
+                estado: 'activo',
+            };
+
+            const { data, error } = await supabase
+                .from('terceros')
+                .insert([insertPayload])
+                .select('*')
+                .single();
+
+            if (error) {
+                const { data: existing, error: existingError } = await supabase
+                    .from('terceros')
+                    .select('*')
+                    .eq('empresa_id', selectedEmpresaId)
+                    .eq('rut', cleanRut)
+                    .maybeSingle();
+                if (existingError || !existing) throw error;
+                tercero = existing;
+            } else {
+                tercero = data;
+            }
+
+            setUploadQueue(prev => prev.map((q) =>
+                q.id === item.id
+                    ? {
+                        ...q,
+                        terceroEncontrado: tercero,
+                        extractedData: {
+                            ...q.extractedData,
+                            rut: formatRut(tercero.rut),
+                            tercero_nombre: tercero.razon_social,
+                            email: tercero.email || q.extractedData?.email || "",
+                            telefono: tercero.telefono || q.extractedData?.telefono || "",
+                        },
+                    }
+                    : q
+            ));
+
+            if (item.extractedData.numero_documento) {
+                await checkInvoiceDuplicate(item.extractedData.numero_documento, tercero.id, item.id);
+            }
+
+            if (targetType === 'proveedor') {
+                await fetchProviders();
+            } else {
+                await fetchClients();
+            }
+        } catch (error: any) {
+            alert(`No se pudo crear el tercero: ${error.message}`);
+        } finally {
+            setCreatingTerceroId(null);
         }
     };
 
@@ -557,6 +633,23 @@ export default function InvoiceUpload({ targetType, fixedTercero, onSuccess }: I
                                                             <p className="text-sm font-bold text-slate-900 leading-tight">Acción Requerida</p>
                                                             <p className="text-xs text-slate-600 mt-1">Por favor, selecciona abajo el proveedor que emitió esta factura.</p>
                                                         </div>
+                                                    </div>
+                                                )}
+
+                                                {!fixedTercero && !currentItem.terceroEncontrado && currentItem.extractedData?.rut && currentItem.extractedData?.tercero_nombre && (
+                                                    <div className="mb-3">
+                                                        <Button
+                                                            type="button"
+                                                            variant="outline"
+                                                            className="w-full"
+                                                            disabled={creatingTerceroId === currentItem.id}
+                                                            onClick={() => createTerceroFromOCR(currentItem)}
+                                                        >
+                                                            {creatingTerceroId === currentItem.id
+                                                                ? <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                                                                : null}
+                                                            Crear {targetType === 'proveedor' ? 'Proveedor' : 'Cliente'} desde OCR
+                                                        </Button>
                                                     </div>
                                                 )}
 
