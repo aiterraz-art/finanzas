@@ -304,6 +304,89 @@ export default function BankReconciliation() {
         }).format(amount);
     };
 
+    const getLibroBancoRows = (rows: any[]) => {
+        return rows.map((txn) => {
+            const base: Record<string, any> = {
+                "N° Movimiento": txn.id_secuencial || "",
+                "Fecha": txn.fecha_movimiento || "",
+                "Descripción Movimiento": txn.descripcion || "",
+                "Salida Banco": Number(txn.salida_banco ?? (txn.monto < 0 ? Math.abs(txn.monto) : 0)),
+                "Entrada Banco": Number(txn.entrada_banco ?? (txn.monto > 0 ? txn.monto : 0)),
+                "Comentario Tesorería": txn.comentario_tesoreria || "",
+                "Estado": txn.estado || "",
+                "Tipo Conciliación": txn.tipo_conciliacion || "",
+                "Sucursal": txn.sucursal || "",
+                "N° Operación": txn.n_operacion || "",
+            };
+
+            customColumns.forEach((col) => {
+                base[col.nombre] = txn.columnas_extra?.[col.clave] ?? "";
+            });
+
+            return base;
+        });
+    };
+
+    const exportLibroBanco = () => {
+        const rows = getLibroBancoRows(filteredTransactions);
+        const ws = XLSX.utils.json_to_sheet(rows);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Libro Banco");
+        XLSX.writeFile(wb, `Libro_Banco_${new Date().toISOString().slice(0, 10)}.xlsx`);
+    };
+
+    const printLibroBanco = () => {
+        const rows = getLibroBancoRows(filteredTransactions);
+        const headers = Object.keys(rows[0] || {
+            "N° Movimiento": "",
+            "Fecha": "",
+            "Descripción Movimiento": "",
+            "Salida Banco": "",
+            "Entrada Banco": "",
+            "Comentario Tesorería": "",
+            "Estado": "",
+            "Tipo Conciliación": "",
+            "Sucursal": "",
+            "N° Operación": "",
+        });
+
+        const body = rows.map((row) => (
+            `<tr>${headers.map((h) => `<td>${row[h] ?? ""}</td>`).join("")}</tr>`
+        )).join("");
+
+        const html = `
+            <html>
+              <head>
+                <title>Libro Banco</title>
+                <style>
+                  body { font-family: Arial, sans-serif; padding: 24px; color: #0f172a; }
+                  h1 { margin: 0 0 4px; font-size: 20px; }
+                  p { margin: 0 0 16px; color: #64748b; font-size: 12px; }
+                  table { width: 100%; border-collapse: collapse; font-size: 11px; }
+                  th, td { border: 1px solid #cbd5e1; padding: 6px; text-align: left; vertical-align: top; }
+                  th { background: #f1f5f9; font-weight: 700; }
+                </style>
+              </head>
+              <body>
+                <h1>Libro Banco</h1>
+                <p>Fecha de impresión: ${new Date().toLocaleString('es-CL')}</p>
+                <table>
+                  <thead><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr></thead>
+                  <tbody>${body}</tbody>
+                </table>
+              </body>
+            </html>
+        `;
+
+        const w = window.open("", "_blank", "width=1200,height=800");
+        if (!w) return;
+        w.document.open();
+        w.document.write(html);
+        w.document.close();
+        w.focus();
+        w.print();
+    };
+
     const handleDeleteMovimiento = async (id: string) => {
         if (!selectedEmpresaId) return;
         if (!confirm("¿Estás seguro de que deseas eliminar este movimiento?")) return;
@@ -744,6 +827,12 @@ export default function BankReconciliation() {
                 <div className="flex gap-2">
                     <Button variant="outline" className="gap-2" onClick={fetchData}>
                         <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} /> Actualizar
+                    </Button>
+                    <Button variant="outline" className="gap-2" onClick={exportLibroBanco}>
+                        Exportar Libro Banco
+                    </Button>
+                    <Button variant="outline" className="gap-2" onClick={printLibroBanco}>
+                        Imprimir Libro Banco
                     </Button>
                     <input
                         type="file"
