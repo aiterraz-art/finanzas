@@ -17,6 +17,7 @@ import { useCompany } from "@/contexts/CompanyContext";
 export default function BankReconciliation() {
     const { selectedEmpresaId } = useCompany();
     const [transactions, setTransactions] = useState<any[]>([]);
+    const [customColumns, setCustomColumns] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [filter, setFilter] = useState("all");
     const [selectedTxn, setSelectedTxn] = useState<any>(null);
@@ -27,10 +28,16 @@ export default function BankReconciliation() {
     const [manualInvoices, setManualInvoices] = useState<any[]>([]);
     const [isImporting, setIsImporting] = useState(false);
     const [otherConceptReason, setOtherConceptReason] = useState("");
+    const [newColumnName, setNewColumnName] = useState("");
+    const [newColumnKey, setNewColumnKey] = useState("");
+    const [newColumnType, setNewColumnType] = useState("texto");
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
-        if (selectedEmpresaId) fetchData();
+        if (selectedEmpresaId) {
+            fetchData();
+            fetchCustomColumns();
+        }
     }, [selectedEmpresaId]);
 
     const fetchData = async () => {
@@ -63,6 +70,92 @@ export default function BankReconciliation() {
         } finally {
             setLoading(false);
         }
+    };
+
+    const fetchCustomColumns = async () => {
+        if (!selectedEmpresaId) return;
+        try {
+            const { data, error } = await supabase
+                .from('bank_import_column_configs')
+                .select('*')
+                .eq('empresa_id', selectedEmpresaId)
+                .eq('activa', true)
+                .order('created_at', { ascending: true });
+
+            if (error) throw error;
+            setCustomColumns(data || []);
+        } catch (error) {
+            console.error("Error fetching custom bank columns:", error);
+        }
+    };
+
+    const normalizeColumnKey = (input: string) => {
+        return input
+            .toLowerCase()
+            .trim()
+            .replace(/[^a-z0-9]+/g, "_")
+            .replace(/^_+|_+$/g, "");
+    };
+
+    const handleAddCustomColumn = async () => {
+        if (!selectedEmpresaId) return;
+        const nombre = newColumnName.trim();
+        const clave = normalizeColumnKey(newColumnKey || newColumnName);
+        if (!nombre || !clave) {
+            alert("Nombre y clave de columna son obligatorios.");
+            return;
+        }
+
+        try {
+            const { error } = await supabase.from('bank_import_column_configs').upsert([{
+                empresa_id: selectedEmpresaId,
+                nombre,
+                clave,
+                tipo: newColumnType,
+                activa: true,
+            }], { onConflict: 'empresa_id,clave' });
+
+            if (error) throw error;
+            setNewColumnName("");
+            setNewColumnKey("");
+            setNewColumnType("texto");
+            fetchCustomColumns();
+        } catch (error: any) {
+            alert(`Error al crear columna: ${error.message}`);
+        }
+    };
+
+    const handleSaveTreasurerComment = async (txnId: string, comment: string) => {
+        if (!selectedEmpresaId) return;
+        const { error } = await supabase
+            .from('movimientos_banco')
+            .update({ comentario_tesoreria: comment })
+            .eq('id', txnId)
+            .eq('empresa_id', selectedEmpresaId);
+
+        if (error) {
+            alert(`No se pudo guardar comentario: ${error.message}`);
+            return;
+        }
+
+        setTransactions((prev) => prev.map((t) => t.id === txnId ? { ...t, comentario_tesoreria: comment } : t));
+    };
+
+    const handleSaveExtraField = async (txn: any, key: string, value: string) => {
+        if (!selectedEmpresaId) return;
+        const nextExtra = { ...(txn.columnas_extra || {}), [key]: value };
+
+        const { error } = await supabase
+            .from('movimientos_banco')
+            .update({ columnas_extra: nextExtra })
+            .eq('id', txn.id)
+            .eq('empresa_id', selectedEmpresaId);
+
+        if (error) {
+            alert(`No se pudo guardar columna extra: ${error.message}`);
+            return;
+        }
+        setTransactions((prev) => prev.map((t) => t.id === txn.id ? { ...t, columnas_extra: nextExtra } : t));
     };
 
     // ... (keep existing helper functions like fetchSuggestions, handleManualSearch, etc. - I will need to be careful not to delete them if I'm not careful with replacement ranges, but here I am creating a large replacement for the render part mainly)
@@ -236,12 +329,17 @@ export default function BankReconciliation() {
 
     const handleOtherConceptReconciliation = async () => {
         if (!selectedTxn || !otherConceptReason.trim() || !selectedEmpresaId) return;
+        if (selectedTxn.monto > 0) {
+            alert("Los ingresos deben conciliarse con pagos de facturas de clientes.");
+            return;
+        }
         setIsMatching(true);
         try {
             await supabase
                 .from('movimientos_banco')
                 .update({
                     estado: 'conciliado',
+                    tipo_conciliacion: 'otros_egresos',
                     descripcion: `${selectedTxn.descripcion} [Otros: ${otherConceptReason}]`
                 })
                 .eq('id', selectedTxn.id)
@@ -262,12 +360,17 @@ export default function BankReconciliation() {
 
     const handleDirectReconciliation = async (_type: string, label: string) => {
         if (!selectedTxn || !selectedEmpresaId) return;
+        if (selectedTxn.monto > 0) {
+            alert("Los ingresos deben conciliarse contra facturas de clientes.");
+            return;
+        }
         setIsMatching(true);
         try {
             await supabase
                 .from('movimientos_banco')
                 .update({
                     estado: 'conciliado',
+                    tipo_conciliacion: _type,
                     descripcion: `${selectedTxn.descripcion} [${label}]`
                 })
                 .eq('id', selectedTxn.id)
@@ -322,7 +425,7 @@ export default function BankReconciliation() {
             // 3. Marcar el movimiento de banco como conciliado
             await supabase
                 .from('movimientos_banco')
-                .update({ estado: 'conciliado' })
+                .update({ estado: 'conciliado', tipo_conciliacion: isRendicion ? 'rendicion' : 'factura' })
                 .eq('id', selectedTxn.id)
                 .eq('empresa_id', selectedEmpresaId);
 
@@ -383,7 +486,7 @@ export default function BankReconciliation() {
 
             const { error: updateTxnError } = await supabase
                 .from('movimientos_banco')
-                .update({ estado: 'no_conciliado' })
+                .update({ estado: 'no_conciliado', tipo_conciliacion: null })
                 .eq('id', txn.id)
                 .eq('empresa_id', selectedEmpresaId);
             if (updateTxnError) throw updateTxnError;
@@ -489,18 +592,51 @@ export default function BankReconciliation() {
                         return parseFloat(cleaned) || 0;
                     };
 
+                    const entradaBanco = Math.abs(cleanNumber(abonoVal));
+                    const salidaBanco = Math.abs(cleanNumber(cargoVal));
                     let monto = 0;
                     if (montoGeneralVal !== undefined && montoGeneralVal !== 0 && montoGeneralVal !== "") {
                         // Si hay una columna general de monto, confiamos en su signo
                         monto = cleanNumber(montoGeneralVal);
                     } else {
                         // Si hay columnas separadas, restamos el cargo al abono (usando valor absoluto para no duplicar signos negativos)
-                        const cargo = Math.abs(cleanNumber(cargoVal));
-                        const abono = Math.abs(cleanNumber(abonoVal));
-                        monto = abono - cargo;
+                        monto = entradaBanco - salidaBanco;
                     }
 
                     const saldo = cleanNumber(saldoVal);
+                    const extraCols: Record<string, any> = {};
+                    Object.entries(row).forEach(([k, v]) => {
+                        const keyLower = k.toLowerCase();
+                        const isStandard =
+                            keyLower.includes('fecha') ||
+                            keyLower.includes('monto') ||
+                            keyLower.includes('valor') ||
+                            keyLower.includes('importe') ||
+                            keyLower.includes('cargos') ||
+                            keyLower.includes('cargo') ||
+                            keyLower.includes('abonos') ||
+                            keyLower.includes('abono') ||
+                            keyLower.includes('débito') ||
+                            keyLower.includes('debito') ||
+                            keyLower.includes('crédito') ||
+                            keyLower.includes('credito') ||
+                            keyLower.includes('saldo') ||
+                            keyLower.includes('descripción') ||
+                            keyLower.includes('description') ||
+                            keyLower.includes('detalle') ||
+                            keyLower.includes('concepto') ||
+                            keyLower.includes('sucursal') ||
+                            keyLower.includes('oficina') ||
+                            keyLower.includes('canal') ||
+                            keyLower.includes('operación') ||
+                            keyLower.includes('operacion') ||
+                            keyLower.includes('referencia') ||
+                            keyLower.includes('doc');
+
+                        if (!isStandard && v !== undefined && v !== null && String(v).trim() !== '') {
+                            extraCols[k] = v;
+                        }
+                    });
 
                     return {
                         fecha_movimiento: parseDate(fecha),
@@ -508,6 +644,10 @@ export default function BankReconciliation() {
                         sucursal: String(sucursal || "").trim(),
                         n_operacion: nOperacion,
                         monto,
+                        entrada_banco: entradaBanco,
+                        salida_banco: salidaBanco,
+                        comentario_tesoreria: null,
+                        columnas_extra: extraCols,
                         saldo,
                         estado: 'no_conciliado'
                     };
@@ -647,6 +787,33 @@ export default function BankReconciliation() {
                     <Button variant={filter === "egresos" ? "default" : "outline"} size="sm" onClick={() => setFilter("egresos")}>Egresos</Button>
                 </div>
 
+                <div className="rounded-lg border bg-card p-3">
+                    <p className="text-xs font-semibold uppercase text-muted-foreground mb-2">Columnas adicionales por empresa</p>
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                        <Input
+                            placeholder="Nombre columna (ej: Centro Costo)"
+                            value={newColumnName}
+                            onChange={(e) => setNewColumnName(e.target.value)}
+                        />
+                        <Input
+                            placeholder="Clave opcional (ej: centro_costo)"
+                            value={newColumnKey}
+                            onChange={(e) => setNewColumnKey(e.target.value)}
+                        />
+                        <select
+                            className="h-10 rounded-md border border-input bg-background px-3 text-sm"
+                            value={newColumnType}
+                            onChange={(e) => setNewColumnType(e.target.value)}
+                        >
+                            <option value="texto">Texto</option>
+                            <option value="numero">Número</option>
+                            <option value="fecha">Fecha</option>
+                            <option value="booleano">Booleano</option>
+                        </select>
+                        <Button onClick={handleAddCustomColumn}>Agregar Columna</Button>
+                    </div>
+                </div>
+
                 {loading ? (
                     <div className="flex justify-center py-20">
                         <Loader2 className="h-8 w-8 animate-spin text-primary" />
@@ -656,9 +823,15 @@ export default function BankReconciliation() {
                         <table className="w-full text-sm">
                             <thead className="bg-muted/50 border-b">
                                 <tr>
+                                    <th className="text-left p-3 font-semibold w-20">N° Mov.</th>
                                     <th className="text-left p-3 font-semibold w-24">Fecha</th>
-                                    <th className="text-left p-3 font-semibold">Descripción Movimiento</th>
-                                    <th className="text-right p-3 font-semibold w-32">Monto</th>
+                                    <th className="text-left p-3 font-semibold min-w-[260px]">Descripción Movimiento</th>
+                                    <th className="text-right p-3 font-semibold w-32">Salida Banco</th>
+                                    <th className="text-right p-3 font-semibold w-32">Entrada Banco</th>
+                                    <th className="text-left p-3 font-semibold min-w-[220px]">Comentario Tesorería</th>
+                                    {customColumns.map((col) => (
+                                        <th key={col.id} className="text-left p-3 font-semibold min-w-[180px]">{col.nombre}</th>
+                                    ))}
                                     <th className="text-left p-3 font-semibold w-64">Estado / Conciliación</th>
                                     <th className="p-3 w-10"></th>
                                 </tr>
@@ -684,10 +857,14 @@ export default function BankReconciliation() {
                                             }}>
                                                 <PopoverTrigger asChild>
                                                     <td className="p-3 align-top" onClick={() => fetchSuggestions(txn)}>
+                                                        <div className="font-bold text-xs">#{txn.id_secuencial || "-"}</div>
+                                                    </td>
+                                                </PopoverTrigger>
+
+                                                <td className="p-3 align-top" onClick={() => fetchSuggestions(txn)}>
                                                         <div className="font-mono text-xs text-muted-foreground">{txn.fecha_movimiento}</div>
                                                         {txn.n_operacion && <div className="text-[10px] text-muted-foreground">OP: {txn.n_operacion}</div>}
                                                     </td>
-                                                </PopoverTrigger>
 
                                                 <td className="p-3 align-top" onClick={() => fetchSuggestions(txn)}>
                                                     <div className="font-medium text-slate-700">{txn.descripcion}</div>
@@ -695,15 +872,44 @@ export default function BankReconciliation() {
                                                 </td>
 
                                                 <td className="p-3 align-top text-right" onClick={() => fetchSuggestions(txn)}>
-                                                    <div className={cn("font-bold", txn.monto > 0 ? "text-green-600" : "text-slate-900")}>
-                                                        {formatCurrency(txn.monto)}
+                                                    <div className="font-bold text-red-600">
+                                                        {formatCurrency(txn.salida_banco ?? (txn.monto < 0 ? Math.abs(txn.monto) : 0))}
                                                     </div>
-                                                    <Badge variant="outline" className={cn("text-[8px] h-4 px-1", txn.monto > 0 ? "text-green-600 border-green-200" : "text-red-600 border-red-200")}>
-                                                        {txn.monto > 0 ? "ABONO" : "CARGO"}
-                                                    </Badge>
                                                 </td>
 
+                                                <td className="p-3 align-top text-right" onClick={() => fetchSuggestions(txn)}>
+                                                    <div className="font-bold text-green-600">
+                                                        {formatCurrency(txn.entrada_banco ?? (txn.monto > 0 ? txn.monto : 0))}
+                                                    </div>
+                                                </td>
+
+                                                <td className="p-3 align-top">
+                                                    <Input
+                                                        defaultValue={txn.comentario_tesoreria || ""}
+                                                        placeholder="Comentario manual..."
+                                                        className="h-8 text-xs"
+                                                        onBlur={(e) => handleSaveTreasurerComment(txn.id, e.target.value)}
+                                                        onClick={(e) => e.stopPropagation()}
+                                                    />
+                                                </td>
+
+                                                {customColumns.map((col) => (
+                                                    <td key={`${txn.id}_${col.id}`} className="p-3 align-top">
+                                                        <Input
+                                                            defaultValue={txn.columnas_extra?.[col.clave] ?? ""}
+                                                            placeholder={col.clave}
+                                                            className="h-8 text-xs"
+                                                            onBlur={(e) => handleSaveExtraField(txn, col.clave, e.target.value)}
+                                                            onClick={(e) => e.stopPropagation()}
+                                                        />
+                                                    </td>
+                                                ))}
+
                                                 <td className="p-3 align-top" onClick={() => fetchSuggestions(txn)}>
+                                                    <div className="text-[10px] uppercase text-muted-foreground mb-1">
+                                                        Tipo: {txn.tipo_conciliacion || "pendiente"}
+                                                    </div>
+
                                                     {txn.estado === 'conciliado' ? (
                                                         <div className="space-y-1">
                                                             <Badge variant="default" className="bg-green-100 text-green-700 hover:bg-green-200 border-green-200 shadow-none">
@@ -804,69 +1010,73 @@ export default function BankReconciliation() {
                                                             </div>
                                                         )}
 
-                                                        <div className="space-y-2 mb-4 pt-2 border-t">
-                                                            <p className="text-[10px] font-bold text-muted-foreground uppercase">Rendiciones Disponibles:</p>
-                                                            {suggestedRendiciones.length > 0 ? (
-                                                                <div className="space-y-2">
-                                                                    {suggestedRendiciones.map((doc) => (
-                                                                        <div key={doc.id} className="border rounded-lg p-3 bg-white shadow-sm border-orange-100 transition-colors hover:bg-orange-50">
-                                                                            <div className="flex justify-between items-center mb-1">
-                                                                                <span className="font-bold text-xs">Rendición</span>
-                                                                                <span className="font-bold text-orange-600 text-xs">{formatCurrency(doc.monto)}</span>
-                                                                            </div>
-                                                                            <p className="text-[11px] text-slate-900 font-semibold mb-2">{doc.terceros?.razon_social || 'Desconocido'}</p>
-                                                                            <Button
-                                                                                size="sm"
-                                                                                className="w-full bg-orange-600 hover:bg-orange-700 h-7 text-[10px]"
-                                                                                onClick={() => handleConfirmMatch(doc)}
-                                                                                disabled={isMatching}
-                                                                            >
-                                                                                {isMatching ? <Loader2 className="h-3 w-3 animate-spin" /> : <><Check className="w-3 h-3 mr-1" /> Vincular Rendición</>}
-                                                                            </Button>
+                                                        {txn.monto < 0 && (
+                                                            <>
+                                                                <div className="space-y-2 mb-4 pt-2 border-t">
+                                                                    <p className="text-[10px] font-bold text-muted-foreground uppercase">Rendiciones Disponibles:</p>
+                                                                    {suggestedRendiciones.length > 0 ? (
+                                                                        <div className="space-y-2">
+                                                                            {suggestedRendiciones.map((doc) => (
+                                                                                <div key={doc.id} className="border rounded-lg p-3 bg-white shadow-sm border-orange-100 transition-colors hover:bg-orange-50">
+                                                                                    <div className="flex justify-between items-center mb-1">
+                                                                                        <span className="font-bold text-xs">Rendición</span>
+                                                                                        <span className="font-bold text-orange-600 text-xs">{formatCurrency(doc.monto)}</span>
+                                                                                    </div>
+                                                                                    <p className="text-[11px] text-slate-900 font-semibold mb-2">{doc.terceros?.razon_social || 'Desconocido'}</p>
+                                                                                    <Button
+                                                                                        size="sm"
+                                                                                        className="w-full bg-orange-600 hover:bg-orange-700 h-7 text-[10px]"
+                                                                                        onClick={() => handleConfirmMatch(doc)}
+                                                                                        disabled={isMatching}
+                                                                                    >
+                                                                                        {isMatching ? <Loader2 className="h-3 w-3 animate-spin" /> : <><Check className="w-3 h-3 mr-1" /> Vincular Rendición</>}
+                                                                                    </Button>
+                                                                                </div>
+                                                                            ))}
                                                                         </div>
-                                                                    ))}
+                                                                    ) : (
+                                                                        <div className="p-3 bg-slate-50 border border-dashed rounded-lg text-center">
+                                                                            <p className="text-[10px] text-muted-foreground italic">No hay rendiciones pendientes para este monto.</p>
+                                                                        </div>
+                                                                    )}
                                                                 </div>
-                                                            ) : (
-                                                                <div className="p-3 bg-slate-50 border border-dashed rounded-lg text-center">
-                                                                    <p className="text-[10px] text-muted-foreground italic">No hay rendiciones pendientes para este monto.</p>
+
+                                                                <div className="space-y-2 mb-4 pt-2 border-t">
+                                                                    <p className="text-[10px] font-bold text-muted-foreground uppercase">Conciliación Directa:</p>
+                                                                    <div className="grid grid-cols-2 gap-2">
+                                                                        <Button
+                                                                            variant="outline"
+                                                                            size="sm"
+                                                                            className="w-full text-xs h-8 border-dashed"
+                                                                            onClick={() => handleDirectReconciliation('remuneraciones', 'Remuneraciones')}
+                                                                        >
+                                                                            Remuneraciones
+                                                                        </Button>
+                                                                    </div>
                                                                 </div>
-                                                            )}
-                                                        </div>
 
-                                                        <div className="space-y-2 mb-4 pt-2 border-t">
-                                                            <p className="text-[10px] font-bold text-muted-foreground uppercase">Conciliación Directa:</p>
-                                                            <div className="grid grid-cols-2 gap-2">
-                                                                <Button
-                                                                    variant="outline"
-                                                                    size="sm"
-                                                                    className="w-full text-xs h-8 border-dashed"
-                                                                    onClick={() => handleDirectReconciliation('remuneracion', 'Remuneración')}
-                                                                >
-                                                                    Remuneraciones
-                                                                </Button>
-                                                            </div>
-                                                        </div>
-
-                                                        <div className="space-y-2 mb-4 pt-2 border-t">
-                                                            <p className="text-[10px] font-bold text-muted-foreground uppercase">Otros Conceptos:</p>
-                                                            <div className="flex gap-2">
-                                                                <Input
-                                                                    placeholder="Razón del gasto (ej. Taxi, Materiales...)"
-                                                                    className="h-8 text-xs"
-                                                                    value={otherConceptReason}
-                                                                    onChange={(e) => setOtherConceptReason(e.target.value)}
-                                                                    onKeyDown={(e) => e.key === 'Enter' && handleOtherConceptReconciliation()}
-                                                                />
-                                                                <Button
-                                                                    size="sm"
-                                                                    className="h-8 bg-blue-600 hover:bg-blue-700"
-                                                                    onClick={handleOtherConceptReconciliation}
-                                                                    disabled={!otherConceptReason.trim() || isMatching}
-                                                                >
-                                                                    {isMatching ? <Loader2 className="w-3 h-3 animate-spin" /> : "OK"}
-                                                                </Button>
-                                                            </div>
-                                                        </div>
+                                                                <div className="space-y-2 mb-4 pt-2 border-t">
+                                                                    <p className="text-[10px] font-bold text-muted-foreground uppercase">Otros Conceptos:</p>
+                                                                    <div className="flex gap-2">
+                                                                        <Input
+                                                                            placeholder="Razón del gasto (ej. Taxi, Materiales...)"
+                                                                            className="h-8 text-xs"
+                                                                            value={otherConceptReason}
+                                                                            onChange={(e) => setOtherConceptReason(e.target.value)}
+                                                                            onKeyDown={(e) => e.key === 'Enter' && handleOtherConceptReconciliation()}
+                                                                        />
+                                                                        <Button
+                                                                            size="sm"
+                                                                            className="h-8 bg-blue-600 hover:bg-blue-700"
+                                                                            onClick={handleOtherConceptReconciliation}
+                                                                            disabled={!otherConceptReason.trim() || isMatching}
+                                                                        >
+                                                                            {isMatching ? <Loader2 className="w-3 h-3 animate-spin" /> : "OK"}
+                                                                        </Button>
+                                                                    </div>
+                                                                </div>
+                                                            </>
+                                                        )}
 
                                                         <div className="space-y-2">
                                                             <p className="text-[10px] font-bold text-muted-foreground uppercase">Búsqueda Manual:</p>
