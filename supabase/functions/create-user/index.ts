@@ -7,7 +7,6 @@ const corsHeaders = {
 
 type CreateUserPayload = {
   email: string;
-  role?: "user" | "admin";
   full_name?: string;
   phone?: string;
   job_title?: string;
@@ -70,7 +69,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const role = payload.role === "admin" ? "admin" : "user";
+    const role = "user";
     const password = generatePassword();
     const adminClient = createClient(supabaseUrl, serviceRoleKey);
 

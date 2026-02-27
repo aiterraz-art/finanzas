@@ -3,7 +3,6 @@ import { supabase } from "@/lib/supabase";
 type InviteRole = "user" | "admin";
 type CreateUserPayload = {
   email: string;
-  role: InviteRole;
   full_name?: string;
   phone?: string;
   job_title?: string;

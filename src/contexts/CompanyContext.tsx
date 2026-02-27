@@ -9,7 +9,7 @@ type Empresa = {
   activa: boolean;
 };
 
-type MembershipRole = 'owner' | 'admin' | 'manager' | 'user' | 'viewer' | null;
+type MembershipRole = 'admin' | 'user' | 'viewer' | null;
 
 type CompanyContextType = {
   empresas: Empresa[];
@@ -32,8 +32,6 @@ const CompanyContext = createContext<CompanyContextType>({
   setSelectedEmpresaId: () => {},
   refreshCompanies: async () => {},
 });
-
-const allowedRoles = ['owner', 'admin', 'manager', 'user', 'viewer'] as const;
 
 export const CompanyProvider = ({ children }: { children: React.ReactNode }) => {
   const { user } = useAuth();
@@ -75,7 +73,7 @@ export const CompanyProvider = ({ children }: { children: React.ReactNode }) => 
         const allEmpresas = (empresasData || []) as Empresa[];
         const roleMap: Record<string, MembershipRole> = {};
         for (const row of membershipData || []) {
-          roleMap[row.empresa_id] = allowedRoles.includes(row.role) ? row.role : 'admin';
+          roleMap[row.empresa_id] = row.role === 'viewer' ? 'viewer' : 'user';
         }
 
         setEmpresas(allEmpresas);
@@ -99,7 +97,7 @@ export const CompanyProvider = ({ children }: { children: React.ReactNode }) => 
 
         const roleMap: Record<string, MembershipRole> = {};
         for (const row of allowedRows as any[]) {
-          roleMap[row.empresa_id] = allowedRoles.includes(row.role) ? row.role : 'user';
+          roleMap[row.empresa_id] = row.role === 'viewer' ? 'viewer' : 'user';
         }
 
         setEmpresas(scopedEmpresas);

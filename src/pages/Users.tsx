@@ -36,8 +36,8 @@ import { createUserInternal } from '@/lib/internalAutomation';
 import { useCompany } from '@/contexts/CompanyContext';
 import { useAuth } from '@/contexts/AuthContext';
 
-const COMPANY_ROLES = ['owner', 'admin', 'manager', 'user', 'viewer'] as const;
-type CompanyRole = typeof COMPANY_ROLES[number];
+const ASSIGNABLE_COMPANY_ROLES = ['user', 'viewer'] as const;
+type CompanyRole = typeof ASSIGNABLE_COMPANY_ROLES[number];
 
 type CompanyForm = {
     id?: string;
@@ -72,7 +72,6 @@ const EMPTY_COMPANY_FORM: CompanyForm = {
 
 type NewUserForm = {
     email: string;
-    role: "user" | "admin";
     full_name: string;
     phone: string;
     job_title: string;
@@ -81,7 +80,6 @@ type NewUserForm = {
 
 const EMPTY_NEW_USER_FORM: NewUserForm = {
     email: "",
-    role: "user",
     full_name: "",
     phone: "",
     job_title: "",
@@ -173,8 +171,10 @@ export default function Users() {
 
             const roleMap: Record<string, CompanyRole> = {};
             for (const row of membershipData || []) {
-                if (COMPANY_ROLES.includes(row.role)) {
-                    roleMap[row.user_id] = row.role;
+                if (row.role === 'viewer') {
+                    roleMap[row.user_id] = 'viewer';
+                } else {
+                    roleMap[row.user_id] = 'user';
                 }
             }
 
@@ -193,7 +193,6 @@ export default function Users() {
         try {
             const created = await createUserInternal({
                 email: newUserForm.email.trim(),
-                role: newUserForm.role,
                 full_name: newUserForm.full_name.trim() || undefined,
                 phone: newUserForm.phone.trim() || undefined,
                 job_title: newUserForm.job_title.trim() || undefined,
@@ -628,16 +627,8 @@ export default function Users() {
                                     />
                                 </div>
                                 <div className="grid gap-2">
-                                    <Label htmlFor="new-user-role">Rol Global</Label>
-                                    <Select value={newUserForm.role} onValueChange={(value) => setNewUserForm({ ...newUserForm, role: value as "user" | "admin" })}>
-                                        <SelectTrigger id="new-user-role">
-                                            <SelectValue placeholder="Selecciona un rol" />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="user">Usuario</SelectItem>
-                                            <SelectItem value="admin">Administrador</SelectItem>
-                                        </SelectContent>
-                                    </Select>
+                                    <Label>Rol Global</Label>
+                                    <Input value="user" readOnly />
                                 </div>
                                 <div className="grid gap-2 md:col-span-2">
                                     <Label htmlFor="new-user-company-role">Permiso en Empresa Activa ({selectedEmpresa?.nombre || 'Sin empresa'})</Label>
@@ -650,7 +641,7 @@ export default function Users() {
                                             <SelectValue placeholder="Selecciona permiso" />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            {COMPANY_ROLES.map((role) => (
+                                            {ASSIGNABLE_COMPANY_ROLES.map((role) => (
                                                 <SelectItem key={role} value={role}>
                                                     {role}
                                                 </SelectItem>
@@ -759,7 +750,7 @@ export default function Users() {
                                                                 <SelectValue placeholder="Sin acceso" />
                                                             </SelectTrigger>
                                                             <SelectContent>
-                                                                {COMPANY_ROLES.map((role) => (
+                                                                {ASSIGNABLE_COMPANY_ROLES.map((role) => (
                                                                     <SelectItem key={role} value={role}>
                                                                         {role}
                                                                     </SelectItem>
