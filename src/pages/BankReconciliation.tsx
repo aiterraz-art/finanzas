@@ -76,15 +76,24 @@ type BankMovement = {
     facturas?: { numero_documento: string | null }[] | null;
     terceros?: { razon_social: string | null }[] | null;
   }>;
+  cash_commitments?: Array<{
+    id: string;
+    description: string;
+    counterparty: string | null;
+    amount: number;
+    status: string;
+    estado_previo_conciliacion: string | null;
+  }>;
 };
 
 type MatchCandidate = {
   id: string;
-  type: "factura" | "rendicion" | "cheque" | "webpay";
+  type: "factura" | "rendicion" | "cheque" | "webpay" | "commitment";
   label: string;
   subtitle: string;
   amount: number;
   dueDate: string | null;
+  status?: string | null;
 };
 
 type ImportSummary = {
@@ -179,6 +188,14 @@ export default function BankReconciliation() {
             monto_neto,
             facturas (numero_documento),
             terceros (razon_social)
+          ),
+          cash_commitments (
+            id,
+            description,
+            counterparty,
+            amount,
+            status,
+            estado_previo_conciliacion
           )
         `)
         .eq("empresa_id", selectedEmpresaId)
@@ -233,7 +250,13 @@ export default function BankReconciliation() {
             .eq("tipo", "compra")
             .in("estado", ["pendiente", "morosa"]);
 
-      const [{ data: invoices, error: invoiceError }, { data: rendiciones, error: rendicionError }, { data: cheques, error: chequesError }, { data: webpayRows, error: webpayError }] =
+      const [
+        { data: invoices, error: invoiceError },
+        { data: rendiciones, error: rendicionError },
+        { data: cheques, error: chequesError },
+        { data: webpayRows, error: webpayError },
+        { data: commitments, error: commitmentsError },
+      ] =
         await Promise.all([
           invoiceQuery.order("fecha_vencimiento", { ascending: true }),
           txn.monto < 0
@@ -260,12 +283,23 @@ export default function BankReconciliation() {
                 .eq("estado", "pendiente")
                 .order("fecha_abono_esperada", { ascending: true })
             : Promise.resolve({ data: [], error: null }),
+          txn.monto < 0
+            ? supabase
+                .from("cash_commitments")
+                .select("id, description, counterparty, amount, expected_date, status, bank_account_id, notes")
+                .eq("empresa_id", selectedEmpresaId)
+                .eq("direction", "outflow")
+                .in("status", ["planned", "confirmed", "deferred"])
+                .or(`bank_account_id.eq.${selectedAccountId},bank_account_id.is.null`)
+                .order("expected_date", { ascending: true })
+            : Promise.resolve({ data: [], error: null }),
         ]);
 
       if (invoiceError) throw invoiceError;
       if (rendicionError) throw rendicionError;
       if (chequesError) throw chequesError;
       if (webpayError) throw webpayError;
+      if (commitmentsError) throw commitmentsError;
 
       const nextCandidates: MatchCandidate[] = [
         ...(invoices || []).map((invoice: any) => ({
@@ -304,6 +338,15 @@ export default function BankReconciliation() {
             dueDate: row.fecha_abono_esperada || null,
           };
         }),
+        ...((commitments || []) as any[]).map((commitment) => ({
+          id: commitment.id,
+          type: "commitment" as const,
+          label: `${commitment.counterparty || "Sin contraparte"} • ${commitment.description || "Compromiso"}`,
+          subtitle: "Egreso manual / compromiso",
+          amount: Number(commitment.amount),
+          dueDate: commitment.expected_date || null,
+          status: commitment.status || null,
+        })),
       ].sort((a, b) => Math.abs(absAmount - a.amount) - Math.abs(absAmount - b.amount));
 
       setCandidates(nextCandidates);
@@ -343,9 +386,11 @@ export default function BankReconciliation() {
                 ? "cheque"
                 : candidate.type === "webpay"
                   ? "webpay"
+                  : candidate.type === "commitment"
+                    ? "commitment"
                   : "factura",
           numero_documento:
-            candidate.type === "cheque" || candidate.type === "webpay"
+            candidate.type === "cheque" || candidate.type === "webpay" || candidate.type === "commitment"
               ? candidate.label
               : candidate.type === "factura"
                 ? candidate.label
@@ -391,6 +436,17 @@ export default function BankReconciliation() {
           .eq("id", candidate.id)
           .eq("empresa_id", selectedEmpresaId);
         if (error) throw error;
+      } else if (candidate.type === "commitment") {
+        const { error } = await supabase
+          .from("cash_commitments")
+          .update({
+            status: "paid",
+            estado_previo_conciliacion: candidate.status || "planned",
+            movimiento_banco_id: selectedTxn.id,
+          })
+          .eq("id", candidate.id)
+          .eq("empresa_id", selectedEmpresaId);
+        if (error) throw error;
       }
 
       setSelectedTxn(null);
@@ -410,7 +466,8 @@ export default function BankReconciliation() {
     const payments = (txn.facturas_pagos || []).filter((payment) => payment.estado !== "revertido");
     const linkedCheque = txn.cheques_cartera?.[0];
     const linkedWebpay = txn.webpay_liquidaciones?.[0];
-    if (payments.length === 0 && !linkedCheque && !linkedWebpay) return;
+    const linkedCommitment = txn.cash_commitments?.[0];
+    if (payments.length === 0 && !linkedCheque && !linkedWebpay && !linkedCommitment) return;
 
     try {
       const facturaIds = payments.map((payment) => payment.factura_id).filter(Boolean) as string[];
@@ -460,6 +517,19 @@ export default function BankReconciliation() {
             movimiento_banco_id: null,
           })
           .eq("id", linkedWebpay.id)
+          .eq("empresa_id", selectedEmpresaId);
+        if (error) throw error;
+      }
+
+      if (linkedCommitment) {
+        const { error } = await supabase
+          .from("cash_commitments")
+          .update({
+            status: linkedCommitment.estado_previo_conciliacion || "planned",
+            estado_previo_conciliacion: null,
+            movimiento_banco_id: null,
+          })
+          .eq("id", linkedCommitment.id)
           .eq("empresa_id", selectedEmpresaId);
         if (error) throw error;
       }
@@ -844,6 +914,7 @@ export default function BankReconciliation() {
                 const rendicionInfo = Array.isArray(payment?.rendiciones) ? payment.rendiciones[0] : payment?.rendiciones;
                 const chequeInfo = txn.cheques_cartera?.[0];
                 const webpayInfo = txn.webpay_liquidaciones?.[0];
+                const commitmentInfo = txn.cash_commitments?.[0];
                 const webpayClient = Array.isArray(webpayInfo?.terceros) ? webpayInfo?.terceros[0] : webpayInfo?.terceros;
                 const webpayInvoice = Array.isArray(webpayInfo?.facturas) ? webpayInfo?.facturas[0] : webpayInfo?.facturas;
                 return (
@@ -879,6 +950,11 @@ export default function BankReconciliation() {
                             Orden {webpayInfo.orden_compra}
                             {webpayInvoice?.numero_documento ? ` • Factura ${webpayInvoice.numero_documento}` : ""}
                           </div>
+                        </div>
+                      ) : commitmentInfo ? (
+                        <div>
+                          <div className="font-medium">{commitmentInfo.counterparty || "Compromiso conciliado"}</div>
+                          <div className="text-xs text-muted-foreground">{commitmentInfo.description || "Sin detalle"}</div>
                         </div>
                       ) : (
                         <span className="text-muted-foreground">Pendiente</span>
@@ -963,7 +1039,9 @@ export default function BankReconciliation() {
                             ? "Rendición"
                             : candidate.type === "cheque"
                               ? "Cheque"
-                              : "WebPay"}
+                              : candidate.type === "webpay"
+                                ? "WebPay"
+                                : "Compromiso"}
                       </div>
                     </div>
                   </div>
