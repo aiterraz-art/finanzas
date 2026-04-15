@@ -24,11 +24,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     useEffect(() => {
         let isMounted = true;
         let authCheckCounter = 0;
-        const loadingTimeout = setTimeout(() => {
-            if (isMounted) {
-                setLoading(false);
-            }
-        }, 7000);
 
         const resolveActiveSession = async (nextSession: Session | null) => {
             if (!nextSession?.user) {
@@ -92,7 +87,6 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
         return () => {
             isMounted = false;
-            clearTimeout(loadingTimeout);
             subscription.unsubscribe();
         };
     }, []);
