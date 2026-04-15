@@ -23,50 +23,43 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     useEffect(() => {
         let isMounted = true;
-        let authCheckCounter = 0;
+        let profileValidationCounter = 0;
 
-        const resolveActiveSession = async (nextSession: Session | null) => {
-            if (!nextSession?.user) {
-                return { session: null, user: null };
-            }
+        const validateActiveProfile = async (nextSession: Session | null) => {
+            if (!nextSession?.user) return;
 
-            const currentCheck = ++authCheckCounter;
+            const currentValidation = ++profileValidationCounter;
             const { data: profile, error } = await supabase
                 .from('profiles')
                 .select('activo')
                 .eq('id', nextSession.user.id)
                 .maybeSingle();
 
-            if (currentCheck !== authCheckCounter) {
-                return { session: null, user: null };
-            }
+            if (!isMounted || currentValidation !== profileValidationCounter) return;
 
             if (error) {
                 console.error("Error validating active profile:", error);
-                return { session: nextSession, user: nextSession.user };
+                return;
             }
 
             if (profile && profile.activo === false) {
                 await supabase.auth.signOut();
-                return { session: null, user: null };
             }
-
-            return { session: nextSession, user: nextSession.user };
         };
 
-        const applyResolvedSession = async (nextSession: Session | null) => {
-            const resolved = await resolveActiveSession(nextSession);
+        const applySession = (nextSession: Session | null) => {
             if (!isMounted) return;
-            setSession(resolved.session);
-            setUser(resolved.user);
+            setSession(nextSession);
+            setUser(nextSession?.user ?? null);
             setLoading(false);
+            void validateActiveProfile(nextSession);
         };
 
         // Obtenemos la sesión inicial
         supabase.auth.getSession()
-            .then(async ({ data: { session } }) => {
+            .then(({ data: { session } }) => {
                 if (!isMounted) return;
-                await applyResolvedSession(session);
+                applySession(session);
             })
             .catch((error) => {
                 console.error("Error getting initial session:", error);
@@ -81,7 +74,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
             if (!isMounted) return;
             window.setTimeout(() => {
-                void applyResolvedSession(nextSession);
+                applySession(nextSession);
             }, 0);
         });
 
