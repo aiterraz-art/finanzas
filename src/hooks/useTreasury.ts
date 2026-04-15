@@ -267,6 +267,7 @@ export const useCashCommitments = (empresaId: string | null) =>
         `)
         .eq("empresa_id", resolvedEmpresaId)
         .eq("direction", "outflow")
+        .is("archived_at", null)
         .order("expected_date", { ascending: true })
         .order("created_at", { ascending: false });
       if (error) throw error;

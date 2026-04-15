@@ -12,6 +12,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -38,8 +40,9 @@ import {
   formatTreasuryDate,
   normalizeBankImportRow,
 } from "@/lib/treasury";
-import { useBankAccountPositions, useBankAccounts } from "@/hooks/useTreasury";
+import { useBankAccountPositions, useBankAccounts, useTreasuryCategories } from "@/hooks/useTreasury";
 import { cn } from "@/lib/utils";
+import type { TreasuryPriority } from "@/lib/treasury";
 
 type BankMovement = {
   id: string;
@@ -82,6 +85,8 @@ type BankMovement = {
     counterparty: string | null;
     amount: number;
     status: string;
+    source_type: string;
+    archived_at: string | null;
     estado_previo_conciliacion: string | null;
   }>;
 };
@@ -108,6 +113,27 @@ type ImportSummary = {
 const HASH_QUERY_CHUNK = 20;
 const INSERT_CHUNK_SIZE = 200;
 
+type QuickExpenseForm = {
+  description: string;
+  counterparty: string;
+  categoryId: string;
+  priority: TreasuryPriority;
+  notes: string;
+  isRecurring: boolean;
+  frequency: "weekly" | "biweekly" | "monthly" | "quarterly" | "annual";
+};
+
+const addFrequencyStep = (baseDate: string, frequency: QuickExpenseForm["frequency"]) => {
+  const next = new Date(`${baseDate}T12:00:00`);
+  if (Number.isNaN(next.getTime())) return baseDate;
+  if (frequency === "weekly") next.setDate(next.getDate() + 7);
+  if (frequency === "biweekly") next.setDate(next.getDate() + 14);
+  if (frequency === "monthly") next.setMonth(next.getMonth() + 1);
+  if (frequency === "quarterly") next.setMonth(next.getMonth() + 3);
+  if (frequency === "annual") next.setFullYear(next.getFullYear() + 1);
+  return next.toISOString().split("T")[0];
+};
+
 export default function BankReconciliation() {
   const { selectedEmpresaId, selectedRole } = useCompany();
   const { user } = useAuth();
@@ -125,12 +151,27 @@ export default function BankReconciliation() {
   const [candidates, setCandidates] = useState<MatchCandidate[]>([]);
   const [loadingCandidates, setLoadingCandidates] = useState(false);
   const [matchingId, setMatchingId] = useState<string | null>(null);
+  const [quickExpenseForm, setQuickExpenseForm] = useState<QuickExpenseForm>({
+    description: "",
+    counterparty: "",
+    categoryId: "",
+    priority: "normal",
+    notes: "",
+    isRecurring: false,
+    frequency: "monthly",
+  });
+  const [savingQuickExpense, setSavingQuickExpense] = useState(false);
 
   const { data: bankAccounts, refresh: refreshBankAccounts } = useBankAccounts(selectedEmpresaId);
   const { data: bankPositions, refresh: refreshPositions } = useBankAccountPositions(selectedEmpresaId);
+  const { data: categories } = useTreasuryCategories(selectedEmpresaId);
 
   const selectedAccount = bankAccounts.find((account) => account.id === selectedAccountId) || null;
   const selectedPosition = bankPositions.find((position) => position.bankAccountId === selectedAccountId) || null;
+  const outflowCategories = useMemo(
+    () => categories.filter((category) => category.active && category.directionScope !== "inflow"),
+    [categories]
+  );
 
   useEffect(() => {
     if (!selectedAccountId && bankAccounts.length > 0) {
@@ -147,6 +188,19 @@ export default function BankReconciliation() {
       setLatestImport(null);
     }
   }, [selectedEmpresaId, selectedAccountId]);
+
+  useEffect(() => {
+    if (!selectedTxn || selectedTxn.monto >= 0) return;
+    setQuickExpenseForm({
+      description: selectedTxn.descripcion || "",
+      counterparty: "",
+      categoryId: "",
+      priority: "normal",
+      notes: "",
+      isRecurring: false,
+      frequency: "monthly",
+    });
+  }, [selectedTxn]);
 
   const fetchTransactions = async () => {
     if (!selectedEmpresaId || !selectedAccountId) return;
@@ -195,6 +249,8 @@ export default function BankReconciliation() {
             counterparty,
             amount,
             status,
+            source_type,
+            archived_at,
             estado_previo_conciliacion
           )
         `)
@@ -290,6 +346,7 @@ export default function BankReconciliation() {
                 .eq("empresa_id", selectedEmpresaId)
                 .eq("direction", "outflow")
                 .in("status", ["planned", "confirmed", "deferred"])
+                .is("archived_at", null)
                 .or(`bank_account_id.eq.${selectedAccountId},bank_account_id.is.null`)
                 .order("expected_date", { ascending: true })
             : Promise.resolve({ data: [], error: null }),
@@ -563,6 +620,149 @@ export default function BankReconciliation() {
     } catch (error: any) {
       console.error("Error undoing reconciliation:", error);
       alert(`No se pudo deshacer la conciliación: ${error.message}`);
+    }
+  };
+
+  const handleArchiveLinkedManualExpense = async (txn: BankMovement) => {
+    if (!selectedEmpresaId || !canEdit || !user?.id) return;
+    const linkedCommitment = txn.cash_commitments?.[0];
+    if (!linkedCommitment || linkedCommitment.source_type !== "manual" || linkedCommitment.archived_at) return;
+
+    const confirmed = window.confirm(
+      "Se archivará el egreso manual y el movimiento quedará no conciliado. El registro histórico se conserva."
+    );
+    if (!confirmed) return;
+
+    try {
+      const { error: movementError } = await supabase
+        .from("movimientos_banco")
+        .update({ estado: "no_conciliado", tipo_conciliacion: null, numero_documento: null })
+        .eq("id", txn.id)
+        .eq("empresa_id", selectedEmpresaId);
+      if (movementError) throw movementError;
+
+      const { error: commitmentError } = await supabase
+        .from("cash_commitments")
+        .update({
+          status: "cancelled",
+          movimiento_banco_id: null,
+          estado_previo_conciliacion: null,
+          archived_at: new Date().toISOString(),
+          archived_by: user.id,
+          archive_reason: "Archivado desde conciliación bancaria",
+        })
+        .eq("id", linkedCommitment.id)
+        .eq("empresa_id", selectedEmpresaId)
+        .is("archived_at", null);
+      if (commitmentError) throw commitmentError;
+
+      await fetchTransactions();
+      await refreshPositions();
+    } catch (error: any) {
+      console.error("Error archiving linked manual expense:", error);
+      alert(`No se pudo archivar el egreso manual: ${error.message}`);
+    }
+  };
+
+  const handleQuickExpenseMatch = async () => {
+    if (!selectedEmpresaId || !selectedTxn || selectedTxn.monto >= 0 || !canEdit) return;
+    if (!quickExpenseForm.description.trim() || !quickExpenseForm.categoryId) {
+      alert("Descripción y categoría son obligatorias para la conciliación rápida.");
+      return;
+    }
+
+    setSavingQuickExpense(true);
+    try {
+      const category = outflowCategories.find((item) => item.id === quickExpenseForm.categoryId) || null;
+      const sourceType =
+        category?.code === "taxes"
+          ? "tax"
+          : category?.code === "payroll"
+            ? "payroll"
+            : category?.code === "capex"
+              ? "capex"
+              : "manual";
+      const templatePayload = quickExpenseForm.isRecurring
+        ? {
+            empresa_id: selectedEmpresaId,
+            category_id: quickExpenseForm.categoryId,
+            bank_account_id: selectedAccountId || null,
+            obligation_type: sourceType === "tax" || sourceType === "payroll" || sourceType === "capex" ? sourceType : "recurring",
+            description: quickExpenseForm.description.trim(),
+            counterparty: quickExpenseForm.counterparty.trim() || null,
+            frequency: quickExpenseForm.frequency,
+            default_amount: Math.abs(selectedTxn.monto),
+            requires_amount_confirmation: false,
+            priority: quickExpenseForm.priority,
+            active: true,
+            next_due_date: addFrequencyStep(selectedTxn.fecha_movimiento, quickExpenseForm.frequency),
+          }
+        : null;
+
+      let templateId: string | null = null;
+      if (templatePayload) {
+        const { data: createdTemplate, error: templateError } = await supabase
+          .from("cash_commitment_templates")
+          .insert(templatePayload)
+          .select("id")
+          .single();
+        if (templateError) throw templateError;
+        templateId = createdTemplate.id;
+      }
+
+      const commitmentLabel = quickExpenseForm.counterparty.trim() || quickExpenseForm.description.trim();
+      const { data: createdCommitment, error: commitmentError } = await supabase
+        .from("cash_commitments")
+        .insert({
+          empresa_id: selectedEmpresaId,
+          template_id: templateId,
+          bank_account_id: selectedAccountId || null,
+          category_id: quickExpenseForm.categoryId,
+          source_type: sourceType,
+          source_reference: `bank-reconciliation:${selectedTxn.id}`,
+          direction: "outflow",
+          counterparty: quickExpenseForm.counterparty.trim() || null,
+          description: quickExpenseForm.description.trim(),
+          amount: Math.abs(selectedTxn.monto),
+          is_estimated: false,
+          due_date: selectedTxn.fecha_movimiento,
+          expected_date: selectedTxn.fecha_movimiento,
+          priority: quickExpenseForm.priority,
+          status: "paid",
+          notes: quickExpenseForm.notes.trim() || null,
+          movimiento_banco_id: selectedTxn.id,
+        })
+        .select("id")
+        .single();
+      if (commitmentError) throw commitmentError;
+
+      const { error: movementError } = await supabase
+        .from("movimientos_banco")
+        .update({
+          estado: "conciliado",
+          tipo_conciliacion: "commitment",
+          numero_documento: commitmentLabel,
+        })
+        .eq("id", selectedTxn.id)
+        .eq("empresa_id", selectedEmpresaId);
+      if (movementError) {
+        await supabase
+          .from("cash_commitments")
+          .update({ status: "cancelled", archived_at: new Date().toISOString(), archive_reason: "Rollback por error conciliando movimiento" })
+          .eq("id", createdCommitment.id)
+          .eq("empresa_id", selectedEmpresaId);
+        throw movementError;
+      }
+
+      setSelectedTxn(null);
+      setCandidates([]);
+      await fetchTransactions();
+      await refreshPositions();
+    } catch (error: any) {
+      console.error("Error performing quick expense reconciliation:", error);
+      alert(`No se pudo registrar la conciliación rápida: ${error.message}`);
+    } finally {
+      setSavingQuickExpense(false);
     }
   };
 
@@ -915,6 +1115,8 @@ export default function BankReconciliation() {
                 const chequeInfo = txn.cheques_cartera?.[0];
                 const webpayInfo = txn.webpay_liquidaciones?.[0];
                 const commitmentInfo = txn.cash_commitments?.[0];
+                const canArchiveLinkedManual =
+                  Boolean(commitmentInfo) && commitmentInfo?.source_type === "manual" && !commitmentInfo?.archived_at;
                 const webpayClient = Array.isArray(webpayInfo?.terceros) ? webpayInfo?.terceros[0] : webpayInfo?.terceros;
                 const webpayInvoice = Array.isArray(webpayInfo?.facturas) ? webpayInfo?.facturas[0] : webpayInfo?.facturas;
                 return (
@@ -975,10 +1177,17 @@ export default function BankReconciliation() {
                     <td className="px-4 py-3 text-center">
                       <div className="flex justify-center gap-2">
                         {txn.estado === "conciliado" ? (
-                          <Button size="sm" variant="outline" disabled={!canEdit} onClick={() => handleUndoMatch(txn)}>
-                            <RotateCcw className="mr-2 h-4 w-4" />
-                            Deshacer
-                          </Button>
+                          <>
+                            <Button size="sm" variant="outline" disabled={!canEdit} onClick={() => handleUndoMatch(txn)}>
+                              <RotateCcw className="mr-2 h-4 w-4" />
+                              Deshacer
+                            </Button>
+                            {canArchiveLinkedManual && (
+                              <Button size="sm" variant="outline" disabled={!canEdit} onClick={() => void handleArchiveLinkedManualExpense(txn)}>
+                                Archivar egreso
+                              </Button>
+                            )}
+                          </>
                         ) : (
                           <Button size="sm" disabled={!canEdit} onClick={() => void fetchCandidates(txn)}>
                             <Check className="mr-2 h-4 w-4" />
@@ -1053,6 +1262,125 @@ export default function BankReconciliation() {
                 </div>
               </div>
             ))}
+
+            {!loadingCandidates && selectedTxn && selectedTxn.monto < 0 && (
+              <div className="rounded-xl border border-dashed p-4">
+                <div className="mb-4">
+                  <div className="font-medium">Conciliación rápida de egreso</div>
+                  <div className="text-sm text-muted-foreground">
+                    Si el movimiento no corresponde a un documento existente, clasifícalo aquí y se creará el egreso manual ya conciliado.
+                  </div>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2 md:col-span-2">
+                    <Label>Descripción</Label>
+                    <Input
+                      value={quickExpenseForm.description}
+                      onChange={(event) => setQuickExpenseForm((current) => ({ ...current, description: event.target.value }))}
+                      placeholder="Remuneración, impuestos, gasto oficina..."
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Contraparte</Label>
+                    <Input
+                      value={quickExpenseForm.counterparty}
+                      onChange={(event) => setQuickExpenseForm((current) => ({ ...current, counterparty: event.target.value }))}
+                      placeholder="Persona, SII, arrendador, proveedor"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Categoría / cuenta</Label>
+                    <Select
+                      value={quickExpenseForm.categoryId}
+                      onValueChange={(value) => setQuickExpenseForm((current) => ({ ...current, categoryId: value }))}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Selecciona categoría" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {outflowCategories.map((category) => (
+                          <SelectItem key={category.id} value={category.id}>
+                            {category.nombre}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Prioridad</Label>
+                    <Select
+                      value={quickExpenseForm.priority}
+                      onValueChange={(value) => setQuickExpenseForm((current) => ({ ...current, priority: value as TreasuryPriority }))}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="critical">Crítica</SelectItem>
+                        <SelectItem value="high">Alta</SelectItem>
+                        <SelectItem value="normal">Normal</SelectItem>
+                        <SelectItem value="deferrable">Postergable</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Monto</Label>
+                    <Input value={formatTreasuryCurrency(Math.abs(selectedTxn.monto), selectedAccount?.moneda || "CLP")} disabled />
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <Label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={quickExpenseForm.isRecurring}
+                        onChange={(event) =>
+                          setQuickExpenseForm((current) => ({ ...current, isRecurring: event.target.checked }))
+                        }
+                      />
+                      Marcar como gasto recurrente
+                    </Label>
+                  </div>
+                  {quickExpenseForm.isRecurring && (
+                    <div className="space-y-2">
+                      <Label>Frecuencia</Label>
+                      <Select
+                        value={quickExpenseForm.frequency}
+                        onValueChange={(value) =>
+                          setQuickExpenseForm((current) => ({
+                            ...current,
+                            frequency: value as QuickExpenseForm["frequency"],
+                          }))
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="weekly">Semanal</SelectItem>
+                          <SelectItem value="biweekly">Quincenal</SelectItem>
+                          <SelectItem value="monthly">Mensual</SelectItem>
+                          <SelectItem value="quarterly">Trimestral</SelectItem>
+                          <SelectItem value="annual">Anual</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+                  <div className="space-y-2 md:col-span-2">
+                    <Label>Nota</Label>
+                    <Textarea
+                      value={quickExpenseForm.notes}
+                      onChange={(event) => setQuickExpenseForm((current) => ({ ...current, notes: event.target.value }))}
+                      placeholder="Observaciones para tesorería o contexto del pago"
+                    />
+                  </div>
+                </div>
+                <div className="mt-4 flex justify-end">
+                  <Button onClick={() => void handleQuickExpenseMatch()} disabled={!canEdit || savingQuickExpense}>
+                    {savingQuickExpense ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
+                    Crear y conciliar egreso
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
 
           <DialogFooter>

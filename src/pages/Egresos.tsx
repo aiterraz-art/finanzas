@@ -1,5 +1,5 @@
 import { type FormEvent, useMemo, useState } from "react";
-import { ArrowRightLeft, Landmark, Loader2, Plus, RefreshCcw, TrendingUp, Wallet } from "lucide-react";
+import { Archive, ArrowRightLeft, Landmark, Loader2, Plus, RefreshCcw, TrendingUp, Wallet } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useCompany } from "@/contexts/CompanyContext";
+import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import {
   useBankAccountPositions,
@@ -119,6 +120,7 @@ const createManualExpenseForm = (): ManualExpenseForm => ({
 
 export default function Egresos() {
   const { selectedEmpresa, selectedEmpresaId, selectedRole } = useCompany();
+  const { user } = useAuth();
   const canEdit = canEditTreasury(selectedRole);
   const [search, setSearch] = useState("");
   const [sourceFilter, setSourceFilter] = useState("all");
@@ -346,6 +348,44 @@ export default function Egresos() {
       alert(err.message || "No se pudo actualizar el egreso.");
     } finally {
       setSavingEdit(false);
+    }
+  };
+
+  const handleArchiveManualCommitment = async (item: PaymentQueueItem | CashCommitment) => {
+    if (!selectedEmpresaId || !canEdit || !user?.id) return;
+    const commitmentId = "sourceId" in item ? item.sourceId : item.id;
+    const sourceType = item.sourceType;
+    const description = "description" in item ? item.description : item.counterparty;
+    if (sourceType !== "manual") {
+      alert("Solo los egresos manuales pueden archivarse desde esta vista.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Se archivará "${description}". El registro no se elimina físicamente, pero deja de aparecer en la operación diaria.`
+    );
+    if (!confirmed) return;
+
+    try {
+      const { error } = await supabase
+        .from("cash_commitments")
+        .update({
+          status: "cancelled",
+          archived_at: new Date().toISOString(),
+          archived_by: user.id,
+          archive_reason: "Archivado manualmente desde módulo Egresos",
+        })
+        .eq("id", commitmentId)
+        .eq("empresa_id", selectedEmpresaId)
+        .is("archived_at", null);
+      if (error) throw error;
+      if (editingItem?.sourceType === "commitment" && editingItem.sourceId === commitmentId) {
+        setEditingItem(null);
+      }
+      await refreshAll();
+    } catch (err: any) {
+      console.error("Error archiving manual cash commitment:", err);
+      alert(err.message || "No se pudo archivar el egreso manual.");
     }
   };
 
@@ -766,9 +806,17 @@ export default function Egresos() {
                     {item.notes && <div className="mt-1 text-xs text-muted-foreground">{item.notes}</div>}
                   </TableCell>
                   <TableCell className="text-right">
-                    <Button variant="outline" size="sm" onClick={() => openEditDialog(item)} disabled={!canEdit}>
-                      Editar
-                    </Button>
+                    <div className="flex justify-end gap-2">
+                      <Button variant="outline" size="sm" onClick={() => openEditDialog(item)} disabled={!canEdit}>
+                        Editar
+                      </Button>
+                      {item.sourceType === "commitment" && commitmentMap.get(item.sourceId)?.sourceType === "manual" && (
+                        <Button variant="outline" size="sm" onClick={() => void handleArchiveManualCommitment(item)} disabled={!canEdit}>
+                          <Archive className="mr-2 h-4 w-4" />
+                          Archivar
+                        </Button>
+                      )}
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
@@ -803,6 +851,7 @@ export default function Egresos() {
                 <TableHead>Estado</TableHead>
                 <TableHead>Cuenta</TableHead>
                 <TableHead>Última referencia</TableHead>
+                <TableHead className="text-right">Gestión</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -836,11 +885,21 @@ export default function Egresos() {
                   <TableCell className="text-sm text-muted-foreground">
                     {item.templateId ? "Generado desde plantilla" : "Alta manual"}
                   </TableCell>
+                  <TableCell className="text-right">
+                    {item.sourceType === "manual" ? (
+                      <Button variant="outline" size="sm" onClick={() => void handleArchiveManualCommitment(item)} disabled={!canEdit}>
+                        <Archive className="mr-2 h-4 w-4" />
+                        Archivar
+                      </Button>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">Solo lectura</span>
+                    )}
+                  </TableCell>
                 </TableRow>
               ))}
               {commitments.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-10 text-center text-muted-foreground">
+                  <TableCell colSpan={9} className="py-10 text-center text-muted-foreground">
                     {loadingCommitments ? "Cargando compromisos..." : "Aún no hay compromisos registrados."}
                   </TableCell>
                 </TableRow>
