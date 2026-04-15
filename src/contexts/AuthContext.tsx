@@ -59,15 +59,19 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
             return { session: nextSession, user: nextSession.user };
         };
 
+        const applyResolvedSession = async (nextSession: Session | null) => {
+            const resolved = await resolveActiveSession(nextSession);
+            if (!isMounted) return;
+            setSession(resolved.session);
+            setUser(resolved.user);
+            setLoading(false);
+        };
+
         // Obtenemos la sesión inicial
         supabase.auth.getSession()
             .then(async ({ data: { session } }) => {
                 if (!isMounted) return;
-                const resolved = await resolveActiveSession(session);
-                if (!isMounted) return;
-                setSession(resolved.session);
-                setUser(resolved.user);
-                setLoading(false);
+                await applyResolvedSession(session);
             })
             .catch((error) => {
                 console.error("Error getting initial session:", error);
@@ -79,13 +83,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
             });
 
         // Escuchamos cambios en la autenticación
-        const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
+        const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
             if (!isMounted) return;
-            const resolved = await resolveActiveSession(nextSession);
-            if (!isMounted) return;
-            setSession(resolved.session);
-            setUser(resolved.user);
-            setLoading(false);
+            window.setTimeout(() => {
+                void applyResolvedSession(nextSession);
+            }, 0);
         });
 
         return () => {

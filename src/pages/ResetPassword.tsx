@@ -41,7 +41,7 @@ export default function ResetPassword() {
             if (updateError) throw updateError;
 
             alert('Contraseña actualizada con éxito');
-            navigate('/');
+            navigate('/', { replace: true });
         } catch (err: any) {
             setError(err.message || 'Error al actualizar la contraseña');
         } finally {
