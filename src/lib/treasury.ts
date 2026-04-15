@@ -190,6 +190,12 @@ export type BankImportPreviewRow = {
   columnasExtra: Record<string, string | number | null>;
 };
 
+export type WorksheetImportDetection = {
+  kind: "bank_statement" | "receivables_aging_report" | "unknown";
+  headerRowIndex: number | null;
+  reason?: string;
+};
+
 export type ChequeReceivable = {
   id: string;
   empresaId: string;
@@ -404,28 +410,139 @@ export const buildBankSourceHash = (params: {
     params.saldo === null || params.saldo === undefined ? "" : Number(params.saldo).toFixed(2),
   ].join("|");
 
+const normalizeImportHeaderToken = (value: unknown) =>
+  normalizeText(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "")
+    .toLowerCase();
+
+const rowContainsPatterns = (tokens: string[], patterns: string[]) =>
+  tokens.some((token) => patterns.some((pattern) => token.includes(pattern)));
+
+export const detectWorksheetImportFormat = (rows: unknown[][]): WorksheetImportDetection => {
+  const bankDatePatterns = ["fecha", "date", "fechamovimiento", "postedat"];
+  const bankDescriptionPatterns = ["descripcion", "glosa", "detalle", "description", "concepto", "movimiento"];
+  const bankAmountPatterns = ["abono", "deposito", "credito", "entrada", "ingreso", "cargo", "debito", "salida", "egreso", "monto", "amount", "importe"];
+
+  const hasReceivablesTitle = rows.some((row) =>
+    row.some((cell) => {
+      const token = normalizeImportHeaderToken(cell);
+      return token.includes("cuentasporcobrar") || token.includes("documentosvencidos");
+    })
+  );
+
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+    const tokens = rows[rowIndex].map(normalizeImportHeaderToken).filter(Boolean);
+    if (tokens.length === 0) continue;
+
+    const looksLikeBankHeader =
+      rowContainsPatterns(tokens, bankDatePatterns) &&
+      rowContainsPatterns(tokens, bankDescriptionPatterns) &&
+      rowContainsPatterns(tokens, bankAmountPatterns);
+
+    if (looksLikeBankHeader) {
+      return { kind: "bank_statement", headerRowIndex: rowIndex };
+    }
+
+    const looksLikeReceivablesHeader =
+      rowContainsPatterns(tokens, ["nombre"]) &&
+      rowContainsPatterns(tokens, ["docto"]) &&
+      rowContainsPatterns(tokens, ["vencimiento"]) &&
+      rowContainsPatterns(tokens, ["saldo"]);
+
+    if (looksLikeReceivablesHeader || hasReceivablesTitle) {
+      return {
+        kind: "receivables_aging_report",
+        headerRowIndex: looksLikeReceivablesHeader ? rowIndex : null,
+        reason: "El archivo corresponde a un reporte de cuentas por cobrar, no a una cartola bancaria.",
+      };
+    }
+  }
+
+  return {
+    kind: "unknown",
+    headerRowIndex: null,
+    reason: "No se encontró un encabezado compatible con cartola bancaria.",
+  };
+};
+
+export const buildObjectsFromWorksheetRows = (
+  rows: unknown[][],
+  headerRowIndex: number
+): Record<string, unknown>[] => {
+  const headerRow = rows[headerRowIndex] || [];
+  const seenHeaders = new Map<string, number>();
+  const headers = headerRow.map((cell, index) => {
+    const base = normalizeText(cell) || `__col_${index}`;
+    const count = seenHeaders.get(base) || 0;
+    seenHeaders.set(base, count + 1);
+    return count === 0 ? base : `${base}_${count + 1}`;
+  });
+
+  return rows
+    .slice(headerRowIndex + 1)
+    .filter((row) => row.some((cell) => normalizeText(cell) !== ""))
+    .map((row) =>
+      headers.reduce<Record<string, unknown>>((acc, header, index) => {
+        acc[header] = row[index] ?? "";
+        return acc;
+      }, {})
+    );
+};
+
 export const normalizeBankImportRow = (
   rawRow: Record<string, unknown>,
   bankAccountId: string
 ): BankImportPreviewRow | null => {
   const entries = Object.entries(rawRow);
+  const normalizedEntries = entries.map(([key, value]) => ({
+    key,
+    normalizedKey: normalizeImportHeaderToken(key),
+    value,
+  }));
   const getValue = (...keys: string[]) => {
-    const found = entries.find(([key]) => keys.includes(key.trim().toLowerCase()));
-    return found?.[1];
+    const normalizedKeys = keys.map(normalizeImportHeaderToken).filter(Boolean);
+
+    for (const candidateKey of normalizedKeys) {
+      const exact = normalizedEntries.find((entry) => entry.normalizedKey === candidateKey);
+      if (exact) return exact.value;
+    }
+
+    for (const candidateKey of normalizedKeys) {
+      const partial = normalizedEntries.find(
+        (entry) =>
+          entry.normalizedKey.includes(candidateKey) || candidateKey.includes(entry.normalizedKey)
+      );
+      if (partial) return partial.value;
+    }
+
+    return undefined;
   };
 
   const fechaMovimiento = normalizeDateInput(
-    getValue("fecha", "date", "fecha movimiento", "fecha_movimiento", "posted_at")
+    getValue(
+      "fecha transaccion",
+      "fecha movimiento",
+      "fecha_movimiento",
+      "fecha",
+      "date",
+      "posted_at"
+    )
   );
   if (!fechaMovimiento) return null;
 
   const descripcion = normalizeText(
-    getValue("descripcion", "glosa", "detalle", "description", "concepto", "movimiento")
+    getValue("descripcion", "descripción", "glosa", "detalle", "description", "concepto", "movimiento")
   );
   if (!descripcion) return null;
 
-  const abono = normalizeMoneyInput(getValue("abono", "deposito", "credito", "entrada", "ingreso"));
-  const cargo = normalizeMoneyInput(getValue("cargo", "debito", "salida", "egreso"));
+  const abono = normalizeMoneyInput(
+    getValue("abono", "deposito", "credito", "entrada", "ingreso", "ingreso (+)")
+  );
+  const cargo = normalizeMoneyInput(
+    getValue("cargo", "debito", "salida", "egreso", "egreso (-)")
+  );
   const montoRaw = normalizeMoneyInput(getValue("monto", "amount", "importe"));
   const monto = abono || cargo ? abono - cargo : montoRaw;
   if (!monto) return null;
@@ -440,13 +557,15 @@ export const normalizeBankImportRow = (
     getValue("n_operacion", "n operacion", "operacion", "referencia", "nro operacion", "nro_operacion")
   ) || null;
   const sucursal = normalizeText(getValue("sucursal", "branch")) || null;
-  const postedAt = normalizeDateInput(getValue("posted_at"));
+  const postedAt = normalizeDateInput(getValue("fecha contable", "posted_at"));
   const knownKeys = new Set([
     "fecha",
     "date",
-    "fecha movimiento",
+    "fechatransaccion",
+    "fechamovimiento",
     "fecha_movimiento",
-    "posted_at",
+    "fechacontable",
+    "postedat",
     "descripcion",
     "glosa",
     "detalle",
@@ -458,27 +577,26 @@ export const normalizeBankImportRow = (
     "credito",
     "entrada",
     "ingreso",
+    "ingreso",
+    "egreso",
     "cargo",
     "debito",
     "salida",
-    "egreso",
     "monto",
     "amount",
     "importe",
     "saldo",
     "balance",
-    "n_operacion",
-    "n operacion",
+    "noperacion",
     "operacion",
     "referencia",
-    "nro operacion",
-    "nro_operacion",
+    "nrooperacion",
     "sucursal",
     "branch",
   ]);
 
   const columnasExtra = entries.reduce<Record<string, string | number | null>>((acc, [key, value]) => {
-    const normalizedKey = key.trim().toLowerCase();
+    const normalizedKey = normalizeImportHeaderToken(key);
     if (knownKeys.has(normalizedKey)) return acc;
     acc[key] = value === undefined ? null : (value as string | number | null);
     return acc;

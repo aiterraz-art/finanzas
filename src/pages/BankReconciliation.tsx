@@ -31,7 +31,9 @@ import { useCompany } from "@/contexts/CompanyContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import {
+  buildObjectsFromWorksheetRows,
   canEditTreasury,
+  detectWorksheetImportFormat,
   formatTreasuryCurrency,
   formatTreasuryDate,
   normalizeBankImportRow,
@@ -525,11 +527,28 @@ export default function BankReconciliation() {
       const workbook = XLSX.read(buffer, { type: "array" });
       const sheetName = workbook.SheetNames[0];
       const worksheet = workbook.Sheets[sheetName];
-      const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(worksheet, { defval: "" });
+      const worksheetRows = XLSX.utils.sheet_to_json<unknown[]>(worksheet, { header: 1, defval: "", raw: true });
+      const detectedFormat = detectWorksheetImportFormat(worksheetRows);
+
+      if (detectedFormat.kind === "receivables_aging_report") {
+        throw new Error(
+          `${detectedFormat.reason} Este layout debe importarse en cobranzas/cuentas por cobrar, no en Libro Banco.`
+        );
+      }
+
+      if (detectedFormat.kind !== "bank_statement" || detectedFormat.headerRowIndex === null) {
+        throw new Error(detectedFormat.reason || "No se pudo detectar un encabezado válido para la cartola bancaria.");
+      }
+
+      const rawRows = buildObjectsFromWorksheetRows(worksheetRows, detectedFormat.headerRowIndex);
 
       const parsedRows = rawRows.map((row) => normalizeBankImportRow(row, selectedAccountId));
       const validRows = parsedRows.filter(Boolean);
       const rejected = parsedRows.length - validRows.length;
+
+      if (validRows.length === 0) {
+        throw new Error("No se encontraron movimientos bancarios válidos en el archivo seleccionado.");
+      }
 
       const hashes = validRows.map((row) => row!.sourceHash);
       const existingHashes = await fetchExistingHashes(hashes);

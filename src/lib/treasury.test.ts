@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildObjectsFromWorksheetRows,
   buildBankSourceHash,
   canEditTreasury,
+  detectWorksheetImportFormat,
   normalizeBankImportRow,
   normalizeDateInput,
   normalizeMoneyInput,
@@ -59,6 +61,60 @@ describe("treasury helpers", () => {
     expect(parsed?.monto).toBe(-125000);
     expect(parsed?.salidaBanco).toBe(125000);
     expect(parsed?.columnasExtra.CentroCosto).toBe("Clínica Norte");
+  });
+
+  it("detects bank headers even when metadata rows exist above them", () => {
+    const rows = [
+      ["Banco Demo", "", ""],
+      ["Cuenta Corriente", "", ""],
+      ["Fecha", "Descripcion", "Cargo", "Saldo"],
+      ["15/04/2026", "Pago proveedor", "125.000", "1.350.000"],
+    ];
+
+    const detection = detectWorksheetImportFormat(rows);
+    expect(detection.kind).toBe("bank_statement");
+    expect(detection.headerRowIndex).toBe(2);
+
+    const objects = buildObjectsFromWorksheetRows(rows, detection.headerRowIndex!);
+    const parsed = normalizeBankImportRow(objects[0], "acc-1");
+    expect(parsed?.descripcion).toBe("Pago proveedor");
+    expect(parsed?.monto).toBe(-125000);
+  });
+
+  it("parses the Bci-style movimientos layout with transaccion/contable and ingreso/egreso columns", () => {
+    const parsed = normalizeBankImportRow(
+      {
+        "Fecha Transacción": 46126,
+        "Fecha Contable": 46127,
+        "Descripción": "Pago recibido de TRANSBANK S.A.",
+        "Egreso (-)": "",
+        "Ingreso (+)": 1168192,
+        Saldo: 27545807,
+      },
+      "acc-1"
+    );
+
+    expect(parsed).not.toBeNull();
+    expect(parsed?.fechaMovimiento).toBe("2026-04-14");
+    expect(parsed?.postedAt).toBe("2026-04-15");
+    expect(parsed?.descripcion).toBe("Pago recibido de TRANSBANK S.A.");
+    expect(parsed?.monto).toBe(1168192);
+    expect(parsed?.entradaBanco).toBe(1168192);
+    expect(parsed?.salidaBanco).toBe(0);
+    expect(parsed?.saldo).toBe(27545807);
+  });
+
+  it("detects receivables aging reports and avoids importing them as bank statements", () => {
+    const rows = [
+      ["3DENTAL SPA"],
+      ["Cuentas Por Cobrar - Detallado - Documentos Vencidos"],
+      ["Codigo Cliente", "Nombre", "Docto", "Serie", "Numero", "Vencimiento", "( > 90 ) $", "(61 - 90) $", "(31 - 60) $", "( 0 - 30) $", "Saldo $"],
+      ["10942793-4", "Fernando Ceron", "FVAELECT", "", 7996, 46101, 0, 0, 0, 290001, 290001],
+    ];
+
+    const detection = detectWorksheetImportFormat(rows);
+    expect(detection.kind).toBe("receivables_aging_report");
+    expect(detection.reason).toContain("cuentas por cobrar");
   });
 
   it("flags viewer as read only", () => {
