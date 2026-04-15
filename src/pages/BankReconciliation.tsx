@@ -96,7 +96,7 @@ type ImportSummary = {
   filename: string;
 };
 
-const HASH_QUERY_CHUNK = 150;
+const HASH_QUERY_CHUNK = 20;
 const INSERT_CHUNK_SIZE = 200;
 
 export default function BankReconciliation() {
