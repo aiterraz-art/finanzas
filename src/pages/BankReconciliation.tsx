@@ -97,6 +97,7 @@ type ImportSummary = {
 };
 
 const HASH_QUERY_CHUNK = 150;
+const INSERT_CHUNK_SIZE = 200;
 
 export default function BankReconciliation() {
   const { selectedEmpresaId, selectedRole } = useCompany();
@@ -516,6 +517,32 @@ export default function BankReconciliation() {
     return nextSet;
   };
 
+  const insertBankMovementChunks = async (
+    rowsToInsert: Array<{
+      empresa_id: string;
+      bank_account_id: string;
+      import_id: string;
+      fecha_movimiento: string;
+      posted_at: string | null;
+      descripcion: string;
+      monto: number;
+      entrada_banco: number;
+      salida_banco: number;
+      estado: string;
+      saldo: number | null;
+      n_operacion: string | null;
+      sucursal: string | null;
+      source_hash: string;
+      columnas_extra: Record<string, string | number | null>;
+    }>
+  ) => {
+    for (let index = 0; index < rowsToInsert.length; index += INSERT_CHUNK_SIZE) {
+      const chunk = rowsToInsert.slice(index, index + INSERT_CHUNK_SIZE);
+      const { error } = await supabase.from("movimientos_banco").insert(chunk);
+      if (error) throw error;
+    }
+  };
+
   const handleImportFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file || !selectedEmpresaId || !selectedAccountId || !user) return;
@@ -590,8 +617,7 @@ export default function BankReconciliation() {
           source_hash: row!.sourceHash,
           columnas_extra: row!.columnasExtra,
         }));
-        const { error: insertError } = await supabase.from("movimientos_banco").insert(insertPayload);
-        if (insertError) throw insertError;
+        await insertBankMovementChunks(insertPayload);
       }
 
       const { error: updateError } = await supabase
@@ -616,7 +642,11 @@ export default function BankReconciliation() {
       await Promise.all([fetchTransactions(), fetchLatestImport(), refreshPositions(), refreshBankAccounts()]);
     } catch (error: any) {
       console.error("Error importing bank statement:", error);
-      alert(`No se pudo importar la cartola: ${error.message}`);
+      const friendlyMessage =
+        error instanceof TypeError && error.message === "Failed to fetch"
+          ? "Fallo la conexion con Supabase durante la importacion. La cartola se intentara subir en lotes mas pequenos desde esta version; si el error persiste, revisa que Vercel este desplegado en el ultimo commit."
+          : error.message;
+      alert(`No se pudo importar la cartola: ${friendlyMessage}`);
     } finally {
       setIsImporting(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
