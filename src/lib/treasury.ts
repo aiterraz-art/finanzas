@@ -18,7 +18,7 @@ export type TreasuryWeek = {
 };
 
 export type TreasuryOpenItem = {
-  sourceType: "invoice_receivable" | "invoice_payable" | "rendicion" | "commitment";
+  sourceType: "invoice_receivable" | "invoice_payable" | "rendicion" | "commitment" | "cheque_receivable" | "webpay_receivable";
   sourceId: string;
   empresaId: string;
   bankAccountId: string | null;
@@ -188,6 +188,60 @@ export type BankImportPreviewRow = {
   salidaBanco: number;
   sourceHash: string;
   columnasExtra: Record<string, string | number | null>;
+};
+
+export type ChequeReceivable = {
+  id: string;
+  empresaId: string;
+  bankAccountId: string | null;
+  terceroId: string | null;
+  facturaId: string | null;
+  movimientoBancoId: string | null;
+  numeroCheque: string;
+  bancoEmisor: string | null;
+  librador: string;
+  rutLibrador: string | null;
+  moneda: string;
+  monto: number;
+  montoAplicadoFactura: number;
+  fechaEmision: string | null;
+  fechaVencimiento: string;
+  fechaCobroEsperada: string;
+  fechaCobroReal: string | null;
+  estado: "en_cartera" | "depositado" | "cobrado" | "rechazado" | "anulado";
+  notas: string | null;
+  createdAt: string | null;
+  bankAccountName?: string;
+  terceroNombre?: string;
+  facturaNumero?: string;
+};
+
+export type WebpayReceivable = {
+  id: string;
+  empresaId: string;
+  bankAccountId: string | null;
+  terceroId: string | null;
+  facturaId: string | null;
+  movimientoBancoId: string | null;
+  canal: "webpay_plus" | "webpay_link" | "transbank" | "otro";
+  ordenCompra: string;
+  codigoAutorizacion: string | null;
+  marcaTarjeta: string | null;
+  cuotas: number;
+  moneda: string;
+  montoBruto: number;
+  montoComision: number;
+  montoNeto: number;
+  montoAplicadoFactura: number;
+  fechaVenta: string;
+  fechaAbonoEsperada: string;
+  fechaAbonoReal: string | null;
+  estado: "pendiente" | "conciliado" | "rechazado" | "anulado";
+  notas: string | null;
+  createdAt: string | null;
+  bankAccountName?: string;
+  terceroNombre?: string;
+  facturaNumero?: string;
 };
 
 const toNumber = (value: unknown) => {
@@ -622,4 +676,58 @@ export const normalizeCashCommitment = (row: any): CashCommitment => ({
   notes: row?.notes ?? null,
   categoryName: row?.treasury_categories?.nombre ?? row?.category_name,
   bankAccountName: row?.bank_accounts?.nombre ?? row?.bank_account_name,
+});
+
+export const normalizeChequeReceivable = (row: any): ChequeReceivable => ({
+  id: row?.id ?? "",
+  empresaId: row?.empresa_id ?? "",
+  bankAccountId: row?.bank_account_id ?? null,
+  terceroId: row?.tercero_id ?? null,
+  facturaId: row?.factura_id ?? null,
+  movimientoBancoId: row?.movimiento_banco_id ?? null,
+  numeroCheque: row?.numero_cheque ?? "",
+  bancoEmisor: row?.banco_emisor ?? null,
+  librador: row?.librador ?? "",
+  rutLibrador: row?.rut_librador ?? null,
+  moneda: row?.moneda ?? "CLP",
+  monto: toNumber(row?.monto),
+  montoAplicadoFactura: toNumber(row?.monto_aplicado_factura),
+  fechaEmision: row?.fecha_emision ?? null,
+  fechaVencimiento: row?.fecha_vencimiento ?? format(new Date(), "yyyy-MM-dd"),
+  fechaCobroEsperada: row?.fecha_cobro_esperada ?? format(new Date(), "yyyy-MM-dd"),
+  fechaCobroReal: row?.fecha_cobro_real ?? null,
+  estado: row?.estado ?? "en_cartera",
+  notas: row?.notas ?? null,
+  createdAt: row?.created_at ?? null,
+  bankAccountName: row?.bank_accounts?.nombre ?? row?.bank_account_name,
+  terceroNombre: row?.terceros?.razon_social ?? row?.tercero_nombre,
+  facturaNumero: row?.facturas?.numero_documento ?? row?.factura_numero,
+});
+
+export const normalizeWebpayReceivable = (row: any): WebpayReceivable => ({
+  id: row?.id ?? "",
+  empresaId: row?.empresa_id ?? "",
+  bankAccountId: row?.bank_account_id ?? null,
+  terceroId: row?.tercero_id ?? null,
+  facturaId: row?.factura_id ?? null,
+  movimientoBancoId: row?.movimiento_banco_id ?? null,
+  canal: row?.canal ?? "webpay_plus",
+  ordenCompra: row?.orden_compra ?? "",
+  codigoAutorizacion: row?.codigo_autorizacion ?? null,
+  marcaTarjeta: row?.marca_tarjeta ?? null,
+  cuotas: toNumber(row?.cuotas || 1),
+  moneda: row?.moneda ?? "CLP",
+  montoBruto: toNumber(row?.monto_bruto),
+  montoComision: toNumber(row?.monto_comision),
+  montoNeto: toNumber(row?.monto_neto),
+  montoAplicadoFactura: toNumber(row?.monto_aplicado_factura),
+  fechaVenta: row?.fecha_venta ?? format(new Date(), "yyyy-MM-dd"),
+  fechaAbonoEsperada: row?.fecha_abono_esperada ?? format(new Date(), "yyyy-MM-dd"),
+  fechaAbonoReal: row?.fecha_abono_real ?? null,
+  estado: row?.estado ?? "pendiente",
+  notas: row?.notas ?? null,
+  createdAt: row?.created_at ?? null,
+  bankAccountName: row?.bank_accounts?.nombre ?? row?.bank_account_name,
+  terceroNombre: row?.terceros?.razon_social ?? row?.tercero_nombre,
+  facturaNumero: row?.facturas?.numero_documento ?? row?.factura_numero,
 });

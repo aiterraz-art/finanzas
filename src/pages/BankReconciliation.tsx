@@ -60,11 +60,24 @@ type BankMovement = {
     facturas?: { numero_documento: string | null; tercero_nombre: string | null }[] | null;
     rendiciones?: { descripcion: string | null; tercero_nombre: string | null }[] | null;
   }>;
+  cheques_cartera?: Array<{
+    id: string;
+    numero_cheque: string;
+    librador: string;
+    monto: number;
+  }>;
+  webpay_liquidaciones?: Array<{
+    id: string;
+    orden_compra: string;
+    monto_neto: number;
+    facturas?: { numero_documento: string | null }[] | null;
+    terceros?: { razon_social: string | null }[] | null;
+  }>;
 };
 
 type MatchCandidate = {
   id: string;
-  type: "factura" | "rendicion";
+  type: "factura" | "rendicion" | "cheque" | "webpay";
   label: string;
   subtitle: string;
   amount: number;
@@ -148,6 +161,19 @@ export default function BankReconciliation() {
             monto_aplicado,
             facturas (numero_documento, tercero_nombre),
             rendiciones (descripcion, tercero_nombre)
+          ),
+          cheques_cartera (
+            id,
+            numero_cheque,
+            librador,
+            monto
+          ),
+          webpay_liquidaciones (
+            id,
+            orden_compra,
+            monto_neto,
+            facturas (numero_documento),
+            terceros (razon_social)
           )
         `)
         .eq("empresa_id", selectedEmpresaId)
@@ -202,7 +228,7 @@ export default function BankReconciliation() {
             .eq("tipo", "compra")
             .in("estado", ["pendiente", "morosa"]);
 
-      const [{ data: invoices, error: invoiceError }, { data: rendiciones, error: rendicionError }] =
+      const [{ data: invoices, error: invoiceError }, { data: rendiciones, error: rendicionError }, { data: cheques, error: chequesError }, { data: webpayRows, error: webpayError }] =
         await Promise.all([
           invoiceQuery.order("fecha_vencimiento", { ascending: true }),
           txn.monto < 0
@@ -213,10 +239,28 @@ export default function BankReconciliation() {
                 .eq("estado", "pendiente")
                 .order("fecha", { ascending: true })
             : Promise.resolve({ data: [], error: null }),
+          txn.monto >= 0
+            ? supabase
+                .from("cheques_cartera")
+                .select("id, numero_cheque, librador, monto, fecha_cobro_esperada, estado")
+                .eq("empresa_id", selectedEmpresaId)
+                .in("estado", ["en_cartera", "depositado"])
+                .order("fecha_cobro_esperada", { ascending: true })
+            : Promise.resolve({ data: [], error: null }),
+          txn.monto >= 0
+            ? supabase
+                .from("webpay_liquidaciones")
+                .select("id, orden_compra, monto_neto, fecha_abono_esperada, terceros(razon_social), facturas(numero_documento)")
+                .eq("empresa_id", selectedEmpresaId)
+                .eq("estado", "pendiente")
+                .order("fecha_abono_esperada", { ascending: true })
+            : Promise.resolve({ data: [], error: null }),
         ]);
 
       if (invoiceError) throw invoiceError;
       if (rendicionError) throw rendicionError;
+      if (chequesError) throw chequesError;
+      if (webpayError) throw webpayError;
 
       const nextCandidates: MatchCandidate[] = [
         ...(invoices || []).map((invoice: any) => ({
@@ -235,6 +279,26 @@ export default function BankReconciliation() {
           amount: Number(rendicion.monto_total),
           dueDate: rendicion.fecha || null,
         })),
+        ...((cheques || []) as any[]).map((cheque) => ({
+          id: cheque.id,
+          type: "cheque" as const,
+          label: `${cheque.librador || "Sin librador"} • cheque ${cheque.numero_cheque || "S/N"}`,
+          subtitle: "Cheque en cartera",
+          amount: Number(cheque.monto),
+          dueDate: cheque.fecha_cobro_esperada || null,
+        })),
+        ...((webpayRows || []) as any[]).map((row) => {
+          const client = Array.isArray(row.terceros) ? row.terceros[0] : row.terceros;
+          const invoice = Array.isArray(row.facturas) ? row.facturas[0] : row.facturas;
+          return {
+            id: row.id,
+            type: "webpay" as const,
+            label: `${client?.razon_social || invoice?.numero_documento || "WebPay"} • orden ${row.orden_compra || "S/N"}`,
+            subtitle: "WebPay por recibir",
+            amount: Number(row.monto_neto),
+            dueDate: row.fecha_abono_esperada || null,
+          };
+        }),
       ].sort((a, b) => Math.abs(absAmount - a.amount) - Math.abs(absAmount - b.amount));
 
       setCandidates(nextCandidates);
@@ -250,22 +314,36 @@ export default function BankReconciliation() {
     if (!selectedEmpresaId || !selectedTxn) return;
     setMatchingId(candidate.id);
     try {
-      const payload = {
-        empresa_id: selectedEmpresaId,
-        factura_id: candidate.type === "factura" ? candidate.id : null,
-        rendicion_id: candidate.type === "rendicion" ? candidate.id : null,
-        movimiento_banco_id: selectedTxn.id,
-        monto_aplicado: Math.min(Math.abs(selectedTxn.monto), candidate.amount),
-      };
-      const { error: paymentError } = await supabase.from("facturas_pagos").insert(payload);
-      if (paymentError) throw paymentError;
+      if (candidate.type === "factura" || candidate.type === "rendicion") {
+        const payload = {
+          empresa_id: selectedEmpresaId,
+          factura_id: candidate.type === "factura" ? candidate.id : null,
+          rendicion_id: candidate.type === "rendicion" ? candidate.id : null,
+          movimiento_banco_id: selectedTxn.id,
+          monto_aplicado: Math.min(Math.abs(selectedTxn.monto), candidate.amount),
+        };
+        const { error: paymentError } = await supabase.from("facturas_pagos").insert(payload);
+        if (paymentError) throw paymentError;
+      }
 
       const { error: movementError } = await supabase
         .from("movimientos_banco")
         .update({
           estado: "conciliado",
-          tipo_conciliacion: candidate.type === "rendicion" ? "rendicion" : "factura",
-          numero_documento: candidate.type === "factura" ? candidate.label : selectedTxn.numero_documento,
+          tipo_conciliacion:
+            candidate.type === "rendicion"
+              ? "rendicion"
+              : candidate.type === "cheque"
+                ? "cheque"
+                : candidate.type === "webpay"
+                  ? "webpay"
+                  : "factura",
+          numero_documento:
+            candidate.type === "cheque" || candidate.type === "webpay"
+              ? candidate.label
+              : candidate.type === "factura"
+                ? candidate.label
+                : selectedTxn.numero_documento,
         })
         .eq("id", selectedTxn.id)
         .eq("empresa_id", selectedEmpresaId);
@@ -278,10 +356,32 @@ export default function BankReconciliation() {
           .eq("id", candidate.id)
           .eq("empresa_id", selectedEmpresaId);
         if (error) throw error;
-      } else {
+      } else if (candidate.type === "rendicion") {
         const { error } = await supabase
           .from("rendiciones")
           .update({ estado: "pagado" })
+          .eq("id", candidate.id)
+          .eq("empresa_id", selectedEmpresaId);
+        if (error) throw error;
+      } else if (candidate.type === "cheque") {
+        const { error } = await supabase
+          .from("cheques_cartera")
+          .update({
+            estado: "cobrado",
+            fecha_cobro_real: selectedTxn.fecha_movimiento,
+            movimiento_banco_id: selectedTxn.id,
+          })
+          .eq("id", candidate.id)
+          .eq("empresa_id", selectedEmpresaId);
+        if (error) throw error;
+      } else if (candidate.type === "webpay") {
+        const { error } = await supabase
+          .from("webpay_liquidaciones")
+          .update({
+            estado: "conciliado",
+            fecha_abono_real: selectedTxn.fecha_movimiento,
+            movimiento_banco_id: selectedTxn.id,
+          })
           .eq("id", candidate.id)
           .eq("empresa_id", selectedEmpresaId);
         if (error) throw error;
@@ -302,18 +402,22 @@ export default function BankReconciliation() {
   const handleUndoMatch = async (txn: BankMovement) => {
     if (!selectedEmpresaId) return;
     const payments = txn.facturas_pagos || [];
-    if (payments.length === 0) return;
+    const linkedCheque = txn.cheques_cartera?.[0];
+    const linkedWebpay = txn.webpay_liquidaciones?.[0];
+    if (payments.length === 0 && !linkedCheque && !linkedWebpay) return;
 
     try {
       const facturaIds = payments.map((payment) => payment.factura_id).filter(Boolean) as string[];
       const rendicionIds = payments.map((payment) => payment.rendicion_id).filter(Boolean) as string[];
 
-      const { error: deleteError } = await supabase
-        .from("facturas_pagos")
-        .delete()
-        .eq("movimiento_banco_id", txn.id)
-        .eq("empresa_id", selectedEmpresaId);
-      if (deleteError) throw deleteError;
+      if (payments.length > 0) {
+        const { error: deleteError } = await supabase
+          .from("facturas_pagos")
+          .delete()
+          .eq("movimiento_banco_id", txn.id)
+          .eq("empresa_id", selectedEmpresaId);
+        if (deleteError) throw deleteError;
+      }
 
       const { error: movementError } = await supabase
         .from("movimientos_banco")
@@ -321,6 +425,32 @@ export default function BankReconciliation() {
         .eq("id", txn.id)
         .eq("empresa_id", selectedEmpresaId);
       if (movementError) throw movementError;
+
+      if (linkedCheque) {
+        const { error } = await supabase
+          .from("cheques_cartera")
+          .update({
+            estado: "depositado",
+            fecha_cobro_real: null,
+            movimiento_banco_id: null,
+          })
+          .eq("id", linkedCheque.id)
+          .eq("empresa_id", selectedEmpresaId);
+        if (error) throw error;
+      }
+
+      if (linkedWebpay) {
+        const { error } = await supabase
+          .from("webpay_liquidaciones")
+          .update({
+            estado: "pendiente",
+            fecha_abono_real: null,
+            movimiento_banco_id: null,
+          })
+          .eq("id", linkedWebpay.id)
+          .eq("empresa_id", selectedEmpresaId);
+        if (error) throw error;
+      }
 
       for (const facturaId of facturaIds) {
         const { count } = await supabase
@@ -652,6 +782,10 @@ export default function BankReconciliation() {
                 const payment = txn.facturas_pagos?.[0];
                 const invoiceInfo = Array.isArray(payment?.facturas) ? payment.facturas[0] : payment?.facturas;
                 const rendicionInfo = Array.isArray(payment?.rendiciones) ? payment.rendiciones[0] : payment?.rendiciones;
+                const chequeInfo = txn.cheques_cartera?.[0];
+                const webpayInfo = txn.webpay_liquidaciones?.[0];
+                const webpayClient = Array.isArray(webpayInfo?.terceros) ? webpayInfo?.terceros[0] : webpayInfo?.terceros;
+                const webpayInvoice = Array.isArray(webpayInfo?.facturas) ? webpayInfo?.facturas[0] : webpayInfo?.facturas;
                 return (
                   <tr key={txn.id} className="border-t">
                     <td className="px-4 py-3">{formatTreasuryDate(txn.fecha_movimiento)}</td>
@@ -671,6 +805,19 @@ export default function BankReconciliation() {
                           <div className="font-medium">{invoiceInfo?.tercero_nombre || rendicionInfo?.tercero_nombre || "Documento conciliado"}</div>
                           <div className="text-xs text-muted-foreground">
                             {invoiceInfo?.numero_documento || rendicionInfo?.descripcion || "Sin detalle"}
+                          </div>
+                        </div>
+                      ) : chequeInfo ? (
+                        <div>
+                          <div className="font-medium">{chequeInfo.librador || "Cheque conciliado"}</div>
+                          <div className="text-xs text-muted-foreground">Cheque {chequeInfo.numero_cheque}</div>
+                        </div>
+                      ) : webpayInfo ? (
+                        <div>
+                          <div className="font-medium">{webpayClient?.razon_social || "WebPay conciliado"}</div>
+                          <div className="text-xs text-muted-foreground">
+                            Orden {webpayInfo.orden_compra}
+                            {webpayInvoice?.numero_documento ? ` • Factura ${webpayInvoice.numero_documento}` : ""}
                           </div>
                         </div>
                       ) : (
@@ -747,11 +894,19 @@ export default function BankReconciliation() {
                       {candidate.dueDate ? ` • vence ${formatTreasuryDate(candidate.dueDate)}` : ""}
                     </div>
                   </div>
-                  <div className="text-right">
-                    <div className="font-semibold">{formatTreasuryCurrency(candidate.amount, selectedAccount?.moneda || "CLP")}</div>
-                    <div className="text-xs text-muted-foreground">{candidate.type === "factura" ? "Factura" : "Rendición"}</div>
+                    <div className="text-right">
+                      <div className="font-semibold">{formatTreasuryCurrency(candidate.amount, selectedAccount?.moneda || "CLP")}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {candidate.type === "factura"
+                          ? "Factura"
+                          : candidate.type === "rendicion"
+                            ? "Rendición"
+                            : candidate.type === "cheque"
+                              ? "Cheque"
+                              : "WebPay"}
+                      </div>
+                    </div>
                   </div>
-                </div>
                 <div className="mt-3 flex justify-end">
                   <Button onClick={() => void handleMatch(candidate)} disabled={!canEdit || matchingId === candidate.id}>
                     {matchingId === candidate.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}

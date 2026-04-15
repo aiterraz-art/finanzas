@@ -59,6 +59,8 @@ const sourceLabels: Record<string, string> = {
   invoice_payable: "Factura proveedor",
   rendicion: "Rendicion",
   commitment: "Compromiso",
+  cheque_receivable: "Cheque en cartera",
+  webpay_receivable: "WebPay por recibir",
 };
 
 export default function CashFlow() {
@@ -547,6 +549,8 @@ export default function CashFlow() {
                     <SelectItem value="invoice_payable">Facturas proveedor</SelectItem>
                     <SelectItem value="rendicion">Rendiciones</SelectItem>
                     <SelectItem value="commitment">Compromisos</SelectItem>
+                    <SelectItem value="cheque_receivable">Cheques</SelectItem>
+                    <SelectItem value="webpay_receivable">WebPay</SelectItem>
                   </SelectContent>
                 </Select>
                 <Select value={calendarDirectionFilter} onValueChange={setCalendarDirectionFilter}>

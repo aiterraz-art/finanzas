@@ -13,6 +13,8 @@ import Budgets from "@/pages/Budgets";
 import ReconciliationAudit from "@/pages/ReconciliationAudit";
 import Rendiciones from "@/pages/Rendiciones";
 import Egresos from "@/pages/Egresos";
+import Cheques from "@/pages/Cheques";
+import WebPay from "@/pages/WebPay";
 
 import ManualInvoiceEntry from "@/pages/ManualInvoiceEntry";
 import InvoicesList from "@/pages/InvoicesList";
@@ -71,6 +73,8 @@ function App() {
                 <Route path="banco" element={<Navigate to="/reconciliation" replace />} />
                 <Route path="cashflow" element={<CashFlow />} />
                 <Route path="egresos" element={<Egresos />} />
+                <Route path="cheques" element={<Cheques />} />
+                <Route path="webpay" element={<WebPay />} />
                 <Route path="expenses" element={<Navigate to="/egresos" replace />} />
                 <Route path="collections" element={<Collections />} />
                 <Route path="budgets" element={<Budgets />} />

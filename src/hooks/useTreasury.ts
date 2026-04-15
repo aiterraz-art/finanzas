@@ -5,6 +5,7 @@ import {
   normalizeBankAccountPosition,
   normalizeCashCommitmentTemplate,
   normalizeCashCommitment,
+  normalizeChequeReceivable,
   normalizeCollectionPipelineItem,
   normalizePaymentQueueItem,
   normalizeTreasuryCategory,
@@ -12,12 +13,14 @@ import {
   normalizeTreasuryOpenItem,
   normalizeTreasuryPolicy,
   normalizeTreasuryWeek,
+  normalizeWebpayReceivable,
 } from "@/lib/treasury";
 import type {
   BankAccount,
   BankAccountPosition,
   CashCommitment,
   CashCommitmentTemplate,
+  ChequeReceivable,
   CollectionPipelineItem,
   PaymentQueueItem,
   TreasuryCategory,
@@ -25,6 +28,7 @@ import type {
   TreasuryOpenItem,
   TreasuryPolicy,
   TreasuryWeek,
+  WebpayReceivable,
 } from "@/lib/treasury";
 
 type TreasuryQueryState<T> = {
@@ -267,5 +271,49 @@ export const useCashCommitments = (empresaId: string | null) =>
         .order("created_at", { ascending: false });
       if (error) throw error;
       return readMaybeArray(data, normalizeCashCommitment);
+    }
+  );
+
+export const useChequeReceivables = (empresaId: string | null) =>
+  useTreasuryLoader<ChequeReceivable[]>(
+    empresaId,
+    [],
+    [],
+    async (resolvedEmpresaId) => {
+      const { data, error } = await supabase
+        .from("cheques_cartera")
+        .select(`
+          *,
+          bank_accounts(nombre),
+          terceros(razon_social),
+          facturas(numero_documento)
+        `)
+        .eq("empresa_id", resolvedEmpresaId)
+        .order("fecha_cobro_esperada", { ascending: true })
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      return readMaybeArray(data, normalizeChequeReceivable);
+    }
+  );
+
+export const useWebpayReceivables = (empresaId: string | null) =>
+  useTreasuryLoader<WebpayReceivable[]>(
+    empresaId,
+    [],
+    [],
+    async (resolvedEmpresaId) => {
+      const { data, error } = await supabase
+        .from("webpay_liquidaciones")
+        .select(`
+          *,
+          bank_accounts(nombre),
+          terceros(razon_social),
+          facturas(numero_documento)
+        `)
+        .eq("empresa_id", resolvedEmpresaId)
+        .order("fecha_abono_esperada", { ascending: true })
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      return readMaybeArray(data, normalizeWebpayReceivable);
     }
   );

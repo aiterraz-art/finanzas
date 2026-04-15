@@ -49,6 +49,8 @@ const tableChecks = [
   { table: "cash_commitments", columns: ["id", "empresa_id", "template_id", "bank_account_id", "category_id", "source_type", "direction", "counterparty", "description", "amount", "is_estimated", "due_date", "expected_date", "priority", "status"] },
   { table: "collection_events", columns: ["id", "empresa_id", "factura_id", "tercero_id", "channel", "event_type", "happened_at", "promised_date", "promised_amount", "notes", "created_by"] },
   { table: "bank_statement_imports", columns: ["id", "empresa_id", "bank_account_id", "original_filename", "imported_by", "imported_at", "row_count", "period_from", "period_to"] },
+  { table: "cheques_cartera", columns: ["id", "empresa_id", "bank_account_id", "tercero_id", "factura_id", "movimiento_banco_id", "numero_cheque", "banco_emisor", "librador", "rut_librador", "monto", "monto_aplicado_factura", "fecha_vencimiento", "fecha_cobro_esperada", "fecha_cobro_real", "estado", "notas"] },
+  { table: "webpay_liquidaciones", columns: ["id", "empresa_id", "bank_account_id", "tercero_id", "factura_id", "movimiento_banco_id", "canal", "orden_compra", "codigo_autorizacion", "marca_tarjeta", "cuotas", "monto_bruto", "monto_comision", "monto_neto", "monto_aplicado_factura", "fecha_venta", "fecha_abono_esperada", "fecha_abono_real", "estado", "notas"] },
 ];
 
 const relationChecks = [
@@ -59,6 +61,8 @@ const relationChecks = [
   { table: "bank_accounts", select: "id, empresa_id" },
   { table: "treasury_categories", select: "id, empresa_id" },
   { table: "cash_commitment_templates", select: "id, treasury_categories(nombre), bank_accounts(nombre)" },
+  { table: "cheques_cartera", select: "id, bank_accounts(nombre), terceros(razon_social), facturas(numero_documento)" },
+  { table: "webpay_liquidaciones", select: "id, bank_accounts(nombre), terceros(razon_social), facturas(numero_documento)" },
   { table: "v_bank_account_positions", select: "bank_account_id, current_balance, stale_import" },
   { table: "v_treasury_open_items", select: "source_id, empresa_id, direction, category_code, amount, expected_date" },
 ];
