@@ -8,6 +8,7 @@ import {
     Truck,
     TrendingUp,
     HandCoins,
+    ReceiptText,
     Target,
     ShieldCheck,
     ClipboardList,
@@ -16,14 +17,12 @@ import {
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCompany } from "@/contexts/CompanyContext";
-import { supabase } from "@/lib/supabase";
-import { useEffect, useState } from "react";
-const OWNER_ADMIN_EMAIL = "aterraza@3dental.cl";
 
 const navigation = [
     { name: "Dashboard", href: "/", icon: LayoutDashboard },
     { name: "Banco", href: "/reconciliation", icon: Scale },
-    { name: "Flujo de Caja", href: "/cashflow", icon: TrendingUp },
+    { name: "Tesoreria", href: "/cashflow", icon: TrendingUp },
+    { name: "Egresos", href: "/egresos", icon: ReceiptText },
     { name: "Cobranzas", href: "/collections", icon: HandCoins },
     { name: "Presupuestos", href: "/budgets", icon: Target },
     { name: "Auditoría", href: "/audit", icon: ShieldCheck },
@@ -35,19 +34,8 @@ const navigation = [
 
 export function Sidebar() {
     const location = useLocation();
-    const { user, signOut } = useAuth();
-    const { selectedEmpresa } = useCompany();
-    const [isAdmin, setIsAdmin] = useState(false);
-
-    useEffect(() => {
-        if (user) {
-            supabase.from('profiles').select('role').eq('id', user.id).single()
-                .then(({ data }) => {
-                    const isOwnerAdmin = user.email?.toLowerCase() === OWNER_ADMIN_EMAIL;
-                    setIsAdmin(data?.role === 'admin' && isOwnerAdmin);
-                });
-        }
-    }, [user]);
+    const { signOut } = useAuth();
+    const { selectedEmpresa, isGlobalAdmin } = useCompany();
 
 
     return (
@@ -66,8 +54,7 @@ export function Sidebar() {
                 <div className="px-3 mb-2 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                     Menu
                 </div>
-                {/* Admin Menu */}
-                {isAdmin && (
+                {isGlobalAdmin && (
                     <>
                         <Link
                             to="/users"

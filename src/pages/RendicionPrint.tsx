@@ -7,7 +7,7 @@ import { es } from "date-fns/locale";
 import { useCompany } from "@/contexts/CompanyContext";
 
 export default function RendicionPrint() {
-    const { selectedEmpresaId } = useCompany();
+    const { selectedEmpresa, selectedEmpresaId } = useCompany();
     const { id } = useParams();
     const [rendicion, setRendicion] = useState<any>(null);
     const [loading, setLoading] = useState(true);
@@ -74,9 +74,8 @@ export default function RendicionPrint() {
                     <h1 className="text-2xl font-bold uppercase tracking-wider mb-2">Rendición de Gastos</h1>
                     <p className="text-sm text-gray-500">Folio Interno: #{rendicion.id.slice(0, 8)}</p>
                     <div className="mt-4 text-sm">
-                        <p className="font-bold">Laboratorio Dental 3D</p>
-                        <p>Los Militares 5620, Las Condes</p>
-                        <p>Santiago, Chile</p>
+                        <p className="font-bold">{selectedEmpresa?.nombre || 'Empresa'}</p>
+                        <p>Comprobante generado desde la plataforma de gestión.</p>
                     </div>
                 </div>
                 <div className="text-right">

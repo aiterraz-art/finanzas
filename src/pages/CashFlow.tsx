@@ -1,230 +1,800 @@
-import { useState, useEffect } from "react";
+import { type ReactNode, useMemo, useState } from "react";
+import {
+  AlertTriangle,
+  ArrowDownRight,
+  ArrowUpRight,
+  CalendarDays,
+  Landmark,
+  Loader2,
+  ShieldAlert,
+  TrendingUp,
+  Wallet,
+} from "lucide-react";
+import { Link } from "react-router-dom";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { supabase } from "@/lib/supabase";
-import { format, addDays, startOfDay } from "date-fns";
-import { es } from "date-fns/locale";
-import { Trash2, Loader2 } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useCompany } from "@/contexts/CompanyContext";
+import {
+  useBankAccountPositions,
+  useCollectionPipeline,
+  usePaymentQueue,
+  useTreasuryForecast,
+  useTreasuryKpis,
+  useTreasuryOpenItems,
+  useTreasuryPolicy,
+} from "@/hooks/useTreasury";
+import {
+  PRIORITY_BADGE_CLASSES,
+  PRIORITY_LABELS,
+  formatTreasuryCurrency,
+  formatTreasuryDate,
+  getConfidenceClasses,
+  getConfidenceLabel,
+} from "@/lib/treasury";
+import type { TreasuryOpenItem, TreasuryWeek } from "@/lib/treasury";
+import { cn } from "@/lib/utils";
+
+const today = new Date().toISOString().split("T")[0];
+
+const sourceLabels: Record<string, string> = {
+  invoice_receivable: "Factura cliente",
+  invoice_payable: "Factura proveedor",
+  rendicion: "Rendicion",
+  commitment: "Compromiso",
+};
 
 export default function CashFlow() {
-    const { selectedEmpresaId } = useCompany();
-    const [loading, setLoading] = useState(true);
-    const [recurringExpenses, setRecurringExpenses] = useState<any[]>([]);
-    const [projectionData, setProjectionData] = useState<any[]>([]);
-    const [newExpense, setNewExpense] = useState({ descripcion: "", monto: "", dia_pago: "" });
+  const { selectedEmpresa, selectedEmpresaId } = useCompany();
+  const [asOfDate, setAsOfDate] = useState(today);
+  const [selectedWeek, setSelectedWeek] = useState<TreasuryWeek | null>(null);
+  const [calendarSourceFilter, setCalendarSourceFilter] = useState("all");
+  const [calendarDirectionFilter, setCalendarDirectionFilter] = useState("all");
+  const [calendarPriorityFilter, setCalendarPriorityFilter] = useState("all");
 
-    useEffect(() => {
-        if (selectedEmpresaId) fetchData();
-    }, [selectedEmpresaId]);
+  const { data: policy } = useTreasuryPolicy(selectedEmpresaId);
+  const { data: kpis, loading: loadingKpis, error: kpisError, refresh: refreshKpis } = useTreasuryKpis(selectedEmpresaId, asOfDate);
+  const { data: forecast, loading: loadingForecast, error: forecastError, refresh: refreshForecast } = useTreasuryForecast(selectedEmpresaId, asOfDate, 13);
+  const { data: paymentQueue, loading: loadingPayments, refresh: refreshPayments } = usePaymentQueue(selectedEmpresaId, asOfDate);
+  const { data: collectionPipeline, loading: loadingCollections, refresh: refreshCollections } = useCollectionPipeline(selectedEmpresaId, asOfDate);
+  const { data: bankPositions, loading: loadingAccounts, refresh: refreshAccounts } = useBankAccountPositions(selectedEmpresaId);
+  const { data: openItems, loading: loadingOpenItems, refresh: refreshOpenItems } = useTreasuryOpenItems(selectedEmpresaId);
 
-    const fetchData = async () => {
-        if (!selectedEmpresaId) return;
-        setLoading(true);
-        try {
-            const { data: recurring } = await supabase
-                .from('gastos_recurrentes')
-                .select('*')
-                .eq('empresa_id', selectedEmpresaId)
-                .eq('activo', true);
-            setRecurringExpenses(recurring || []);
-
-            const { data: latestMov } = await supabase
-                .from('movimientos_banco')
-                .select('saldo')
-                .eq('empresa_id', selectedEmpresaId)
-                .order('id_secuencial', { ascending: false })
-                .limit(1)
-                .single();
-            const currentBalance = latestMov?.saldo || 0;
-
-            const { data: pendingInvoices } = await supabase
-                .from('facturas')
-                .select('monto, fecha_vencimiento, fecha_emision')
-                .eq('empresa_id', selectedEmpresaId)
-                .eq('tipo', 'venta')
-                .eq('estado', 'pendiente');
-
-            const { data: pendingPurchases } = await supabase
-                .from('facturas')
-                .select('monto, fecha_vencimiento, fecha_emision')
-                .eq('empresa_id', selectedEmpresaId)
-                .eq('tipo', 'compra')
-                .eq('estado', 'pendiente');
-
-            const projections = [];
-            let runningBalance = currentBalance;
-            const now = startOfDay(new Date());
-
-            for (let i = 0; i < 30; i++) {
-                const date = addDays(now, i);
-                const dateString = format(date, 'yyyy-MM-dd');
-                const dayOfMonth = date.getDate();
-
-                const recurringToday = (recurring || []).filter(e => Number(e.dia_pago) === dayOfMonth).reduce((sum, e) => sum + Number(e.monto), 0);
-
-                const purchasesToday = (pendingPurchases || []).filter(inv => {
-                    const vDate = inv.fecha_vencimiento || (inv.fecha_emision ? format(addDays(new Date(inv.fecha_emision + 'T12:00:00'), 30), 'yyyy-MM-dd') : null);
-                    return vDate === dateString;
-                }).reduce((sum, inv) => sum + Number(inv.monto), 0);
-
-                const expensesToday = recurringToday + purchasesToday;
-
-                const incomeToday = (pendingInvoices || []).filter(inv => {
-                    const vDate = inv.fecha_vencimiento || (inv.fecha_emision ? format(addDays(new Date(inv.fecha_emision + 'T12:00:00'), 30), 'yyyy-MM-dd') : null);
-                    return vDate === dateString;
-                }).reduce((sum, inv) => sum + Number(inv.monto), 0);
-
-                runningBalance = runningBalance + incomeToday - expensesToday;
-                projections.push({
-                    date: format(date, 'dd MMM', { locale: es }),
-                    balance: runningBalance,
-                    income: incomeToday,
-                    expenses: expensesToday
-                });
-            }
-            setProjectionData(projections);
-        } catch (error) {
-            console.error(error);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const handleAddExpense = async () => {
-        if (!selectedEmpresaId) return;
-        const dia = parseInt(newExpense.dia_pago);
-        if (!newExpense.descripcion || !newExpense.monto || isNaN(dia) || dia < 1 || dia > 31) return;
-        try {
-            await supabase.from('gastos_recurrentes').insert([{ empresa_id: selectedEmpresaId, descripcion: newExpense.descripcion, monto: Number(newExpense.monto), dia_pago: dia, categoria: 'General' }]);
-            setNewExpense({ descripcion: "", monto: "", dia_pago: "" });
-            fetchData();
-        } catch (error) { console.error(error); }
-    };
-
-    const handleDeleteExpense = async (id: string) => {
-        if (!selectedEmpresaId) return;
-        await supabase.from('gastos_recurrentes').update({ activo: false }).eq('id', id).eq('empresa_id', selectedEmpresaId);
-        fetchData();
-    };
-
-    const formatCurrency = (amount: number) => {
-        return new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', minimumFractionDigits: 0 }).format(amount);
-    };
-
-    if (loading) return <div className="flex h-screen items-center justify-center"><Loader2 className="animate-spin" /></div>;
-
-    return (
-        <div className="container mx-auto py-6 space-y-8">
-            <h2 className="text-3xl font-bold tracking-tight">Flujo de Caja Proyectado</h2>
-
-            <div className="grid gap-6 md:grid-cols-3">
-                <Card className="md:col-span-2">
-                    <CardHeader>
-                        <CardTitle>Disponibilidad de Efectivo (Próximos 30 días)</CardTitle>
-                        <CardDescription>Barras: Movimiento del día | Línea: Saldo total acumulado.</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                        <div className="h-[430px] w-full relative pt-10 pb-20 px-6 group flex flex-col">
-                            {/* Grid Lines */}
-                            <div className="absolute inset-x-6 top-10 bottom-20 flex flex-col justify-between pointer-events-none">
-                                {[...Array(5)].map((_, i) => <div key={i} className="w-full border-t border-muted-foreground/10 border-dashed"></div>)}
-                            </div>
-
-                            <div className="flex-1 relative">
-                                <svg className="w-full h-full overflow-visible" preserveAspectRatio="none">
-                                    {(() => {
-                                        const maxBalance = Math.max(...projectionData.map(d => Math.abs(d.balance))) || 1;
-                                        const maxDaily = Math.max(...projectionData.map(d => Math.max(d.income, d.expenses))) || 1;
-                                        const width = 100 / projectionData.length;
-                                        const points = projectionData.map((d, i) => `${(i * width) + (width / 2)}%,${50 - (d.balance / maxBalance) * 40}%`).join(" ");
-
-                                        return (
-                                            <>
-                                                <line x1="0" y1="50%" x2="100%" y2="50%" stroke="currentColor" strokeOpacity="0.2" strokeWidth="1" />
-                                                {projectionData.map((d, i) => {
-                                                    const x = i * width;
-                                                    const barW = width * 0.8;
-                                                    const barX = x + (width * 0.1);
-                                                    const dailyNet = d.income - d.expenses;
-                                                    const h = (Math.abs(dailyNet) / maxDaily) * 45;
-                                                    const y = dailyNet >= 0 ? 50 - h : 50;
-
-                                                    return (
-                                                        <g key={i} className="group/item">
-                                                            <rect x={`${x}%`} y="0" width={`${width}%`} height="100%" className="fill-transparent cursor-pointer pointer-events-auto" />
-                                                            <rect x={`${barX}%`} y={`${y}%`} width={`${barW}%`} height={`${h}%`} className={`${dailyNet >= 0 ? 'fill-primary' : 'fill-red-400'} opacity-40 group-hover/item:opacity-100 transition-opacity pointer-events-none`} />
-                                                            <line x1={`${x + width / 2}%`} y1="0" x2={`${x + width / 2}%`} y2="100%" className="stroke-muted-foreground/30 stroke-1 opacity-0 group-hover/item:opacity-100 pointer-events-none" strokeDasharray="4 2" />
-                                                            <foreignObject x={`${(i / 30) > 0.7 ? (i * width) - 30 : (i * width)}%`} y="-20%" width="200" height="150" className="opacity-0 group-hover/item:opacity-100 transition-opacity z-50 overflow-visible pointer-events-none">
-                                                                <div className="bg-popover text-popover-foreground text-[11px] p-3 rounded-xl shadow-[0_10px_40px_rgba(0,0,0,0.2)] border-2 border-primary/20 bg-white/95 backdrop-blur-md">
-                                                                    <p className="font-bold border-b pb-2 mb-2 text-sm">{d.date}</p>
-                                                                    <div className="space-y-1.5">
-                                                                        <p className="flex justify-between gap-4"><span>Saldo Proyectado:</span> <strong className={d.balance >= 0 ? 'text-primary' : 'text-red-600'}>{formatCurrency(d.balance)}</strong></p>
-                                                                        {d.income > 0 && <p className="flex justify-between text-green-700"><span>Ingreso Hoy:</span> <span>+{formatCurrency(d.income)}</span></p>}
-                                                                        {d.expenses > 0 && <p className="flex justify-between text-red-600"><span>Gasto Hoy:</span> <span>-{formatCurrency(d.expenses)}</span></p>}
-                                                                    </div>
-                                                                </div>
-                                                            </foreignObject>
-                                                        </g>
-                                                    );
-                                                })}
-                                                <polyline fill="none" stroke="currentColor" strokeWidth="2.5" points={points} className="text-secondary/60 pointer-events-none" />
-                                                {projectionData.map((d, i) => (
-                                                    <circle key={i} cx={`${(i * width) + (width / 2)}%`} cy={`${50 - (d.balance / maxBalance) * 40}%`} r="4" className={`${d.balance >= 0 ? 'fill-primary' : 'fill-red-600'} pointer-events-none`} />
-                                                ))}
-                                            </>
-                                        );
-                                    })()}
-                                </svg>
-                            </div>
-
-                            {/* X-Axis Dates Labels (Outside SVG for stability) */}
-                            <div className="absolute inset-x-6 bottom-0 h-16 flex justify-between items-start pt-6 border-t pointer-events-none">
-                                {projectionData.map((d, i) => (
-                                    i % 4 === 0 ? (
-                                        <div key={i} className="flex-1 text-center">
-                                            <span className="text-[10px] font-bold text-muted-foreground block -rotate-45 origin-center mt-2">
-                                                {d.date}
-                                            </span>
-                                        </div>
-                                    ) : (
-                                        <div key={i} className="flex-1" />
-                                    )
-                                ))}
-                            </div>
-                        </div>
-
-                        <div className="mt-6 flex flex-wrap justify-center gap-6 text-sm border-t pt-6">
-                            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-primary/60 rounded"></div> Tendencia (Saldo)</div>
-                            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-primary/40 rounded"></div> Entrada</div>
-                            <div className="flex items-center gap-2"><div className="w-3 h-3 bg-red-400/40 rounded"></div> Salida</div>
-                        </div>
-                    </CardContent>
-                </Card>
-
-                <Card>
-                    <CardHeader><CardTitle>Gastos Recurrentes</CardTitle></CardHeader>
-                    <CardContent className="space-y-4">
-                        <Label>Nuevo Gasto</Label>
-                        <Input placeholder="Descripción" value={newExpense.descripcion} onChange={e => setNewExpense({ ...newExpense, descripcion: e.target.value })} />
-                        <div className="grid grid-cols-2 gap-2">
-                            <Input type="number" placeholder="Monto" value={newExpense.monto} onChange={e => setNewExpense({ ...newExpense, monto: e.target.value })} />
-                            <Input type="number" placeholder="Día" value={newExpense.dia_pago} onChange={e => setNewExpense({ ...newExpense, dia_pago: e.target.value })} />
-                        </div>
-                        <Button className="w-full" onClick={handleAddExpense}>Agregar</Button>
-                        <div className="pt-4 divide-y max-h-[300px] overflow-y-auto">
-                            {recurringExpenses.map(e => (
-                                <div key={e.id} className="py-2 flex justify-between items-center text-sm">
-                                    <div><p className="font-bold">{e.descripcion}</p><p className="text-xs text-muted-foreground">Día {e.dia_pago} • {formatCurrency(e.monto)}</p></div>
-                                    <Button variant="ghost" size="icon" onClick={() => handleDeleteExpense(e.id)}><Trash2 className="w-4 h-4 text-red-500" /></Button>
-                                </div>
-                            ))}
-                        </div>
-                    </CardContent>
-                </Card>
-            </div>
-        </div>
+  const selectedWeekItems = useMemo(() => {
+    if (!selectedWeek) return [];
+    return openItems.filter(
+      (item) => item.expectedDate >= selectedWeek.weekStart && item.expectedDate <= selectedWeek.weekEnd
     );
+  }, [openItems, selectedWeek]);
+
+  const filteredCalendarItems = useMemo(() => {
+    return openItems.filter((item) => {
+      if (calendarSourceFilter !== "all" && item.sourceType !== calendarSourceFilter) return false;
+      if (calendarDirectionFilter !== "all" && item.direction !== calendarDirectionFilter) return false;
+      if (calendarPriorityFilter !== "all" && item.priority !== calendarPriorityFilter) return false;
+      return true;
+    });
+  }, [calendarDirectionFilter, calendarPriorityFilter, calendarSourceFilter, openItems]);
+
+  const maxClosingCash = useMemo(() => {
+    const values = forecast.map((week) => Math.abs(week.closingCash));
+    return Math.max(...values, 1);
+  }, [forecast]);
+
+  const alerts = useMemo(() => {
+    const nextAlerts: Array<{ title: string; description: string; tone: "default" | "destructive" }> = [];
+
+    const negativeWeek = forecast.find((week) => week.negativeCash);
+    if (negativeWeek) {
+      nextAlerts.push({
+        title: "Caja negativa proyectada",
+        description: `La semana del ${formatTreasuryDate(negativeWeek.weekStart)} cierra en ${formatTreasuryCurrency(negativeWeek.closingCash, policy.monedaBase)}.`,
+        tone: "destructive",
+      });
+    }
+
+    const belowBufferWeek = forecast.find((week) => week.belowBuffer);
+    if (belowBufferWeek) {
+      nextAlerts.push({
+        title: "Buffer minimo comprometido",
+        description: `El forecast cae bajo el buffer durante la semana del ${formatTreasuryDate(belowBufferWeek.weekStart)}.`,
+        tone: "default",
+      });
+    }
+
+    if (kpis.staleBankAccountsCount > 0) {
+      nextAlerts.push({
+        title: "Cartolas desactualizadas",
+        description: `Hay ${kpis.staleBankAccountsCount} cuenta(s) sin importacion reciente.`,
+        tone: "default",
+      });
+    }
+
+    if (kpis.missingForecastDataCount > 0) {
+      nextAlerts.push({
+        title: "Datos incompletos para forecast",
+        description: `Hay ${kpis.missingForecastDataCount} documento(s) sin categoria o fecha esperada.`,
+        tone: "default",
+      });
+    }
+
+    if (kpis.taxesDueNext14d > 0 || kpis.payrollDueNext14d > 0) {
+      nextAlerts.push({
+        title: "Obligaciones sensibles en 14 dias",
+        description: `Impuestos ${formatTreasuryCurrency(kpis.taxesDueNext14d, policy.monedaBase)} y nomina ${formatTreasuryCurrency(kpis.payrollDueNext14d, policy.monedaBase)}.`,
+        tone: "default",
+      });
+    }
+
+    const pendingFollowup = collectionPipeline.filter((item) => {
+      if (!item.lastContactAt) return item.daysOverdue > 0;
+      return new Date(item.lastContactAt).getTime() < Date.now() - policy.missingFollowupDays * 24 * 60 * 60 * 1000;
+    });
+    if (pendingFollowup.length > 0) {
+      nextAlerts.push({
+        title: "Cobranzas sin gestion reciente",
+        description: `${pendingFollowup.length} factura(s) necesitan seguimiento comercial inmediato.`,
+        tone: "default",
+      });
+    }
+
+    return nextAlerts;
+  }, [collectionPipeline, forecast, kpis, policy]);
+
+  const handleRefreshAll = async () => {
+    await Promise.all([
+      refreshKpis(),
+      refreshForecast(),
+      refreshPayments(),
+      refreshCollections(),
+      refreshAccounts(),
+      refreshOpenItems(),
+    ]);
+  };
+
+  const loading =
+    loadingKpis ||
+    loadingForecast ||
+    loadingPayments ||
+    loadingCollections ||
+    loadingAccounts ||
+    loadingOpenItems;
+
+  if (!selectedEmpresaId) {
+    return (
+      <div className="flex h-[70vh] items-center justify-center">
+        <Card className="max-w-lg">
+          <CardHeader>
+            <CardTitle>Tesoreria sin empresa activa</CardTitle>
+            <CardDescription>Selecciona una empresa para calcular forecast, colas y alertas.</CardDescription>
+          </CardHeader>
+        </Card>
+      </div>
+    );
+  }
+
+  if (loading && forecast.length === 0 && paymentQueue.length === 0) {
+    return (
+      <div className="flex h-[70vh] items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Tesoreria</h1>
+          <p className="text-muted-foreground mt-1">
+            Cockpit de caja para {selectedEmpresa?.nombre || "la empresa"} con forecast semanal, pagos y cobranzas.
+          </p>
+        </div>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-muted-foreground">Fecha base</label>
+            <Input type="date" value={asOfDate} onChange={(event) => setAsOfDate(event.target.value)} className="w-[180px]" />
+          </div>
+          <Button variant="outline" onClick={handleRefreshAll}>
+            Actualizar cockpit
+          </Button>
+        </div>
+      </div>
+
+      {(kpisError || forecastError) && (
+        <Alert variant="destructive">
+          <ShieldAlert className="h-4 w-4" />
+          <AlertTitle>No se pudo cargar tesoreria</AlertTitle>
+          <AlertDescription>{kpisError || forecastError}</AlertDescription>
+        </Alert>
+      )}
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+        <MetricCard
+          title="Caja bancaria actual"
+          value={formatTreasuryCurrency(kpis.currentCash, policy.monedaBase)}
+          description="Saldo real por cuentas importadas"
+          icon={<Wallet className="h-4 w-4" />}
+        />
+        <MetricCard
+          title="Caja minima 13 semanas"
+          value={formatTreasuryCurrency(kpis.minProjectedCash, policy.monedaBase)}
+          description={kpis.minProjectedWeek ? `Semana del ${formatTreasuryDate(kpis.minProjectedWeek)}` : "Sin quiebres detectados"}
+          icon={<TrendingUp className="h-4 w-4" />}
+          tone={kpis.minProjectedCash < 0 ? "danger" : kpis.minProjectedCash < policy.minimumCashBuffer ? "warning" : "default"}
+        />
+        <MetricCard
+          title="Salidas 7 dias"
+          value={formatTreasuryCurrency(kpis.dueOutflowsNext7d, policy.monedaBase)}
+          description="Compromisos abiertos y cola de pagos"
+          icon={<ArrowDownRight className="h-4 w-4" />}
+          tone="warning"
+        />
+        <MetricCard
+          title="Entradas 7 dias"
+          value={formatTreasuryCurrency(kpis.expectedInflowsNext7d, policy.monedaBase)}
+          description="Cobros ponderados por probabilidad"
+          icon={<ArrowUpRight className="h-4 w-4" />}
+        />
+        <MetricCard
+          title="Buffer disponible"
+          value={formatTreasuryCurrency(kpis.freeCashNext7d, policy.monedaBase)}
+          description={`Buffer minimo ${formatTreasuryCurrency(policy.minimumCashBuffer, policy.monedaBase)}`}
+          icon={<Landmark className="h-4 w-4" />}
+          tone={kpis.freeCashNext7d < 0 ? "danger" : "default"}
+        />
+        <MetricCard
+          title="Riesgos operativos"
+          value={`${kpis.staleBankAccountsCount + kpis.missingForecastDataCount}`}
+          description="Cartolas viejas + datos faltantes"
+          icon={<AlertTriangle className="h-4 w-4" />}
+          tone={kpis.staleBankAccountsCount + kpis.missingForecastDataCount > 0 ? "warning" : "default"}
+        />
+      </div>
+
+      {alerts.length > 0 && (
+        <div className="grid gap-3 lg:grid-cols-2">
+          {alerts.map((alert, index) => (
+            <Alert key={`${alert.title}-${index}`} variant={alert.tone === "destructive" ? "destructive" : "default"}>
+              <AlertTriangle className="h-4 w-4" />
+              <AlertTitle>{alert.title}</AlertTitle>
+              <AlertDescription>{alert.description}</AlertDescription>
+            </Alert>
+          ))}
+        </div>
+      )}
+
+      <Tabs defaultValue="forecast" className="space-y-4">
+        <TabsList className="grid h-auto grid-cols-2 gap-1 md:grid-cols-5">
+          <TabsTrigger value="forecast">Forecast</TabsTrigger>
+          <TabsTrigger value="payments">Pagos</TabsTrigger>
+          <TabsTrigger value="collections">Cobros</TabsTrigger>
+          <TabsTrigger value="calendar">Calendario</TabsTrigger>
+          <TabsTrigger value="accounts">Cuentas</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="forecast" className="space-y-4">
+          <div className="grid gap-4 xl:grid-cols-[1.4fr_0.9fr]">
+            <Card>
+              <CardHeader>
+                <CardTitle>Forecast 13 semanas</CardTitle>
+                <CardDescription>Entradas ponderadas por probabilidad y salidas comprometidas al 100%.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-5">
+                <div className="grid gap-3 md:grid-cols-13">
+                  {forecast.map((week) => {
+                    const height = Math.max((Math.abs(week.closingCash) / maxClosingCash) * 160, 14);
+                    return (
+                      <button
+                        key={week.weekStart}
+                        type="button"
+                        onClick={() => setSelectedWeek(week)}
+                        className="group rounded-xl border bg-muted/20 p-3 text-left transition hover:border-primary/40 hover:bg-primary/5"
+                      >
+                        <div className="text-[11px] font-medium uppercase text-muted-foreground">
+                          {formatTreasuryDate(week.weekStart)}
+                        </div>
+                        <div className="mt-3 flex h-44 items-end justify-center">
+                          <div
+                            className={cn(
+                              "w-full rounded-t-lg transition-all",
+                              week.negativeCash
+                                ? "bg-red-500"
+                                : week.belowBuffer
+                                  ? "bg-amber-400"
+                                  : "bg-emerald-500"
+                            )}
+                            style={{ height }}
+                          />
+                        </div>
+                        <div className="mt-3 space-y-1">
+                          <div className="text-sm font-semibold">
+                            {formatTreasuryCurrency(week.closingCash, policy.monedaBase)}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            {formatTreasuryCurrency(week.expectedInflows, policy.monedaBase)} / {formatTreasuryCurrency(week.committedOutflows, policy.monedaBase)}
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="overflow-x-auto rounded-xl border">
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
+                      <tr>
+                        <th className="px-4 py-3 text-left">Semana</th>
+                        <th className="px-4 py-3 text-right">Apertura</th>
+                        <th className="px-4 py-3 text-right">Entradas</th>
+                        <th className="px-4 py-3 text-right">Salidas</th>
+                        <th className="px-4 py-3 text-right">Cierre</th>
+                        <th className="px-4 py-3 text-center">Estado</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {forecast.map((week) => (
+                        <tr key={week.weekStart} className="border-t">
+                          <td className="px-4 py-3">
+                            <button type="button" className="font-medium text-primary" onClick={() => setSelectedWeek(week)}>
+                              {formatTreasuryDate(week.weekStart)} - {formatTreasuryDate(week.weekEnd)}
+                            </button>
+                          </td>
+                          <td className="px-4 py-3 text-right">{formatTreasuryCurrency(week.openingCash, policy.monedaBase)}</td>
+                          <td className="px-4 py-3 text-right text-emerald-700">{formatTreasuryCurrency(week.expectedInflows, policy.monedaBase)}</td>
+                          <td className="px-4 py-3 text-right text-red-700">{formatTreasuryCurrency(week.committedOutflows, policy.monedaBase)}</td>
+                          <td className="px-4 py-3 text-right font-semibold">{formatTreasuryCurrency(week.closingCash, policy.monedaBase)}</td>
+                          <td className="px-4 py-3 text-center">
+                            <Badge
+                              variant="outline"
+                              className={cn(
+                                week.negativeCash
+                                  ? "border-red-200 bg-red-50 text-red-700"
+                                  : week.belowBuffer
+                                    ? "border-amber-200 bg-amber-50 text-amber-700"
+                                    : "border-emerald-200 bg-emerald-50 text-emerald-700"
+                              )}
+                            >
+                              {week.negativeCash ? "Caja negativa" : week.belowBuffer ? "Bajo buffer" : "Controlado"}
+                            </Badge>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Alertas de decision</CardTitle>
+                <CardDescription>Se construyen desde forecast, cobranzas, cuentas e higiene de datos.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {alerts.length === 0 && (
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+                    No hay alertas criticas para la fecha base seleccionada.
+                  </div>
+                )}
+                {alerts.map((alert, index) => (
+                  <div key={`${alert.title}-${index}`} className="rounded-lg border p-4">
+                    <div className="font-medium">{alert.title}</div>
+                    <div className="mt-1 text-sm text-muted-foreground">{alert.description}</div>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="payments">
+            <Card>
+            <CardHeader className="flex flex-row items-center justify-between gap-4">
+              <div>
+                <CardTitle>Cola de pagos</CardTitle>
+                <CardDescription>Prioriza egresos por criticidad, vencimiento y restricciones de caja.</CardDescription>
+              </div>
+              <Button variant="ghost" size="sm" asChild>
+                <Link to="/egresos">Abrir Egresos</Link>
+              </Button>
+            </CardHeader>
+            <CardContent className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
+                  <tr>
+                    <th className="px-4 py-3 text-left">Contraparte</th>
+                    <th className="px-4 py-3 text-left">Categoria</th>
+                    <th className="px-4 py-3 text-right">Monto</th>
+                    <th className="px-4 py-3 text-left">Vencimiento</th>
+                    <th className="px-4 py-3 text-left">Fecha esperada</th>
+                    <th className="px-4 py-3 text-center">Prioridad</th>
+                    <th className="px-4 py-3 text-left">Accion sugerida</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {paymentQueue.map((item) => (
+                    <tr key={`${item.sourceType}-${item.sourceId}`} className="border-t">
+                      <td className="px-4 py-3">
+                        <div className="font-medium">{item.counterparty}</div>
+                        <div className="text-xs text-muted-foreground">{sourceLabels[item.sourceType] || item.sourceType}</div>
+                      </td>
+                      <td className="px-4 py-3">{item.categoryName}</td>
+                      <td className="px-4 py-3 text-right font-semibold">{formatTreasuryCurrency(item.amount, policy.monedaBase)}</td>
+                      <td className="px-4 py-3">{formatTreasuryDate(item.dueDate)}</td>
+                      <td className="px-4 py-3">{formatTreasuryDate(item.expectedDate)}</td>
+                      <td className="px-4 py-3 text-center">
+                        <Badge variant="outline" className={cn("capitalize", PRIORITY_BADGE_CLASSES[item.priority])}>
+                          {PRIORITY_LABELS[item.priority]}
+                        </Badge>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="font-medium">{item.suggestedAction}</div>
+                        {item.notes && <div className="text-xs text-muted-foreground">{item.notes}</div>}
+                      </td>
+                    </tr>
+                  ))}
+                  {paymentQueue.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="px-4 py-10 text-center text-muted-foreground">
+                        {loadingPayments ? "Cargando cola de pagos..." : "No hay egresos abiertos para la fecha seleccionada."}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="collections">
+          <Card>
+            <CardHeader>
+              <CardTitle>Pipeline de cobranzas</CardTitle>
+              <CardDescription>Seguimiento comercial para empujar cobros reales, no solo documentos vencidos.</CardDescription>
+            </CardHeader>
+            <CardContent className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
+                  <tr>
+                    <th className="px-4 py-3 text-left">Cliente</th>
+                    <th className="px-4 py-3 text-right">Monto</th>
+                    <th className="px-4 py-3 text-left">Vence</th>
+                    <th className="px-4 py-3 text-left">Fecha esperada</th>
+                    <th className="px-4 py-3 text-center">Confianza</th>
+                    <th className="px-4 py-3 text-left">Ultima gestion</th>
+                    <th className="px-4 py-3 text-left">Accion sugerida</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {collectionPipeline.map((item) => (
+                    <tr key={item.facturaId} className="border-t">
+                      <td className="px-4 py-3">
+                        <div className="font-medium">{item.terceroNombre}</div>
+                        <div className="text-xs text-muted-foreground">Doc. {item.numeroDocumento || "S/F"}</div>
+                      </td>
+                      <td className="px-4 py-3 text-right font-semibold">{formatTreasuryCurrency(item.amount, policy.monedaBase)}</td>
+                      <td className="px-4 py-3">{formatTreasuryDate(item.dueDate)}</td>
+                      <td className="px-4 py-3">
+                        <div>{formatTreasuryDate(item.expectedDate)}</div>
+                        {item.promisedPaymentDate && (
+                          <div className="text-xs text-muted-foreground">Promesa {formatTreasuryDate(item.promisedPaymentDate)}</div>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <div className={cn("font-semibold", getConfidenceClasses(item.confidencePct))}>
+                          {item.confidencePct}%
+                        </div>
+                        <div className="text-xs text-muted-foreground">{getConfidenceLabel(item.confidencePct)}</div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div>{item.lastContactAt ? new Date(item.lastContactAt).toLocaleDateString("es-CL") : "Sin gestion"}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {item.daysOverdue > 0 ? `${item.daysOverdue} dias de mora` : "Al dia"}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="font-medium">{item.suggestedNextAction}</div>
+                        {item.disputed && <div className="text-xs text-red-600">Factura en disputa</div>}
+                      </td>
+                    </tr>
+                  ))}
+                  {collectionPipeline.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="px-4 py-10 text-center text-muted-foreground">
+                        {loadingCollections ? "Cargando pipeline..." : "No hay cobranzas abiertas para la fecha seleccionada."}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="calendar">
+          <Card>
+            <CardHeader>
+              <CardTitle>Calendario de compromisos</CardTitle>
+              <CardDescription>Todos los flujos futuros relevantes normalizados en una sola cola cronologica.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-3">
+                <Select value={calendarSourceFilter} onValueChange={setCalendarSourceFilter}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Origen" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos los orígenes</SelectItem>
+                    <SelectItem value="invoice_receivable">Facturas cliente</SelectItem>
+                    <SelectItem value="invoice_payable">Facturas proveedor</SelectItem>
+                    <SelectItem value="rendicion">Rendiciones</SelectItem>
+                    <SelectItem value="commitment">Compromisos</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select value={calendarDirectionFilter} onValueChange={setCalendarDirectionFilter}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Dirección" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Entradas y salidas</SelectItem>
+                    <SelectItem value="inflow">Solo entradas</SelectItem>
+                    <SelectItem value="outflow">Solo salidas</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select value={calendarPriorityFilter} onValueChange={setCalendarPriorityFilter}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Prioridad" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todas las prioridades</SelectItem>
+                    <SelectItem value="critical">Crítica</SelectItem>
+                    <SelectItem value="high">Alta</SelectItem>
+                    <SelectItem value="normal">Normal</SelectItem>
+                    <SelectItem value="deferrable">Postergable</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {filteredCalendarItems.map((item) => (
+                <div key={`${item.sourceType}-${item.sourceId}`} className="rounded-xl border p-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">{item.counterparty}</span>
+                        <Badge variant="outline" className={cn("capitalize", PRIORITY_BADGE_CLASSES[item.priority])}>
+                          {PRIORITY_LABELS[item.priority]}
+                        </Badge>
+                        <Badge variant="secondary">{sourceLabels[item.sourceType] || item.sourceType}</Badge>
+                      </div>
+                      <div className="mt-1 text-sm text-muted-foreground">
+                        {item.categoryName} • {formatTreasuryDate(item.expectedDate)}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className={cn("font-semibold", item.direction === "inflow" ? "text-emerald-700" : "text-red-700")}>
+                        {item.direction === "inflow" ? "+" : "-"}
+                        {formatTreasuryCurrency(item.amount, policy.monedaBase)}
+                      </div>
+                      <div className="text-xs text-muted-foreground">Vence {formatTreasuryDate(item.dueDate)}</div>
+                    </div>
+                  </div>
+                  {item.notes && <div className="mt-3 text-sm text-muted-foreground">{item.notes}</div>}
+                </div>
+              ))}
+              {filteredCalendarItems.length === 0 && (
+                <div className="rounded-xl border border-dashed p-8 text-center text-muted-foreground">
+                  {loadingOpenItems ? "Cargando calendario..." : "No hay compromisos abiertos para la empresa."}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="accounts">
+          <Card>
+            <CardHeader>
+              <CardTitle>Cuentas bancarias</CardTitle>
+              <CardDescription>Posicion actual por cuenta, ultima cartola y foco de conciliacion.</CardDescription>
+            </CardHeader>
+            <CardContent className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
+                  <tr>
+                    <th className="px-4 py-3 text-left">Cuenta</th>
+                    <th className="px-4 py-3 text-left">Banco</th>
+                    <th className="px-4 py-3 text-right">Saldo actual</th>
+                    <th className="px-4 py-3 text-left">Ultima cartola</th>
+                    <th className="px-4 py-3 text-right">No conciliados</th>
+                    <th className="px-4 py-3 text-center">Estado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bankPositions.map((account) => (
+                    <tr key={account.bankAccountId} className="border-t">
+                      <td className="px-4 py-3">
+                        <div className="font-medium">{account.accountName}</div>
+                        <div className="text-xs text-muted-foreground">{account.tipo}</div>
+                      </td>
+                      <td className="px-4 py-3">{account.banco || "Banco no informado"}</td>
+                      <td className="px-4 py-3 text-right font-semibold">
+                        {formatTreasuryCurrency(account.currentBalance, account.moneda)}
+                      </td>
+                      <td className="px-4 py-3">{formatTreasuryDate(account.latestStatementDate, "Sin cartola")}</td>
+                      <td className="px-4 py-3 text-right">
+                        <div>{account.unreconciledCount} mov.</div>
+                        <div className="text-xs text-muted-foreground">
+                          {formatTreasuryCurrency(account.unreconciledAmount, account.moneda)}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            account.staleImport
+                              ? "border-amber-200 bg-amber-50 text-amber-700"
+                              : "border-emerald-200 bg-emerald-50 text-emerald-700"
+                          )}
+                        >
+                          {account.staleImport ? "Importacion vieja" : "Al dia"}
+                        </Badge>
+                      </td>
+                    </tr>
+                  ))}
+                  {bankPositions.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-10 text-center text-muted-foreground">
+                        {loadingAccounts ? "Cargando cuentas..." : "No hay cuentas bancarias configuradas."}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
+
+      <Dialog open={Boolean(selectedWeek)} onOpenChange={(open) => !open && setSelectedWeek(null)}>
+        <DialogContent className="max-w-4xl">
+          <DialogHeader>
+            <DialogTitle>Detalle semanal</DialogTitle>
+            <DialogDescription>
+              {selectedWeek
+                ? `Semana del ${formatTreasuryDate(selectedWeek.weekStart)} al ${formatTreasuryDate(selectedWeek.weekEnd)}.`
+                : "Selecciona una semana para revisar su composicion."}
+            </DialogDescription>
+          </DialogHeader>
+
+          {selectedWeek && (
+            <div className="space-y-4">
+              <div className="grid gap-4 md:grid-cols-4">
+                <SmallMetric title="Apertura" value={formatTreasuryCurrency(selectedWeek.openingCash, policy.monedaBase)} icon={<Wallet className="h-4 w-4" />} />
+                <SmallMetric title="Entradas" value={formatTreasuryCurrency(selectedWeek.expectedInflows, policy.monedaBase)} icon={<ArrowUpRight className="h-4 w-4" />} />
+                <SmallMetric title="Salidas" value={formatTreasuryCurrency(selectedWeek.committedOutflows, policy.monedaBase)} icon={<ArrowDownRight className="h-4 w-4" />} />
+                <SmallMetric title="Cierre" value={formatTreasuryCurrency(selectedWeek.closingCash, policy.monedaBase)} icon={<CalendarDays className="h-4 w-4" />} />
+              </div>
+
+              <div className="overflow-x-auto rounded-xl border">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
+                    <tr>
+                      <th className="px-4 py-3 text-left">Origen</th>
+                      <th className="px-4 py-3 text-left">Contraparte</th>
+                      <th className="px-4 py-3 text-left">Fecha esperada</th>
+                      <th className="px-4 py-3 text-right">Monto</th>
+                      <th className="px-4 py-3 text-center">Prioridad</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selectedWeekItems.map((item: TreasuryOpenItem) => (
+                      <tr key={`${item.sourceType}-${item.sourceId}`} className="border-t">
+                        <td className="px-4 py-3">{sourceLabels[item.sourceType] || item.sourceType}</td>
+                        <td className="px-4 py-3">
+                          <div className="font-medium">{item.counterparty}</div>
+                          <div className="text-xs text-muted-foreground">{item.categoryName}</div>
+                        </td>
+                        <td className="px-4 py-3">{formatTreasuryDate(item.expectedDate)}</td>
+                        <td className={cn("px-4 py-3 text-right font-semibold", item.direction === "inflow" ? "text-emerald-700" : "text-red-700")}>
+                          {item.direction === "inflow" ? "+" : "-"}
+                          {formatTreasuryCurrency(item.amount, policy.monedaBase)}
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          <Badge variant="outline" className={cn("capitalize", PRIORITY_BADGE_CLASSES[item.priority])}>
+                            {PRIORITY_LABELS[item.priority]}
+                          </Badge>
+                        </td>
+                      </tr>
+                    ))}
+                    {selectedWeekItems.length === 0 && (
+                      <tr>
+                        <td colSpan={5} className="px-4 py-10 text-center text-muted-foreground">
+                          No hay items abiertos en esta semana.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function MetricCard({
+  title,
+  value,
+  description,
+  icon,
+  tone = "default",
+}: {
+  title: string;
+  value: string;
+  description: string;
+  icon: ReactNode;
+  tone?: "default" | "warning" | "danger";
+}) {
+  return (
+    <Card className={cn(tone === "danger" && "border-red-200", tone === "warning" && "border-amber-200")}>
+      <CardHeader className="flex flex-row items-center justify-between pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
+        <div
+          className={cn(
+            "rounded-full p-2",
+            tone === "danger"
+              ? "bg-red-50 text-red-700"
+              : tone === "warning"
+                ? "bg-amber-50 text-amber-700"
+                : "bg-primary/10 text-primary"
+          )}
+        >
+          {icon}
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="text-2xl font-bold">{value}</div>
+        <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function SmallMetric({
+  title,
+  value,
+  icon,
+}: {
+  title: string;
+  value: string;
+  icon: ReactNode;
+}) {
+  return (
+    <div className="rounded-xl border bg-muted/20 p-4">
+      <div className="flex items-center justify-between text-sm text-muted-foreground">
+        <span>{title}</span>
+        {icon}
+      </div>
+      <div className="mt-2 text-lg font-semibold">{value}</div>
+    </div>
+  );
 }

@@ -80,7 +80,7 @@ export default function InvoicesList() {
                     <h2 className="text-3xl font-bold tracking-tight">Facturas</h2>
                     <p className="text-muted-foreground">Gestiona y revisa todas tus facturas reales almacenadas en la base de datos.</p>
                 </div>
-                <Link to="/invoices/new">
+                <Link to="/facturas/nueva">
                     <Button>
                         <Plus className="mr-2 h-4 w-4" /> Nueva Factura
                     </Button>

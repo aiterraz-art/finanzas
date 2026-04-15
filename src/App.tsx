@@ -1,4 +1,4 @@
-import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
+import { BrowserRouter as Router, Navigate, Outlet, Route, Routes, useLocation } from "react-router-dom";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import Dashboard from "@/pages/Dashboard";
 import Clientes from "@/pages/Clientes";
@@ -12,31 +12,39 @@ import Collections from "@/pages/Collections";
 import Budgets from "@/pages/Budgets";
 import ReconciliationAudit from "@/pages/ReconciliationAudit";
 import Rendiciones from "@/pages/Rendiciones";
+import Egresos from "@/pages/Egresos";
 
 import ManualInvoiceEntry from "@/pages/ManualInvoiceEntry";
+import InvoicesList from "@/pages/InvoicesList";
 import Users from "@/pages/Users";
 
 import Login from "@/pages/Login";
 import ResetPassword from "@/pages/ResetPassword";
 import RendicionPrint from "@/pages/RendicionPrint";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
-import { CompanyProvider } from "@/contexts/CompanyContext";
-import { Navigate, Outlet } from "react-router-dom";
+import { CompanyProvider, useCompany } from "@/contexts/CompanyContext";
 
 const ProtectedRoute = () => {
   const { session, user, loading } = useAuth();
+  const location = useLocation();
 
-  // Mientras carga el estado de autenticación, no redirigimos ni mostramos nada (o un spinner)
-  if (loading) return null; // O un spinner centralizado
+  if (loading) return null;
 
   if (!session) return <Navigate to="/login" replace />;
 
-  // Si el usuario debe cambiar su contraseña, lo mandamos a reset-password
-  // a menos que ya esté ahí.
   const mustChange = user?.user_metadata?.must_change_password;
-  if (mustChange && window.location.pathname !== '/reset-password') {
+  if (mustChange && location.pathname !== "/reset-password") {
     return <Navigate to="/reset-password" replace />;
   }
+
+  return <Outlet />;
+};
+
+const AdminRoute = () => {
+  const { loading, isGlobalAdmin } = useCompany();
+
+  if (loading) return null;
+  if (!isGlobalAdmin) return <Navigate to="/" replace />;
 
   return <Outlet />;
 };
@@ -60,16 +68,22 @@ function App() {
                 <Route path="reports" element={<Reports />} />
                 <Route path="settings" element={<Settings />} />
                 <Route path="reconciliation" element={<BankReconciliation />} />
+                <Route path="banco" element={<Navigate to="/reconciliation" replace />} />
                 <Route path="cashflow" element={<CashFlow />} />
+                <Route path="egresos" element={<Egresos />} />
+                <Route path="expenses" element={<Navigate to="/egresos" replace />} />
                 <Route path="collections" element={<Collections />} />
                 <Route path="budgets" element={<Budgets />} />
                 <Route path="audit" element={<ReconciliationAudit />} />
                 <Route path="rendiciones" element={<Rendiciones />} />
                 <Route path="rendiciones/print/:id" element={<RendicionPrint />} />
-                <Route path="users" element={<Users />} />
-                <Route path="empresas" element={<Navigate to="/users" replace />} />
+                <Route path="facturas" element={<InvoicesList />} />
                 <Route path="invoices/new" element={<ManualInvoiceEntry />} />
                 <Route path="facturas/nueva" element={<ManualInvoiceEntry />} />
+                <Route element={<AdminRoute />}>
+                  <Route path="users" element={<Users />} />
+                  <Route path="empresas" element={<Navigate to="/users" replace />} />
+                </Route>
                 <Route path="*" element={<Dashboard />} />
               </Route>
             </Route>

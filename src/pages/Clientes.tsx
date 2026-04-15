@@ -1,661 +1,587 @@
-import { Label } from "@/components/ui/label";
-import { useState, useEffect } from "react";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import { Search, ArrowRight, Plus, Loader2, MapPin, Trash2, Mail } from "lucide-react";
-import { cn } from "@/lib/utils";
-import { supabase } from "@/lib/supabase";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { queueCollectionReminder } from "@/lib/internalAutomation";
-import { useCompany } from "@/contexts/CompanyContext";
+import { useEffect, useMemo, useState } from "react";
 import { addDays, format } from "date-fns";
+import { HandCoins, Loader2, Plus, Search } from "lucide-react";
+import { Link } from "react-router-dom";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
+import { useCompany } from "@/contexts/CompanyContext";
+import { useAuth } from "@/contexts/AuthContext";
+import { supabase } from "@/lib/supabase";
+import {
+  canEditTreasury,
+  formatTreasuryCurrency,
+  formatTreasuryDate,
+  formatTreasuryDateTime,
+  getConfidenceClasses,
+  getConfidenceLabel,
+} from "@/lib/treasury";
+import { useCollectionPipeline, useTreasuryCategories } from "@/hooks/useTreasury";
+import { cn } from "@/lib/utils";
 
-import { useNavigate } from "react-router-dom";
+type Cliente = {
+  id: string;
+  rut: string;
+  razon_social: string;
+  email: string | null;
+  telefono: string | null;
+  direccion: string | null;
+  plazo_pago_dias?: number | null;
+};
+
+const today = new Date().toISOString().split("T")[0];
 
 export default function Clientes() {
-    const { selectedEmpresaId } = useCompany();
-    const navigate = useNavigate();
-    const [clientes, setClientes] = useState<any[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [searchQuery, setSearchQuery] = useState("");
-    const [isNewClienteOpen, setIsNewClienteOpen] = useState(false);
-    const [isSavingCliente, setIsSavingCliente] = useState(false);
-    const [isNewInvoiceOpen, setIsNewInvoiceOpen] = useState(false);
-    const [isSavingInvoice, setIsSavingInvoice] = useState(false);
-    const [newClienteData, setNewClienteData] = useState({
-        rut: "",
-        razon_social: "",
-        email: "",
-        telefono: "",
-        direccion: "",
-        plazo_pago_dias: 30
-    });
-    const [newInvoiceData, setNewInvoiceData] = useState({
-        tercero_id: "",
-        fecha_emision: new Date().toISOString().split("T")[0],
-        numero_documento: "",
-        monto: ""
-    });
+  const { selectedEmpresaId, selectedRole } = useCompany();
+  const { user } = useAuth();
+  const canEdit = canEditTreasury(selectedRole);
+  const [clientes, setClientes] = useState<Cliente[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [isNewClienteOpen, setIsNewClienteOpen] = useState(false);
+  const [isSavingCliente, setIsSavingCliente] = useState(false);
+  const [isNewInvoiceOpen, setIsNewInvoiceOpen] = useState(false);
+  const [isSavingInvoice, setIsSavingInvoice] = useState(false);
+  const [promiseTarget, setPromiseTarget] = useState<any | null>(null);
+  const [savingPromise, setSavingPromise] = useState(false);
+  const [newClienteData, setNewClienteData] = useState({
+    rut: "",
+    razon_social: "",
+    email: "",
+    telefono: "",
+    direccion: "",
+    plazo_pago_dias: 30,
+  });
+  const [newInvoiceData, setNewInvoiceData] = useState({
+    tercero_id: "",
+    fecha_emision: today,
+    numero_documento: "",
+    monto: "",
+  });
+  const [promiseForm, setPromiseForm] = useState({
+    promisedDate: "",
+    promisedAmount: "",
+    channel: "call",
+    notes: "",
+  });
 
-    useEffect(() => {
-        if (selectedEmpresaId) fetchClientes();
-    }, [selectedEmpresaId]);
+  const { data: collectionPipeline, loading: pipelineLoading, refresh: refreshPipeline } = useCollectionPipeline(selectedEmpresaId, today);
+  const { data: treasuryCategories } = useTreasuryCategories(selectedEmpresaId);
 
-    const handleSendCollectionEmail = async (cliente: any) => {
-        if (!selectedEmpresaId) return;
-        const saldo = getClienteSaldo(cliente.facturas);
-        if (saldo <= 0) {
-            alert("Este cliente no tiene saldo pendiente.");
-            return;
-        }
+  useEffect(() => {
+    if (selectedEmpresaId) {
+      void fetchClientes();
+    }
+  }, [selectedEmpresaId]);
 
-        const confirm = window.confirm(`¿Deseas enviar un recordatorio de cobranza por ${formatCurrency(saldo)} a ${cliente.razon_social}?`);
-        if (!confirm) return;
+  const fetchClientes = async () => {
+    if (!selectedEmpresaId) return;
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("terceros")
+        .select("id, rut, razon_social, email, telefono, direccion, plazo_pago_dias")
+        .eq("empresa_id", selectedEmpresaId)
+        .eq("tipo", "cliente")
+        .eq("estado", "activo")
+        .order("razon_social", { ascending: true });
+      if (error) throw error;
+      setClientes((data || []) as Cliente[]);
+    } catch (error) {
+      console.error("Error fetching clientes:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-        try {
-            await queueCollectionReminder({
-                empresa_id: selectedEmpresaId,
-                tercero_id: cliente.id,
-                nombre: cliente.razon_social,
-                email: cliente.email || 'no-email@example.com',
-                saldo_total: saldo,
-                antiguedad: getAgingData(cliente)?.diffDays || 0
-            });
-            alert("Recordatorio de cobranza encolado en el sistema interno.");
-        } catch (error: any) {
-            console.error("Error enviando cobranza:", error);
-            alert(`No se pudo enviar la cobranza: ${error.message}`);
-        }
-    };
+  const groupedClients = useMemo(() => {
+    const pipelineByClient = new Map<string, any[]>();
+    for (const item of collectionPipeline) {
+      const current = pipelineByClient.get(item.terceroId) || [];
+      current.push(item);
+      pipelineByClient.set(item.terceroId, current);
+    }
 
-    const handleCreateClienteManual = async () => {
-        if (!selectedEmpresaId) return;
-        if (!newClienteData.rut || !newClienteData.razon_social || !newClienteData.email || !newClienteData.telefono) {
-            alert("RUT, Razón Social, Email y Teléfono son campos obligatorios.");
-            return;
-        }
+    return clientes
+      .map((cliente) => {
+        const invoices = pipelineByClient.get(cliente.id) || [];
+        const outstanding = invoices.reduce((sum, invoice) => sum + invoice.amount, 0);
+        const activePromises = invoices.filter((invoice) => invoice.promisedPaymentDate).length;
+        const highestOverdue = invoices.reduce((max, invoice) => Math.max(max, invoice.daysOverdue), 0);
+        return {
+          ...cliente,
+          invoices,
+          outstanding,
+          activePromises,
+          highestOverdue,
+        };
+      })
+      .filter((cliente) => {
+        const normalized = searchQuery.trim().toLowerCase();
+        if (!normalized) return true;
+        return (
+          cliente.razon_social.toLowerCase().includes(normalized) ||
+          cliente.rut.toLowerCase().includes(normalized) ||
+          cliente.invoices.some((invoice) => invoice.numeroDocumento.toLowerCase().includes(normalized))
+        );
+      });
+  }, [clientes, collectionPipeline, searchQuery]);
 
-        setIsSavingCliente(true);
-        try {
-            const cleanRut = newClienteData.rut.replace(/\./g, '').replace(/-/g, '').toUpperCase();
-            const { data, error } = await supabase
-                .from('terceros')
-                .insert([{
-                    empresa_id: selectedEmpresaId,
-                    ...newClienteData,
-                    rut: cleanRut,
-                    tipo: 'cliente',
-                    estado: 'activo'
-                }])
-                .select()
-                .single();
-
-            if (error) throw error;
-
-            setClientes(prev => [data, ...prev]);
-            setIsNewClienteOpen(false);
-            setNewClienteData({ rut: "", razon_social: "", email: "", telefono: "", direccion: "", plazo_pago_dias: 30 });
-            alert("Cliente creado correctamente.");
-        } catch (error: any) {
-            console.error("Error al crear cliente:", error);
-            alert(`Error: ${error.message}`);
-        } finally {
-            setIsSavingCliente(false);
-        }
-    };
-
-    const handleDeleteCliente = async (cliente: any) => {
-        if (!selectedEmpresaId) return;
-        const hasDocs = (cliente.facturas || []).length > 0;
-        const msg = hasDocs
-            ? `ATENCIÓN: El cliente ${cliente.razon_social} tiene ${cliente.facturas.length} documentos asociados. Si lo borras, se ELIMINARÁN permanentemente todas sus facturas. ¿Deseas continuar?`
-            : `¿Estás seguro de que deseas eliminar al cliente ${cliente.razon_social}?`;
-
-        const confirm = window.confirm(msg);
-        if (!confirm) return;
-
-        try {
-            // 1. Primero eliminamos las facturas asociadas para evitar error de foreign key
-            if (hasDocs) {
-                const { error: fError } = await supabase
-                    .from('facturas')
-                    .delete()
-                    .eq('tercero_id', cliente.id)
-                    .eq('empresa_id', selectedEmpresaId); // Borramos por ID relacional para asegurar integridad
-
-                if (fError) throw fError;
-            }
-
-            // 2. Ahora borramos al tercero
-            const { error } = await supabase
-                .from('terceros')
-                .delete()
-                .eq('id', cliente.id)
-                .eq('empresa_id', selectedEmpresaId);
-
-            if (error) throw error;
-
-            setClientes(prev => prev.filter(c => c.id !== cliente.id));
-            alert("Cliente y sus documentos eliminados correctamente.");
-        } catch (error: any) {
-            console.error("Error al eliminar cliente:", error);
-            alert(`Error al eliminar: ${error.message}`);
-        }
-    };
-
-    const handleCreateVentaInvoice = async () => {
-        if (!selectedEmpresaId) return;
-        if (!newInvoiceData.tercero_id || !newInvoiceData.fecha_emision || !newInvoiceData.numero_documento || !newInvoiceData.monto) {
-            alert("Selecciona cliente y completa fecha, folio y total con IVA.");
-            return;
-        }
-
-        const selectedClient = clientes.find((c) => c.id === newInvoiceData.tercero_id);
-        if (!selectedClient) {
-            alert("Cliente no válido.");
-            return;
-        }
-
-        setIsSavingInvoice(true);
-        try {
-            const { count, error: dupError } = await supabase
-                .from('facturas')
-                .select('*', { count: 'exact', head: true })
-                .eq('empresa_id', selectedEmpresaId)
-                .eq('tercero_id', newInvoiceData.tercero_id)
-                .eq('numero_documento', newInvoiceData.numero_documento.trim());
-
-            if (dupError) throw dupError;
-            if ((count || 0) > 0) {
-                alert("Ya existe una factura con ese folio para este cliente.");
-                return;
-            }
-
-            const plazo = Number(selectedClient.plazo_pago_dias ?? 30);
-            const vencimiento = format(addDays(new Date(`${newInvoiceData.fecha_emision}T12:00:00`), plazo), "yyyy-MM-dd");
-
-            const { error } = await supabase
-                .from('facturas')
-                .insert([{
-                    empresa_id: selectedEmpresaId,
-                    tipo: 'venta',
-                    tercero_id: selectedClient.id,
-                    tercero_nombre: selectedClient.razon_social,
-                    rut: selectedClient.rut,
-                    fecha_emision: newInvoiceData.fecha_emision,
-                    fecha_vencimiento: vencimiento,
-                    numero_documento: newInvoiceData.numero_documento.trim(),
-                    monto: Number(newInvoiceData.monto),
-                    estado: 'pendiente'
-                }]);
-
-            if (error) throw error;
-
-            setIsNewInvoiceOpen(false);
-            setNewInvoiceData({
-                tercero_id: "",
-                fecha_emision: new Date().toISOString().split("T")[0],
-                numero_documento: "",
-                monto: ""
-            });
-            await fetchClientes();
-            alert("Factura de venta registrada correctamente.");
-        } catch (error: any) {
-            console.error("Error creando factura de venta:", error);
-            alert(`Error al guardar factura: ${error.message}`);
-        } finally {
-            setIsSavingInvoice(false);
-        }
-    };
-
-    const fetchClientes = async () => {
-        if (!selectedEmpresaId) return;
-        setLoading(true);
-        try {
-            // Intento 1: Con plazo_pago_dias (Ideal)
-            const { data, error } = await supabase
-                .from('terceros')
-                .select(`
-                    *,
-                    facturas (
-                        id, monto, estado, fecha_emision, fecha_vencimiento, tipo
-                    )
-                `)
-                .eq('empresa_id', selectedEmpresaId)
-                .eq('tipo', 'cliente')
-                .order('razon_social', { ascending: true });
-
-            if (error) {
-                if (error.code === 'PGRST204' || error.message.includes('plazo_pago_dias')) {
-                    console.warn("Columna plazo_pago_dias no encontrada, reintentando sin ella...");
-                    // Intento 2: Sin plazo_pago_dias (Resiliencia)
-                    const { data: data2, error: error2 } = await supabase
-                        .from('terceros')
-                        .select(`
-                            id, rut, razon_social, email, telefono, direccion, estado, tipo,
-                            facturas (
-                                id, monto, estado, fecha_emision, fecha_vencimiento, tipo
-                            )
-                        `)
-                        .eq('empresa_id', selectedEmpresaId)
-                        .eq('tipo', 'cliente')
-                        .order('razon_social', { ascending: true });
-
-                    if (error2) throw error2;
-                    setClientes(data2 || []);
-                } else {
-                    throw error;
-                }
-            } else {
-                setClientes(data || []);
-            }
-        } catch (error) {
-            console.error("Error fetching clientes:", error);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    // Cálculos para KPIs globales
-    const calculateTotals = () => {
-        let totalCobrar = 0;
-        let totalVencido = 0;
-        let totalMes = 0;
-
-        const now = new Date();
-        now.setHours(12, 0, 0, 0); // Estándar mediodía
-
-        const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-
-        clientes.forEach(cliente => {
-            (cliente.facturas || []).forEach((f: any) => {
-                const fechaEmi = new Date(f.fecha_emision + 'T12:00:00');
-                const monto = parseFloat(f.monto);
-
-                if (f.estado === 'pendiente' || f.estado === 'morosa') {
-                    totalCobrar += monto;
-
-                    // Usar fecha_vencimiento si existe, sino emision + plazo (fallback 30)
-                    const plazo = cliente.plazo_pago_dias ?? 30;
-                    const fechaVenc = f.fecha_vencimiento
-                        ? new Date(f.fecha_vencimiento + 'T12:00:00')
-                        : new Date(fechaEmi.getTime() + (plazo * 24 * 60 * 60 * 1000));
-
-                    if (fechaVenc < now) {
-                        totalVencido += monto;
-                    }
-                }
-
-                if (fechaEmi >= firstDayOfMonth) {
-                    totalMes += monto;
-                }
-            });
-        });
-
-        return { totalCobrar, totalVencido, totalMes };
-    };
-
-    const getAgingData = (cliente: any) => {
-        const pend = (cliente.facturas || []).filter((f: any) => f.estado === 'pendiente' || f.estado === 'morosa');
-        if (pend.length === 0) return null;
-
-        const now = new Date();
-        now.setHours(12, 0, 0, 0);
-
-        // Buscamos la factura más crítica (la más antigua o más vencida)
-        let mostCriticalDate = new Date(8640000000000000); // Infinity
-
-        pend.forEach((f: any) => {
-            const emi = new Date(f.fecha_emision + 'T12:00:00');
-            const plazo = cliente.plazo_pago_dias ?? 30;
-            const venc = f.fecha_vencimiento
-                ? new Date(f.fecha_vencimiento + 'T12:00:00')
-                : new Date(emi.getTime() + (plazo * 24 * 60 * 60 * 1000));
-
-            if (venc < mostCriticalDate) {
-                mostCriticalDate = venc;
-            }
-        });
-
-        const diffTime = mostCriticalDate.getTime() - now.getTime();
-        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-        if (diffDays < 0) {
-            return {
-                label: `Vencida hace ${Math.abs(diffDays)} días`,
-                variant: "bg-red-100 text-red-700",
-                isOverdue: true,
-                diffDays
-            };
-        } else {
-            return {
-                label: `Vence en ${diffDays} días`,
-                variant: "bg-blue-100 text-blue-700",
-                isOverdue: false,
-                diffDays
-            };
-        }
-    };
-
-    const totals = calculateTotals();
-
-    const getClienteSaldo = (facturas: any[]) => {
-        return (facturas || [])
-            .filter(f => f.estado === 'pendiente' || f.estado === 'morosa')
-            .reduce((sum, f) => sum + parseFloat(f.monto), 0);
-    };
-
-    const formatCurrency = (amount: number) => {
-        return new Intl.NumberFormat('es-CL', {
-            style: 'currency',
-            currency: 'CLP',
-            minimumFractionDigits: 0
-        }).format(amount);
-    };
-
-    const filteredClientes = clientes.filter(c =>
-        c.razon_social.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        c.rut.toLowerCase().includes(searchQuery.toLowerCase())
+  const totals = useMemo(() => {
+    return groupedClients.reduce(
+      (acc, cliente) => {
+        acc.outstanding += cliente.outstanding;
+        acc.promised += cliente.invoices
+          .filter((invoice) => invoice.promisedPaymentDate)
+          .reduce((sum, invoice) => sum + invoice.amount, 0);
+        acc.risk += cliente.invoices
+          .filter((invoice) => invoice.disputed || invoice.daysOverdue > 30)
+          .reduce((sum, invoice) => sum + invoice.amount, 0);
+        return acc;
+      },
+      { outstanding: 0, promised: 0, risk: 0 }
     );
+  }, [groupedClients]);
 
+  const salesCategoryId = treasuryCategories.find((category) => category.code === "sales")?.id ?? null;
+
+  const handleCreateClienteManual = async () => {
+    if (!selectedEmpresaId) return;
+    if (!newClienteData.rut || !newClienteData.razon_social || !newClienteData.email || !newClienteData.telefono) {
+      alert("RUT, Razón Social, Email y Teléfono son campos obligatorios.");
+      return;
+    }
+
+    setIsSavingCliente(true);
+    try {
+      const cleanRut = newClienteData.rut.replace(/\./g, "").replace(/-/g, "").toUpperCase();
+      const { error } = await supabase.from("terceros").insert({
+        empresa_id: selectedEmpresaId,
+        ...newClienteData,
+        rut: cleanRut,
+        tipo: "cliente",
+        estado: "activo",
+      });
+      if (error) throw error;
+
+      setIsNewClienteOpen(false);
+      setNewClienteData({ rut: "", razon_social: "", email: "", telefono: "", direccion: "", plazo_pago_dias: 30 });
+      await fetchClientes();
+    } catch (error: any) {
+      console.error("Error al crear cliente:", error);
+      alert(`No se pudo crear el cliente: ${error.message}`);
+    } finally {
+      setIsSavingCliente(false);
+    }
+  };
+
+  const handleCreateVentaInvoice = async () => {
+    if (!selectedEmpresaId) return;
+    if (!newInvoiceData.tercero_id || !newInvoiceData.fecha_emision || !newInvoiceData.numero_documento || !newInvoiceData.monto) {
+      alert("Selecciona cliente y completa fecha, folio y monto.");
+      return;
+    }
+
+    const selectedClient = clientes.find((cliente) => cliente.id === newInvoiceData.tercero_id);
+    if (!selectedClient) {
+      alert("Cliente no válido.");
+      return;
+    }
+
+    setIsSavingInvoice(true);
+    try {
+      const plazo = Number(selectedClient.plazo_pago_dias ?? 30);
+      const vencimiento = format(addDays(new Date(`${newInvoiceData.fecha_emision}T12:00:00`), plazo), "yyyy-MM-dd");
+      const { error } = await supabase.from("facturas").insert({
+        empresa_id: selectedEmpresaId,
+        tipo: "venta",
+        tercero_id: selectedClient.id,
+        tercero_nombre: selectedClient.razon_social,
+        rut: selectedClient.rut,
+        fecha_emision: newInvoiceData.fecha_emision,
+        fecha_vencimiento: vencimiento,
+        numero_documento: newInvoiceData.numero_documento.trim(),
+        monto: Number(newInvoiceData.monto),
+        estado: "pendiente",
+        planned_cash_date: vencimiento,
+        cash_confidence_pct: 90,
+        treasury_priority: "high",
+        treasury_category_id: salesCategoryId,
+      });
+      if (error) throw error;
+
+      setIsNewInvoiceOpen(false);
+      setNewInvoiceData({ tercero_id: "", fecha_emision: today, numero_documento: "", monto: "" });
+      await refreshPipeline();
+    } catch (error: any) {
+      console.error("Error creando factura:", error);
+      alert(`No se pudo guardar la factura: ${error.message}`);
+    } finally {
+      setIsSavingInvoice(false);
+    }
+  };
+
+  const handleSavePromise = async () => {
+    if (!selectedEmpresaId || !promiseTarget || !user) return;
+    if (!promiseForm.promisedDate) {
+      alert("Debes indicar una fecha prometida.");
+      return;
+    }
+
+    setSavingPromise(true);
+    try {
+      const { error } = await supabase.from("collection_events").insert({
+        empresa_id: selectedEmpresaId,
+        factura_id: promiseTarget.facturaId,
+        tercero_id: promiseTarget.terceroId,
+        channel: promiseForm.channel,
+        event_type: "promise",
+        promised_date: promiseForm.promisedDate,
+        promised_amount: promiseForm.promisedAmount ? Number(promiseForm.promisedAmount) : promiseTarget.amount,
+        notes: promiseForm.notes || "Promesa registrada desde clientes.",
+        created_by: user.id,
+      });
+      if (error) throw error;
+
+      setPromiseTarget(null);
+      setPromiseForm({ promisedDate: "", promisedAmount: "", channel: "call", notes: "" });
+      await refreshPipeline();
+    } catch (error: any) {
+      console.error("Error registrando promesa:", error);
+      alert(`No se pudo registrar la promesa: ${error.message}`);
+    } finally {
+      setSavingPromise(false);
+    }
+  };
+
+  if (!selectedEmpresaId) {
     return (
-        <div className="container mx-auto py-10 space-y-8">
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                <div>
-                    <h2 className="text-3xl font-bold tracking-tight">Gestión de Clientes</h2>
-                    <p className="text-muted-foreground">Administra las cuentas corrientes y documentos de tus clínicas.</p>
-                </div>
-                <div className="flex gap-2 w-full md:w-auto">
-                    <Dialog open={isNewInvoiceOpen} onOpenChange={setIsNewInvoiceOpen}>
-                        <DialogTrigger asChild>
-                            <Button variant="outline" className="flex-1 md:flex-none">
-                                Ingresar Factura Venta
-                            </Button>
-                        </DialogTrigger>
-                        <DialogContent className="sm:max-w-[520px]">
-                            <DialogHeader>
-                                <DialogTitle>Nueva Factura de Venta</DialogTitle>
-                            </DialogHeader>
-                            <div className="grid gap-4 py-4">
-                                <div className="grid gap-2">
-                                    <Label>Cliente *</Label>
-                                    <div className="flex gap-2">
-                                        <Select
-                                            value={newInvoiceData.tercero_id}
-                                            onValueChange={(value) => setNewInvoiceData({ ...newInvoiceData, tercero_id: value })}
-                                        >
-                                            <SelectTrigger>
-                                                <SelectValue placeholder="Selecciona cliente" />
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                                {clientes.map((c) => (
-                                                    <SelectItem key={c.id} value={c.id}>
-                                                        {c.razon_social}
-                                                    </SelectItem>
-                                                ))}
-                                            </SelectContent>
-                                        </Select>
-                                        <Button
-                                            type="button"
-                                            variant="outline"
-                                            onClick={() => {
-                                                setIsNewInvoiceOpen(false);
-                                                setIsNewClienteOpen(true);
-                                            }}
-                                        >
-                                            Nuevo Cliente
-                                        </Button>
-                                    </div>
-                                </div>
-                                <div className="grid grid-cols-2 gap-3">
-                                    <div className="grid gap-2">
-                                        <Label>Fecha Documento *</Label>
-                                        <Input
-                                            type="date"
-                                            value={newInvoiceData.fecha_emision}
-                                            onChange={(e) => setNewInvoiceData({ ...newInvoiceData, fecha_emision: e.target.value })}
-                                        />
-                                    </div>
-                                    <div className="grid gap-2">
-                                        <Label>Folio *</Label>
-                                        <Input
-                                            value={newInvoiceData.numero_documento}
-                                            onChange={(e) => setNewInvoiceData({ ...newInvoiceData, numero_documento: e.target.value })}
-                                            placeholder="Ej: 12345"
-                                        />
-                                    </div>
-                                </div>
-                                <div className="grid gap-2">
-                                    <Label>Total con IVA *</Label>
-                                    <Input
-                                        type="number"
-                                        min="0"
-                                        step="1"
-                                        value={newInvoiceData.monto}
-                                        onChange={(e) => setNewInvoiceData({ ...newInvoiceData, monto: e.target.value })}
-                                        placeholder="0"
-                                    />
-                                </div>
-                                <p className="text-xs text-muted-foreground">
-                                    El vencimiento se calcula automáticamente según el crédito del cliente.
-                                </p>
-                            </div>
-                            <Button onClick={handleCreateVentaInvoice} disabled={isSavingInvoice} className="w-full">
-                                {isSavingInvoice ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                                Guardar Factura Venta
-                            </Button>
-                        </DialogContent>
-                    </Dialog>
-
-                    <Dialog open={isNewClienteOpen} onOpenChange={setIsNewClienteOpen}>
-                        <DialogTrigger asChild>
-                            <Button className="flex-1 md:flex-none">
-                                <Plus className="mr-2 h-4 w-4" /> Nuevo Cliente
-                            </Button>
-                        </DialogTrigger>
-                        <DialogContent className="sm:max-w-[425px]">
-                            <DialogHeader>
-                                <DialogTitle>Registrar Nuevo Cliente</DialogTitle>
-                                <p className="text-sm text-muted-foreground">Ingresa los datos básicos. El email y teléfono son requeridos para cobranza.</p>
-                            </DialogHeader>
-                            <div className="grid gap-4 py-4">
-                                <div className="grid gap-2">
-                                    <Label htmlFor="rut">RUT</Label>
-                                    <Input
-                                        id="rut"
-                                        placeholder="12.345.678-9"
-                                        value={newClienteData.rut}
-                                        onChange={(e) => setNewClienteData({ ...newClienteData, rut: e.target.value })}
-                                    />
-                                </div>
-                                <div className="grid gap-2">
-                                    <Label htmlFor="name">Razón Social / Nombre</Label>
-                                    <Input
-                                        id="name"
-                                        placeholder="Clínica Dental..."
-                                        value={newClienteData.razon_social}
-                                        onChange={(e) => setNewClienteData({ ...newClienteData, razon_social: e.target.value })}
-                                    />
-                                </div>
-                                <div className="grid gap-2">
-                                    <Label htmlFor="email" className="flex items-center gap-1">Email <Badge variant="secondary" className="text-[10px] px-1 py-0 h-4">REQ</Badge></Label>
-                                    <Input
-                                        id="email"
-                                        type="email"
-                                        placeholder="doctor@ejemplo.com"
-                                        value={newClienteData.email}
-                                        onChange={(e) => setNewClienteData({ ...newClienteData, email: e.target.value })}
-                                    />
-                                </div>
-                                <div className="grid gap-2">
-                                    <Label htmlFor="phone" className="flex items-center gap-1">Teléfono <Badge variant="secondary" className="text-[10px] px-1 py-0 h-4">REQ</Badge></Label>
-                                    <Input
-                                        id="phone"
-                                        placeholder="+569..."
-                                        value={newClienteData.telefono}
-                                        onChange={(e) => setNewClienteData({ ...newClienteData, telefono: e.target.value })}
-                                    />
-                                </div>
-                                <div className="grid gap-2">
-                                    <Label htmlFor="address">Dirección</Label>
-                                    <Input
-                                        id="address"
-                                        placeholder="Calle 123, Ciudad"
-                                        value={newClienteData.direccion}
-                                        onChange={(e) => setNewClienteData({ ...newClienteData, direccion: e.target.value })}
-                                    />
-                                </div>
-                                <div className="grid gap-2">
-                                    <Label htmlFor="plazo" className="flex items-center gap-1">Plazo de Pago (Días)</Label>
-                                    <Input
-                                        id="plazo"
-                                        type="number"
-                                        placeholder="30"
-                                        value={newClienteData.plazo_pago_dias}
-                                        onChange={(e) => setNewClienteData({ ...newClienteData, plazo_pago_dias: parseInt(e.target.value) || 0 })}
-                                    />
-                                </div>
-                            </div>
-                            <Button
-                                onClick={handleCreateClienteManual}
-                                disabled={isSavingCliente}
-                                className="w-full"
-                            >
-                                {isSavingCliente ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Guardar Cliente"}
-                            </Button>
-                        </DialogContent>
-                    </Dialog>
-                </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <Card className="bg-primary/5 border-primary/20">
-                    <CardHeader className="pb-2">
-                        <CardTitle className="text-sm font-medium text-muted-foreground">Saldo Total por Cobrar</CardTitle>
-                        <CardDescription className="text-2xl font-bold text-primary">{formatCurrency(totals.totalCobrar)}</CardDescription>
-                    </CardHeader>
-                </Card>
-                <Card className="bg-red-50 border-red-100">
-                    <CardHeader className="pb-2">
-                        <CardTitle className="text-sm font-medium text-muted-foreground">Deuda Vencida (&gt;30 días)</CardTitle>
-                        <CardDescription className="text-2xl font-bold text-red-600">{formatCurrency(totals.totalVencido)}</CardDescription>
-                    </CardHeader>
-                </Card>
-                <Card className="bg-green-50 border-green-100">
-                    <CardHeader className="pb-2">
-                        <CardTitle className="text-sm font-medium text-muted-foreground">Facturación del Mes</CardTitle>
-                        <CardDescription className="text-2xl font-bold text-green-600">{formatCurrency(totals.totalMes)}</CardDescription>
-                    </CardHeader>
-                </Card>
-            </div>
-
-            <div className="flex items-center space-x-2">
-                <div className="relative flex-1 max-w-sm">
-                    <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-                    <Input
-                        placeholder="Buscar por nombre o RUT..."
-                        className="pl-8"
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                    />
-                </div>
-            </div>
-
-            {loading ? (
-                <div className="flex justify-center py-20">
-                    <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                </div>
-            ) : filteredClientes.length === 0 ? (
-                <div className="text-center py-20 border-2 border-dashed rounded-lg">
-                    <p className="text-muted-foreground">No se encontraron clientes.</p>
-                </div>
-            ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {filteredClientes.map((cliente) => (
-                        <Card key={cliente.id} className="hover:shadow-md transition-shadow group">
-                            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                                <CardTitle className="text-lg font-bold truncate pr-4">
-                                    {cliente.razon_social}
-                                </CardTitle>
-                                <div className="flex items-center gap-2">
-                                    <Badge variant={cliente.estado === 'activo' ? 'default' : 'secondary'}>
-                                        {cliente.estado === 'activo' ? 'Activo' : 'Inactivo'}
-                                    </Badge>
-                                    <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        className={cn(
-                                            "h-8 w-8 text-muted-foreground",
-                                            getClienteSaldo(cliente.facturas) > 0 ? "hover:text-primary hover:bg-primary/5" : "opacity-30 cursor-not-allowed"
-                                        )}
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            if (getClienteSaldo(cliente.facturas) > 0) handleSendCollectionEmail(cliente);
-                                        }}
-                                        title="Enviar Recordatorio de Cobranza"
-                                    >
-                                        <Mail className="h-4 w-4" />
-                                    </Button>
-                                    <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        className="h-8 w-8 text-muted-foreground hover:text-red-500 hover:bg-red-50"
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            handleDeleteCliente(cliente);
-                                        }}
-                                    >
-                                        <Trash2 className="h-4 w-4" />
-                                    </Button>
-                                </div>
-                            </CardHeader>
-                            <CardContent>
-                                <CardDescription className="mb-4 font-mono text-xs">{cliente.rut}</CardDescription>
-                                <div className="space-y-3 text-sm text-muted-foreground">
-                                    <div className="flex items-center gap-2">
-                                        <MapPin className="h-4 w-4 shrink-0" />
-                                        <span className="truncate">{cliente.direccion || 'Sin dirección'}</span>
-                                    </div>
-                                    <div className="mt-4 p-3 bg-muted/50 rounded-md space-y-2">
-                                        <div className="flex justify-between items-center text-xs">
-                                            <span>Saldo Pendiente:</span>
-                                            <span className={cn(
-                                                "font-bold",
-                                                getClienteSaldo(cliente.facturas) > 0 ? "text-red-600" : "text-green-600"
-                                            )}>
-                                                {formatCurrency(getClienteSaldo(cliente.facturas))}
-                                            </span>
-                                        </div>
-                                        {getAgingData(cliente) && (
-                                            <div className="flex justify-between items-center text-[10px]">
-                                                <span>Estado Pago:</span>
-                                                <span className={cn(
-                                                    "font-medium px-1.5 py-0.5 rounded",
-                                                    getAgingData(cliente)?.variant
-                                                )}>
-                                                    {getAgingData(cliente)?.label}
-                                                </span>
-                                            </div>
-                                        )}
-                                    </div>
-                                </div>
-                            </CardContent>
-                            <CardFooter>
-                                <Button
-                                    variant="outline"
-                                    className="w-full group-hover:bg-primary group-hover:text-primary-foreground transition-colors"
-                                    onClick={() => navigate(`/clientes/${cliente.id}`)}
-                                >
-                                    Estado de Cuenta <ArrowRight className="ml-2 h-4 w-4" />
-                                </Button>
-                            </CardFooter>
-                        </Card>
-                    ))}
-                </div>
-            )}
-        </div>
+      <div className="flex h-[70vh] items-center justify-center">
+        <Card>
+          <CardHeader>
+            <CardTitle>Clientes</CardTitle>
+            <CardDescription>Selecciona una empresa para revisar clientes y cobranzas.</CardDescription>
+          </CardHeader>
+        </Card>
+      </div>
     );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Clientes y Cobranzas</h1>
+          <p className="mt-1 text-muted-foreground">
+            Riesgo de cobro, promesas vigentes y creación de facturas de venta con metadata de tesorería.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" asChild>
+            <Link to="/collections">Abrir pipeline</Link>
+          </Button>
+          <Button onClick={() => setIsNewInvoiceOpen(true)} disabled={!canEdit}>
+            <Plus className="mr-2 h-4 w-4" />
+            Nueva factura
+          </Button>
+          <Button variant="outline" onClick={() => setIsNewClienteOpen(true)} disabled={!canEdit}>
+            Nuevo cliente
+          </Button>
+        </div>
+      </div>
+
+      {!canEdit && (
+        <Card className="border-amber-200">
+          <CardContent className="pt-6 text-sm text-amber-700">
+            Tu rol actual es solo lectura. Puedes revisar clientes y cobranzas, pero no crear ni editar.
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <SummaryCard title="Clientes activos" value={String(clientes.length)} description="Base comercial vigente" />
+        <SummaryCard title="Por cobrar" value={formatTreasuryCurrency(totals.outstanding)} description="Saldo abierto total" icon={<HandCoins className="h-4 w-4" />} />
+        <SummaryCard title="Con promesa" value={formatTreasuryCurrency(totals.promised)} description="Cobros con compromiso registrado" />
+        <SummaryCard title="Riesgo alto" value={formatTreasuryCurrency(totals.risk)} description="Disputas o mora superior a 30 días" tone="warning" />
+      </div>
+
+      <Card>
+        <CardHeader>
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <CardTitle>Clientes</CardTitle>
+              <CardDescription>Resumen por cliente y detalle de facturas abiertas.</CardDescription>
+            </div>
+            <div className="relative w-full max-w-sm">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="Buscar cliente, RUT o documento..."
+                className="pl-10"
+              />
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {(loading || pipelineLoading) && groupedClients.length === 0 && <Loader2 className="h-5 w-5 animate-spin text-primary" />}
+          {groupedClients.map((cliente) => (
+            <div key={cliente.id} className="rounded-xl border p-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <div className="font-medium">{cliente.razon_social}</div>
+                  <div className="text-sm text-muted-foreground">
+                    {cliente.rut} • {cliente.email || "sin email"} • {cliente.telefono || "sin teléfono"}
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant="outline">{formatTreasuryCurrency(cliente.outstanding)}</Badge>
+                  {cliente.activePromises > 0 && <Badge className="bg-blue-100 text-blue-700 hover:bg-blue-100">{cliente.activePromises} promesa(s)</Badge>}
+                  {cliente.highestOverdue > 30 && <Badge className="bg-red-100 text-red-700 hover:bg-red-100">riesgo alto</Badge>}
+                </div>
+              </div>
+
+              <div className="mt-4 space-y-3">
+                {cliente.invoices.length === 0 && (
+                  <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
+                    Cliente al día.
+                  </div>
+                )}
+                {cliente.invoices.map((invoice: any) => (
+                  <div key={invoice.facturaId} className="rounded-xl border bg-muted/15 p-4">
+                    <div className="grid gap-3 lg:grid-cols-[1.2fr_0.8fr_0.8fr_0.8fr_0.8fr_1fr]">
+                      <div>
+                        <div className="font-medium">Factura {invoice.numeroDocumento || "Sin folio"}</div>
+                        <div className="text-sm text-muted-foreground">
+                          Vence {formatTreasuryDate(invoice.dueDate)} • {invoice.daysOverdue > 0 ? `${invoice.daysOverdue} días mora` : "Al día"}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs uppercase text-muted-foreground">Monto</div>
+                        <div className="font-semibold">{formatTreasuryCurrency(invoice.amount)}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs uppercase text-muted-foreground">Cobro esperado</div>
+                        <div>{formatTreasuryDate(invoice.expectedDate)}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs uppercase text-muted-foreground">Confianza</div>
+                        <div className={cn("font-semibold", getConfidenceClasses(invoice.confidencePct))}>
+                          {invoice.confidencePct}% {getConfidenceLabel(invoice.confidencePct)}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs uppercase text-muted-foreground">Última gestión</div>
+                        <div>{formatTreasuryDateTime(invoice.lastContactAt, "Sin gestión")}</div>
+                      </div>
+                      <div className="flex flex-col items-start gap-2 lg:items-end">
+                        <div className="text-sm">{invoice.suggestedNextAction}</div>
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={!canEdit}
+                            onClick={() => {
+                              setPromiseTarget(invoice);
+                              setPromiseForm({
+                                promisedDate: invoice.promisedPaymentDate || "",
+                                promisedAmount: String(invoice.amount),
+                                channel: "call",
+                                notes: "",
+                              });
+                            }}
+                          >
+                            Registrar promesa
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+          {!loading && !pipelineLoading && groupedClients.length === 0 && (
+            <div className="rounded-xl border border-dashed p-8 text-center text-muted-foreground">
+              No se encontraron clientes para el filtro actual.
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Dialog open={isNewClienteOpen} onOpenChange={setIsNewClienteOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Nuevo cliente</DialogTitle>
+            <DialogDescription>Alta manual de cliente activo.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <Field label="RUT">
+              <Input value={newClienteData.rut} onChange={(event) => setNewClienteData((current) => ({ ...current, rut: event.target.value }))} />
+            </Field>
+            <Field label="Razón social">
+              <Input value={newClienteData.razon_social} onChange={(event) => setNewClienteData((current) => ({ ...current, razon_social: event.target.value }))} />
+            </Field>
+            <Field label="Email">
+              <Input value={newClienteData.email} onChange={(event) => setNewClienteData((current) => ({ ...current, email: event.target.value }))} />
+            </Field>
+            <Field label="Teléfono">
+              <Input value={newClienteData.telefono} onChange={(event) => setNewClienteData((current) => ({ ...current, telefono: event.target.value }))} />
+            </Field>
+            <Field label="Dirección">
+              <Input value={newClienteData.direccion} onChange={(event) => setNewClienteData((current) => ({ ...current, direccion: event.target.value }))} />
+            </Field>
+            <Field label="Plazo pago (días)">
+              <Input type="number" min="0" value={newClienteData.plazo_pago_dias} onChange={(event) => setNewClienteData((current) => ({ ...current, plazo_pago_dias: Number(event.target.value || 0) }))} />
+            </Field>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsNewClienteOpen(false)}>Cancelar</Button>
+            <Button onClick={handleCreateClienteManual} disabled={isSavingCliente}>
+              {isSavingCliente ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Guardar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isNewInvoiceOpen} onOpenChange={setIsNewInvoiceOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Nueva factura de venta</DialogTitle>
+            <DialogDescription>Se crea con metadata base de tesorería.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <Field label="Cliente">
+              <select
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm"
+                value={newInvoiceData.tercero_id}
+                onChange={(event) => setNewInvoiceData((current) => ({ ...current, tercero_id: event.target.value }))}
+              >
+                <option value="">Selecciona un cliente</option>
+                {clientes.map((cliente) => (
+                  <option key={cliente.id} value={cliente.id}>
+                    {cliente.razon_social}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Fecha emisión">
+              <Input type="date" value={newInvoiceData.fecha_emision} onChange={(event) => setNewInvoiceData((current) => ({ ...current, fecha_emision: event.target.value }))} />
+            </Field>
+            <Field label="Número documento">
+              <Input value={newInvoiceData.numero_documento} onChange={(event) => setNewInvoiceData((current) => ({ ...current, numero_documento: event.target.value }))} />
+            </Field>
+            <Field label="Monto">
+              <Input type="number" min="0" value={newInvoiceData.monto} onChange={(event) => setNewInvoiceData((current) => ({ ...current, monto: event.target.value }))} />
+            </Field>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsNewInvoiceOpen(false)}>Cancelar</Button>
+            <Button onClick={handleCreateVentaInvoice} disabled={isSavingInvoice}>
+              {isSavingInvoice ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Crear factura
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(promiseTarget)} onOpenChange={(open) => !open && setPromiseTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Registrar promesa de pago</DialogTitle>
+            <DialogDescription>
+              {promiseTarget
+                ? `${promiseTarget.terceroNombre} • Factura ${promiseTarget.numeroDocumento || "Sin folio"}`
+                : "Selecciona una factura."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <Field label="Fecha prometida">
+              <Input type="date" value={promiseForm.promisedDate} onChange={(event) => setPromiseForm((current) => ({ ...current, promisedDate: event.target.value }))} />
+            </Field>
+            <Field label="Monto prometido">
+              <Input type="number" min="0" value={promiseForm.promisedAmount} onChange={(event) => setPromiseForm((current) => ({ ...current, promisedAmount: event.target.value }))} />
+            </Field>
+            <Field label="Canal">
+              <select
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm"
+                value={promiseForm.channel}
+                onChange={(event) => setPromiseForm((current) => ({ ...current, channel: event.target.value }))}
+              >
+                <option value="call">Llamada</option>
+                <option value="email">Correo</option>
+                <option value="whatsapp">WhatsApp</option>
+                <option value="meeting">Reunión</option>
+                <option value="other">Otro</option>
+              </select>
+            </Field>
+            <Field label="Notas">
+              <Textarea value={promiseForm.notes} onChange={(event) => setPromiseForm((current) => ({ ...current, notes: event.target.value }))} />
+            </Field>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPromiseTarget(null)}>Cancelar</Button>
+            <Button onClick={handleSavePromise} disabled={savingPromise}>
+              {savingPromise ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Guardar promesa
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function SummaryCard({
+  title,
+  value,
+  description,
+  icon,
+  tone = "default",
+}: {
+  title: string;
+  value: string;
+  description: string;
+  icon?: React.ReactNode;
+  tone?: "default" | "warning";
+}) {
+  return (
+    <Card className={tone === "warning" ? "border-amber-200" : undefined}>
+      <CardHeader className="flex flex-row items-center justify-between pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
+        {icon ? <div className="rounded-full bg-primary/10 p-2 text-primary">{icon}</div> : null}
+      </CardHeader>
+      <CardContent>
+        <div className="text-2xl font-bold">{value}</div>
+        <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label>{label}</Label>
+      {children}
+    </div>
+  );
 }

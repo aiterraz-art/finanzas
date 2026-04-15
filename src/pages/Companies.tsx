@@ -212,11 +212,11 @@ export default function Companies() {
             <div className="grid gap-4 py-4 md:grid-cols-2">
               <div className="grid gap-2">
                 <Label>Nombre Comercial *</Label>
-                <Input value={form.nombre} onChange={(e) => setForm({ ...form, nombre: e.target.value })} placeholder="LAB3D" />
+                <Input value={form.nombre} onChange={(e) => setForm({ ...form, nombre: e.target.value })} placeholder="EMPRESA" />
               </div>
               <div className="grid gap-2">
                 <Label>Razón Social *</Label>
-                <Input value={form.razon_social} onChange={(e) => setForm({ ...form, razon_social: e.target.value })} placeholder="Laboratorio Dental 3D SpA" />
+                <Input value={form.razon_social} onChange={(e) => setForm({ ...form, razon_social: e.target.value })} placeholder="Empresa Ejemplo SpA" />
               </div>
               <div className="grid gap-2">
                 <Label>RUT Empresa</Label>

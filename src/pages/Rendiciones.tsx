@@ -1,566 +1,642 @@
-import { useState, useEffect } from "react";
-import { supabase } from "@/lib/supabase";
-import { format } from "date-fns";
-import {
-    Plus,
-    Loader2,
-    FileText,
-    Trash2,
-    Receipt,
-    X,
-    Upload,
-    Paperclip,
-    Printer
-} from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { type ChangeEvent, useEffect, useMemo, useState } from "react";
+import { Loader2, Paperclip, Plus, X } from "lucide-react";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import {
-    Dialog,
-    DialogContent,
-    DialogDescription,
-    DialogHeader,
-    DialogTitle,
-    DialogTrigger,
-    DialogFooter,
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
 } from "@/components/ui/dialog";
 import {
-    Select,
-    SelectContent,
-    SelectItem,
-    SelectTrigger,
-    SelectValue,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "@/components/ui/select";
 import { Label } from "@/components/ui/label";
 import { useCompany } from "@/contexts/CompanyContext";
+import { supabase } from "@/lib/supabase";
+import { useBankAccounts, useTreasuryCategories } from "@/hooks/useTreasury";
+import {
+  PRIORITY_BADGE_CLASSES,
+  PRIORITY_LABELS,
+  canEditTreasury,
+  formatTreasuryCurrency,
+  formatTreasuryDate,
+} from "@/lib/treasury";
+import { cn } from "@/lib/utils";
 
-interface RendicionItem {
-    id?: string;
-    descripcion: string;
-    monto: number;
-}
+type RendicionItem = {
+  descripcion: string;
+  monto: number;
+};
+
+type Trabajador = {
+  id: string;
+  razon_social: string;
+  cargo: string | null;
+};
+
+type Rendicion = {
+  id: string;
+  fecha: string | null;
+  tercero_id: string | null;
+  tercero_nombre: string | null;
+  descripcion: string | null;
+  monto_total: number;
+  estado: string;
+  archivos_urls: string[] | null;
+  treasury_category_id: string | null;
+  planned_cash_date: string | null;
+  treasury_priority: "critical" | "high" | "normal" | "deferrable" | null;
+  preferred_bank_account_id: string | null;
+};
+
+const today = new Date().toISOString().split("T")[0];
 
 export default function Rendiciones() {
-    const { selectedEmpresaId } = useCompany();
-    const [rendiciones, setRendiciones] = useState<any[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [isCreateOpen, setIsCreateOpen] = useState(false);
-    const [isSubmitting, setIsSubmitting] = useState(false);
+  const { selectedEmpresaId, selectedRole } = useCompany();
+  const canEdit = canEditTreasury(selectedRole);
+  const [rendiciones, setRendiciones] = useState<Rendicion[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [editingRendicion, setEditingRendicion] = useState<Rendicion | null>(null);
+  const [savingTreasury, setSavingTreasury] = useState(false);
+  const [terceros, setTerceros] = useState<Trabajador[]>([]);
+  const [selectedTercero, setSelectedTercero] = useState("");
+  const [descripcion, setDescripcion] = useState("");
+  const [items, setItems] = useState<RendicionItem[]>([{ descripcion: "", monto: 0 }]);
+  const [files, setFiles] = useState<File[]>([]);
+  const [treasuryForm, setTreasuryForm] = useState({
+    categoryId: "",
+    priority: "high",
+    plannedCashDate: today,
+    preferredBankAccountId: "none",
+  });
+  const [editForm, setEditForm] = useState({
+    categoryId: "",
+    priority: "high",
+    plannedCashDate: today,
+    preferredBankAccountId: "none",
+  });
 
-    // Form state
-    const [terceros, setTerceros] = useState<any[]>([]);
-    const [selectedTercero, setSelectedTercero] = useState("");
-    const [descripcion, setDescripcion] = useState("");
-    const [items, setItems] = useState<RendicionItem[]>([{ descripcion: "", monto: 0 }]);
-    const [files, setFiles] = useState<File[]>([]);
+  const { data: bankAccounts } = useBankAccounts(selectedEmpresaId);
+  const { data: treasuryCategories } = useTreasuryCategories(selectedEmpresaId);
 
-    // Quick-add employee state
-    const [isAddEmployeeOpen, setIsAddEmployeeOpen] = useState(false);
-    const [newEmployee, setNewEmployee] = useState({ nombre: "", rut: "", telefono: "", cargo: "" });
-    const [isSavingEmployee, setIsSavingEmployee] = useState(false);
+  useEffect(() => {
+    if (selectedEmpresaId) {
+      void fetchRendiciones();
+      void fetchTerceros();
+    }
+  }, [selectedEmpresaId]);
 
-    useEffect(() => {
-        if (selectedEmpresaId) {
-            fetchRendiciones();
-            fetchTerceros();
-        }
-    }, [selectedEmpresaId]);
-
-    const fetchRendiciones = async () => {
-        if (!selectedEmpresaId) return;
-        setLoading(true);
-        try {
-            const { data, error } = await supabase
-                .from('rendiciones')
-                .select('*, terceros(razon_social)')
-                .eq('empresa_id', selectedEmpresaId)
-                .order('created_at', { ascending: false });
-
-            if (error) throw error;
-            setRendiciones(data || []);
-        } catch (error) {
-            console.error("Error fetching rendiciones:", error);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const fetchTerceros = async () => {
-        if (!selectedEmpresaId) return;
-        try {
-            const { data, error } = await supabase
-                .from('terceros')
-                .select('id, razon_social, cargo')
-                .eq('empresa_id', selectedEmpresaId)
-                .eq('estado', 'activo')
-                .eq('es_trabajador', true);
-            if (error) throw error;
-            setTerceros(data || []);
-        } catch (error) {
-            console.error("Error fetching terceros:", error);
-        }
-    };
-
-    const handleAddEmployee = async () => {
-        if (!selectedEmpresaId) return;
-        if (!newEmployee.nombre || !newEmployee.rut) {
-            alert("Nombre y RUT son obligatorios.");
-            return;
-        }
-
-        setIsSavingEmployee(true);
-        try {
-            const { data, error } = await supabase
-                .from('terceros')
-                .insert({
-                    empresa_id: selectedEmpresaId,
-                    razon_social: newEmployee.nombre,
-                    rut: newEmployee.rut,
-                    telefono: newEmployee.telefono || null,
-                    cargo: newEmployee.cargo || null,
-                    tipo: 'proveedor',
-                    es_trabajador: true,
-                    estado: 'activo'
-                })
-                .select()
-                .single();
-
-            if (error) throw error;
-
-            setIsAddEmployeeOpen(false);
-            setNewEmployee({ nombre: "", rut: "", telefono: "", cargo: "" });
-            await fetchTerceros();
-            setSelectedTercero(data.id);
-        } catch (error: any) {
-            console.error("Error adding employee:", error);
-            alert(`Error al agregar trabajador: ${error.message}`);
-        } finally {
-            setIsSavingEmployee(false);
-        }
-    };
-
-    const handleAddItem = () => {
-        setItems([...items, { descripcion: "", monto: 0 }]);
-    };
-
-    const handleRemoveItem = (index: number) => {
-        setItems(items.filter((_, i) => i !== index));
-    };
-
-    const handleUpdateItem = (index: number, field: keyof RendicionItem, value: string | number) => {
-        const newItems = [...items];
-        newItems[index] = { ...newItems[index], [field]: value };
-        setItems(newItems);
-    };
-
-    const totalMonto = items.reduce((sum, item) => sum + Number(item.monto || 0), 0);
-
-    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.files) {
-            const newFiles = Array.from(e.target.files);
-            setFiles([...files, ...newFiles]);
-        }
-    };
-
-    const removeFile = (index: number) => {
-        setFiles(files.filter((_, i) => i !== index));
-    };
-
-    const handleSubmit = async () => {
-        if (!selectedEmpresaId) return;
-        if (!selectedTercero || items.some(i => !i.descripcion || i.monto <= 0)) {
-            alert("Por favor completa todos los campos requeridos.");
-            return;
-        }
-
-        setIsSubmitting(true);
-        try {
-            const uploadedUrls: string[] = [];
-
-            // Upload all files
-            for (const file of files) {
-                const fileExt = file.name.split('.').pop();
-                const fileName = `${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`;
-                const filePath = `rendiciones/${fileName}`;
-
-                const { error: uploadError } = await supabase.storage
-                    .from('invoices')
-                    .upload(filePath, file);
-
-                if (uploadError) throw uploadError;
-
-                const { data: { publicUrl } } = supabase.storage
-                    .from('invoices')
-                    .getPublicUrl(filePath);
-
-                uploadedUrls.push(publicUrl);
-            }
-
-            // 1. Insert Rendición Header
-            const { data: rendicion, error: rendicionError } = await supabase
-                .from('rendiciones')
-                .insert({
-                    empresa_id: selectedEmpresaId,
-                    tercero_id: selectedTercero,
-                    tercero_nombre: terceros.find(t => t.id === selectedTercero)?.razon_social,
-                    descripcion: descripcion,
-                    monto_total: totalMonto,
-                    archivos_urls: uploadedUrls, // Updated column name
-                    estado: 'pendiente'
-                })
-                .select()
-                .single();
-
-            if (rendicionError) throw rendicionError;
-
-            // 2. Insert Details
-            const detailsToInsert = items.map(item => ({
-                empresa_id: selectedEmpresaId,
-                rendicion_id: rendicion.id,
-                descripcion: item.descripcion,
-                monto: item.monto
-            }));
-
-            const { error: detailsError } = await supabase
-                .from('rendicion_detalles')
-                .insert(detailsToInsert);
-
-            if (detailsError) throw detailsError;
-
-            setIsCreateOpen(false);
-            resetForm();
-            fetchRendiciones();
-        } catch (error: any) {
-            console.error("Error saving rendicion:", error);
-            alert(`Error al guardar la rendición: ${error.message || error.details || JSON.stringify(error)}`);
-        } finally {
-            setIsSubmitting(false);
-        }
-    };
-
-    const resetForm = () => {
-        setSelectedTercero("");
-        setDescripcion("");
-        setItems([{ descripcion: "", monto: 0 }]);
-        setFiles([]);
-    };
-
-    const formatCurrency = (amount: number) => {
-        return new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' }).format(amount);
-    };
-
-    return (
-        <div className="space-y-6">
-            <div className="flex justify-between items-center">
-                <div>
-                    <h1 className="text-3xl font-bold">Rendiciones</h1>
-                    <p className="text-muted-foreground">Gestiona reembolsos y gastos del equipo.</p>
-                </div>
-                <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
-                    <DialogTrigger asChild>
-                        <Button className="gap-2">
-                            <Plus className="w-4 h-4" /> Nueva Rendición
-                        </Button>
-                    </DialogTrigger>
-                    <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-                        <DialogHeader>
-                            <DialogTitle>Ingresar Rendición</DialogTitle>
-                            <DialogDescription>
-                                Detalla los gastos realizados para solicitar el reembolso.
-                            </DialogDescription>
-                        </DialogHeader>
-
-                        <div className="space-y-6 py-4">
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div className="space-y-2">
-                                    <Label>Persona que rinde</Label>
-                                    <Select value={selectedTercero} onValueChange={setSelectedTercero}>
-                                        <SelectTrigger>
-                                            <SelectValue placeholder="Seleccionar persona" />
-                                        </SelectTrigger>
-                                        <SelectContent>
-                                            {terceros.map(t => (
-                                                <SelectItem key={t.id} value={t.id}>
-                                                    {t.razon_social} {t.cargo && `(${t.cargo})`}
-                                                </SelectItem>
-                                            ))}
-                                            <div className="border-t mt-1 pt-1">
-                                                <button
-                                                    className="w-full text-left px-2 py-1.5 text-sm hover:bg-accent rounded-sm flex items-center gap-2 text-primary font-medium"
-                                                    onClick={(e) => {
-                                                        e.preventDefault();
-                                                        setIsAddEmployeeOpen(true);
-                                                    }}
-                                                >
-                                                    <Plus className="w-3 h-3" />
-                                                    Agregar nuevo trabajador
-                                                </button>
-                                            </div>
-                                        </SelectContent>
-                                    </Select>
-                                </div>
-                                <div className="space-y-2">
-                                    <Label>Descripción General (Opcional)</Label>
-                                    <Input
-                                        placeholder="Ej: Gastos viaje a Santiago"
-                                        value={descripcion}
-                                        onChange={(e) => setDescripcion(e.target.value)}
-                                    />
-                                </div>
-                            </div>
-
-                            <div className="space-y-3">
-                                <div className="flex justify-between items-center">
-                                    <Label className="text-sm font-bold uppercase text-muted-foreground">Detalle de Gastos</Label>
-                                    <Button variant="outline" size="sm" onClick={handleAddItem} className="h-7 text-xs">
-                                        + Agregar Item
-                                    </Button>
-                                </div>
-
-                                {items.map((item, index) => (
-                                    <div key={index} className="flex gap-3 items-end">
-                                        <div className="flex-1 space-y-1">
-                                            <Label className="text-[10px]">Descripción</Label>
-                                            <Input
-                                                className="h-9 px-3 text-xs"
-                                                placeholder="Ej: Combustible, Colación..."
-                                                value={item.descripcion}
-                                                onChange={(e) => handleUpdateItem(index, 'descripcion', e.target.value)}
-                                            />
-                                        </div>
-                                        <div className="w-32 space-y-1">
-                                            <Label className="text-[10px]">Monto</Label>
-                                            <Input
-                                                type="number"
-                                                className="h-9 px-3 text-xs"
-                                                placeholder="0"
-                                                value={item.monto}
-                                                onChange={(e) => handleUpdateItem(index, 'monto', e.target.value)}
-                                            />
-                                        </div>
-                                        {items.length > 1 && (
-                                            <Button
-                                                variant="ghost"
-                                                size="icon"
-                                                className="h-9 w-9 text-muted-foreground hover:text-red-500"
-                                                onClick={() => handleRemoveItem(index)}
-                                            >
-                                                <X className="w-4 h-4" />
-                                            </Button>
-                                        )}
-                                    </div>
-                                ))}
-
-                                <div className="flex justify-end pt-2 border-t mt-4">
-                                    <div className="text-right">
-                                        <p className="text-xs text-muted-foreground">Total a Rendir:</p>
-                                        <p className="text-xl font-bold text-primary">{formatCurrency(totalMonto)}</p>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div className="space-y-2">
-                                <Label>Comprobantes (Imágenes o PDFs)</Label>
-                                <div className="border-2 border-dashed rounded-lg p-6 flex flex-col items-center justify-center gap-2 hover:bg-muted/50 transition-colors cursor-pointer relative">
-                                    <input
-                                        type="file"
-                                        className="absolute inset-0 opacity-0 cursor-pointer"
-                                        onChange={handleFileChange}
-                                        accept="image/*,application/pdf"
-                                        multiple // Allow multiple files
-                                    />
-                                    <Upload className="w-8 h-8 text-muted-foreground" />
-                                    <p className="text-sm font-medium">
-                                        Haga clic o arrastre archivos aquí
-                                    </p>
-                                    <p className="text-xs text-muted-foreground">Soporta múltiples archivos</p>
-                                </div>
-
-                                {/* File List */}
-                                {files.length > 0 && (
-                                    <div className="space-y-2 mt-2">
-                                        {files.map((f, idx) => (
-                                            <div key={idx} className="flex items-center justify-between p-2 bg-muted rounded-md text-sm">
-                                                <div className="flex items-center gap-2">
-                                                    <Paperclip className="w-4 h-4 text-muted-foreground" />
-                                                    <span className="truncate max-w-[200px]">{f.name}</span>
-                                                </div>
-                                                <Button
-                                                    variant="ghost"
-                                                    size="icon"
-                                                    className="h-6 w-6 hover:text-red-500"
-                                                    onClick={() => removeFile(idx)}
-                                                >
-                                                    <X className="w-3 h-3" />
-                                                </Button>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-
-                        <DialogFooter>
-                            <Button variant="outline" onClick={() => setIsCreateOpen(false)}>Cancelar</Button>
-                            <Button onClick={handleSubmit} disabled={isSubmitting}>
-                                {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                                Guardar Rendición
-                            </Button>
-                        </DialogFooter>
-                    </DialogContent>
-                </Dialog>
-            </div>
-
-            {/* Dialog for Quick-Add Employee */}
-            <Dialog open={isAddEmployeeOpen} onOpenChange={setIsAddEmployeeOpen}>
-                <DialogContent className="max-w-md">
-                    <DialogHeader>
-                        <DialogTitle>Agregar Nuevo Trabajador</DialogTitle>
-                        <DialogDescription>
-                            Ingresa los datos del trabajador autorizado para realizar rendiciones.
-                        </DialogDescription>
-                    </DialogHeader>
-                    <div className="space-y-4 py-4">
-                        <div className="space-y-2">
-                            <Label>Nombre Completo *</Label>
-                            <Input
-                                placeholder="Ej: Juan Pérez"
-                                value={newEmployee.nombre}
-                                onChange={(e) => setNewEmployee({ ...newEmployee, nombre: e.target.value })}
-                            />
-                        </div>
-                        <div className="space-y-2">
-                            <Label>RUT *</Label>
-                            <Input
-                                placeholder="Ej: 12345678-9"
-                                value={newEmployee.rut}
-                                onChange={(e) => setNewEmployee({ ...newEmployee, rut: e.target.value })}
-                            />
-                        </div>
-                        <div className="space-y-2">
-                            <Label>Teléfono</Label>
-                            <Input
-                                placeholder="Ej: +56912345678"
-                                value={newEmployee.telefono}
-                                onChange={(e) => setNewEmployee({ ...newEmployee, telefono: e.target.value })}
-                            />
-                        </div>
-                        <div className="space-y-2">
-                            <Label>Cargo</Label>
-                            <Input
-                                placeholder="Ej: Técnico, Vendedor, etc."
-                                value={newEmployee.cargo}
-                                onChange={(e) => setNewEmployee({ ...newEmployee, cargo: e.target.value })}
-                            />
-                        </div>
-                    </div>
-                    <DialogFooter>
-                        <Button variant="outline" onClick={() => setIsAddEmployeeOpen(false)}>Cancelar</Button>
-                        <Button onClick={handleAddEmployee} disabled={isSavingEmployee}>
-                            {isSavingEmployee && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                            Agregar Trabajador
-                        </Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
-
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <Card className="bg-primary/5 border-primary/20">
-                    <CardHeader className="pb-2">
-                        <CardTitle className="text-xs font-medium uppercase text-muted-foreground">Por Pagar</CardTitle>
-                        <CardDescription className="text-2xl font-bold text-primary">
-                            {formatCurrency(rendiciones.filter(r => r.estado === 'pendiente').reduce((sum, r) => sum + Number(r.monto_total), 0))}
-                        </CardDescription>
-                    </CardHeader>
-                </Card>
-                <Card>
-                    <CardHeader className="pb-2">
-                        <CardTitle className="text-xs font-medium uppercase text-muted-foreground">Total Rendido</CardTitle>
-                        <CardDescription className="text-2xl font-bold">
-                            {formatCurrency(rendiciones.reduce((sum, r) => sum + Number(r.monto_total), 0))}
-                        </CardDescription>
-                    </CardHeader>
-                </Card>
-            </div>
-
-            <Card>
-                <CardHeader>
-                    <CardTitle>Historial de Rendiciones</CardTitle>
-                    <CardDescription>Movimientos registrados por el equipo.</CardDescription>
-                </CardHeader>
-                <CardContent>
-                    {loading ? (
-                        <div className="flex justify-center py-10">
-                            <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
-                        </div>
-                    ) : (
-                        <div className="space-y-4">
-                            {rendiciones.length === 0 ? (
-                                <div className="text-center py-20 border-2 border-dashed rounded-lg">
-                                    <Receipt className="w-12 h-12 mx-auto text-muted-foreground opacity-20 mb-4" />
-                                    <p className="text-muted-foreground text-sm">No hay rendiciones registradas.</p>
-                                </div>
-                            ) : (
-                                <div className="border rounded-lg overflow-hidden">
-                                    <table className="w-full text-sm">
-                                        <thead className="bg-muted/50 border-b">
-                                            <tr>
-                                                <th className="text-left p-3 font-semibold">Fecha</th>
-                                                <th className="text-left p-3 font-semibold">Persona</th>
-                                                <th className="text-left p-3 font-semibold">Descripción</th>
-                                                <th className="text-right p-3 font-semibold">Monto</th>
-                                                <th className="text-center p-3 font-semibold">Estado</th>
-                                                <th className="text-right p-3 font-semibold">Archivos</th>
-                                                <th className="p-3"></th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {rendiciones.map((r) => (
-                                                <tr key={r.id} className="border-b last:border-0 hover:bg-muted/30 transition-colors">
-                                                    <td className="p-3 text-muted-foreground">{format(new Date(r.fecha), 'dd/MM/yyyy')}</td>
-                                                    <td className="p-3 font-medium">{r.terceros?.razon_social}</td>
-                                                    <td className="p-3 text-muted-foreground max-w-xs truncate">{r.descripcion || '---'}</td>
-                                                    <td className="p-3 text-right font-bold">{formatCurrency(r.monto_total)}</td>
-                                                    <td className="p-3 text-center">
-                                                        <Badge variant={r.estado === 'pagado' ? 'default' : 'secondary'} className="uppercase text-[9px]">
-                                                            {r.estado === 'pagado' ? 'Pagado' : 'Pendiente'}
-                                                        </Badge>
-                                                    </td>
-                                                    <td className="p-3 text-right">
-                                                        <div className="flex gap-1 justify-end flex-wrap max-w-[100px]">
-                                                            {/* Support both old single file and new array */}
-                                                            {r.archivos_urls?.map((url: string, idx: number) => (
-                                                                <a key={idx} href={url} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
-                                                                    <FileText className="w-4 h-4 inline" />
-                                                                </a>
-                                                            ))}
-                                                        </div>
-                                                    </td>
-                                                    <td className="p-3 text-right">
-                                                        <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-red-500">
-                                                            <Trash2 className="w-4 h-4" />
-                                                        </Button>
-                                                        <Button
-                                                            variant="ghost"
-                                                            size="icon"
-                                                            className="h-8 w-8 text-muted-foreground hover:text-primary"
-                                                            onClick={() => window.open(`/rendiciones/print/${r.id}`, '_blank')}
-                                                            title="Imprimir / Guardar PDF"
-                                                        >
-                                                            <Printer className="w-4 h-4" />
-                                                        </Button>
-                                                    </td>
-                                                </tr>
-                                            ))}
-                                        </tbody>
-                                    </table>
-                                </div>
-                            )}
-                        </div>
-                    )}
-                </CardContent>
-            </Card>
-        </div>
+  useEffect(() => {
+    const defaultCategoryId = treasuryCategories.find((category) => category.code === "other_outflow")?.id ?? "";
+    setTreasuryForm((current) =>
+      current.categoryId
+        ? current
+        : {
+            ...current,
+            categoryId: defaultCategoryId,
+          }
     );
+  }, [treasuryCategories]);
+
+  const fetchRendiciones = async () => {
+    if (!selectedEmpresaId) return;
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("rendiciones")
+        .select("id, fecha, tercero_id, tercero_nombre, descripcion, monto_total, estado, archivos_urls, treasury_category_id, planned_cash_date, treasury_priority, preferred_bank_account_id")
+        .eq("empresa_id", selectedEmpresaId)
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      setRendiciones((data || []) as Rendicion[]);
+    } catch (error) {
+      console.error("Error fetching rendiciones:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchTerceros = async () => {
+    if (!selectedEmpresaId) return;
+    try {
+      const { data, error } = await supabase
+        .from("terceros")
+        .select("id, razon_social, cargo")
+        .eq("empresa_id", selectedEmpresaId)
+        .eq("estado", "activo")
+        .eq("es_trabajador", true)
+        .order("razon_social", { ascending: true });
+      if (error) throw error;
+      setTerceros((data || []) as Trabajador[]);
+    } catch (error) {
+      console.error("Error fetching terceros:", error);
+    }
+  };
+
+  const totalMonto = items.reduce((sum, item) => sum + Number(item.monto || 0), 0);
+
+  const totals = useMemo(() => {
+    return rendiciones.reduce(
+      (acc, rendicion) => {
+        if (rendicion.estado === "pendiente") {
+          acc.pending += rendicion.monto_total;
+          if (rendicion.planned_cash_date && new Date(rendicion.planned_cash_date).getTime() <= Date.now() + 7 * 24 * 60 * 60 * 1000) {
+            acc.dueSoon += rendicion.monto_total;
+          }
+        }
+        return acc;
+      },
+      { pending: 0, dueSoon: 0 }
+    );
+  }, [rendiciones]);
+
+  const handleAddItem = () => {
+    setItems((current) => [...current, { descripcion: "", monto: 0 }]);
+  };
+
+  const handleRemoveItem = (index: number) => {
+    setItems((current) => current.filter((_, itemIndex) => itemIndex !== index));
+  };
+
+  const handleUpdateItem = (index: number, field: keyof RendicionItem, value: string | number) => {
+    setItems((current) =>
+      current.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, [field]: field === "monto" ? Number(value) : value } : item
+      )
+    );
+  };
+
+  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    if (!event.target.files) return;
+    setFiles((current) => [...current, ...Array.from(event.target.files || [])]);
+  };
+
+  const handleSubmit = async () => {
+    if (!selectedEmpresaId) return;
+    if (!selectedTercero || items.some((item) => !item.descripcion || item.monto <= 0)) {
+      alert("Completa trabajador y detalle de gastos.");
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const uploadedUrls: string[] = [];
+
+      for (const file of files) {
+        const fileExt = file.name.split(".").pop();
+        const fileName = `${Date.now()}-${Math.random().toString(36).slice(2)}.${fileExt}`;
+        const filePath = `rendiciones/${fileName}`;
+        const { error: uploadError } = await supabase.storage.from("invoices").upload(filePath, file);
+        if (uploadError) throw uploadError;
+        const { data } = supabase.storage.from("invoices").getPublicUrl(filePath);
+        uploadedUrls.push(data.publicUrl);
+      }
+
+      const selectedWorker = terceros.find((tercero) => tercero.id === selectedTercero);
+      const { data: rendicion, error: rendicionError } = await supabase
+        .from("rendiciones")
+        .insert({
+          empresa_id: selectedEmpresaId,
+          tercero_id: selectedTercero,
+          tercero_nombre: selectedWorker?.razon_social,
+          descripcion,
+          monto_total: totalMonto,
+          archivos_urls: uploadedUrls,
+          estado: "pendiente",
+          treasury_category_id: treasuryForm.categoryId || null,
+          planned_cash_date: treasuryForm.plannedCashDate || today,
+          treasury_priority: treasuryForm.priority,
+          preferred_bank_account_id: treasuryForm.preferredBankAccountId === "none" ? null : treasuryForm.preferredBankAccountId,
+        })
+        .select()
+        .single();
+      if (rendicionError) throw rendicionError;
+
+      const detailRows = items.map((item) => ({
+        empresa_id: selectedEmpresaId,
+        rendicion_id: rendicion.id,
+        descripcion: item.descripcion,
+        monto: item.monto,
+      }));
+
+      const { error: detailsError } = await supabase.from("rendicion_detalles").insert(detailRows);
+      if (detailsError) throw detailsError;
+
+      setIsCreateOpen(false);
+      resetForm();
+      await fetchRendiciones();
+    } catch (error: any) {
+      console.error("Error saving rendicion:", error);
+      alert(`No se pudo guardar la rendición: ${error.message}`);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const resetForm = () => {
+    const defaultCategoryId = treasuryCategories.find((category) => category.code === "other_outflow")?.id ?? "";
+    setSelectedTercero("");
+    setDescripcion("");
+    setItems([{ descripcion: "", monto: 0 }]);
+    setFiles([]);
+    setTreasuryForm({
+      categoryId: defaultCategoryId,
+      priority: "high",
+      plannedCashDate: today,
+      preferredBankAccountId: "none",
+    });
+  };
+
+  const openEditDialog = (rendicion: Rendicion) => {
+    const defaultCategoryId = treasuryCategories.find((category) => category.code === "other_outflow")?.id ?? "";
+    setEditingRendicion(rendicion);
+    setEditForm({
+      categoryId: rendicion.treasury_category_id || defaultCategoryId,
+      priority: rendicion.treasury_priority || "high",
+      plannedCashDate: rendicion.planned_cash_date || rendicion.fecha || today,
+      preferredBankAccountId: rendicion.preferred_bank_account_id || "none",
+    });
+  };
+
+  const handleSaveTreasury = async () => {
+    if (!selectedEmpresaId || !editingRendicion) return;
+    setSavingTreasury(true);
+    try {
+      const { error } = await supabase
+        .from("rendiciones")
+        .update({
+          treasury_category_id: editForm.categoryId || null,
+          planned_cash_date: editForm.plannedCashDate || null,
+          treasury_priority: editForm.priority,
+          preferred_bank_account_id: editForm.preferredBankAccountId === "none" ? null : editForm.preferredBankAccountId,
+        })
+        .eq("id", editingRendicion.id)
+        .eq("empresa_id", selectedEmpresaId);
+      if (error) throw error;
+      setEditingRendicion(null);
+      await fetchRendiciones();
+    } catch (error: any) {
+      console.error("Error saving treasury metadata:", error);
+      alert(`No se pudo guardar la configuración de tesorería: ${error.message}`);
+    } finally {
+      setSavingTreasury(false);
+    }
+  };
+
+  const categoriesById = useMemo(
+    () => new Map(treasuryCategories.map((category) => [category.id, category.nombre])),
+    [treasuryCategories]
+  );
+  const accountsById = useMemo(
+    () => new Map(bankAccounts.map((account) => [account.id, account.nombre])),
+    [bankAccounts]
+  );
+
+  if (!selectedEmpresaId) {
+    return (
+      <div className="flex h-[70vh] items-center justify-center">
+        <Card>
+          <CardHeader>
+            <CardTitle>Rendiciones</CardTitle>
+            <CardDescription>Selecciona una empresa para gestionar reembolsos.</CardDescription>
+          </CardHeader>
+        </Card>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Rendiciones</h1>
+          <p className="mt-1 text-muted-foreground">
+            Gestiona gastos del equipo y mételos correctamente a la cola de pagos.
+          </p>
+        </div>
+        <Button onClick={() => setIsCreateOpen(true)} disabled={!canEdit}>
+          <Plus className="mr-2 h-4 w-4" />
+          Nueva rendición
+        </Button>
+      </div>
+
+      {!canEdit && (
+        <Card className="border-amber-200">
+          <CardContent className="pt-6 text-sm text-amber-700">
+            Tu rol actual es solo lectura. Puedes revisar rendiciones, pero no crear ni editar.
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="grid gap-4 md:grid-cols-3">
+        <SummaryCard title="Rendiciones registradas" value={String(rendiciones.length)} description="Histórico visible" />
+        <SummaryCard title="Pendiente de pago" value={formatTreasuryCurrency(totals.pending)} description="Estado pendiente" />
+        <SummaryCard title="Impacto próximos 7 días" value={formatTreasuryCurrency(totals.dueSoon)} description="Según planned cash date" tone="warning" />
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Listado de rendiciones</CardTitle>
+          <CardDescription>Incluye categoría, prioridad, fecha esperada de pago y cuenta sugerida.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {loading && rendiciones.length === 0 && <Loader2 className="h-5 w-5 animate-spin text-primary" />}
+          {rendiciones.map((rendicion) => (
+            <div key={rendicion.id} className="rounded-xl border p-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <div className="font-medium">{rendicion.tercero_nombre || "Sin responsable"}</div>
+                  <div className="text-sm text-muted-foreground">
+                    {rendicion.descripcion || "Sin descripción"} • {formatTreasuryDate(rendicion.fecha)}
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant="outline">{rendicion.estado}</Badge>
+                  <Badge variant="outline" className={cn("capitalize", PRIORITY_BADGE_CLASSES[rendicion.treasury_priority || "high"])}>
+                    {PRIORITY_LABELS[rendicion.treasury_priority || "high"]}
+                  </Badge>
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-3 lg:grid-cols-[0.8fr_0.9fr_0.9fr_0.8fr_0.8fr]">
+                <MetaBlock label="Monto" value={formatTreasuryCurrency(rendicion.monto_total)} />
+                <MetaBlock label="Pago esperado" value={formatTreasuryDate(rendicion.planned_cash_date)} />
+                <MetaBlock label="Categoría" value={categoriesById.get(rendicion.treasury_category_id || "") || "Sin categoría"} />
+                <MetaBlock label="Cuenta" value={accountsById.get(rendicion.preferred_bank_account_id || "") || "Sin cuenta"} />
+                <div className="flex items-end justify-start lg:justify-end">
+                  <Button size="sm" variant="outline" disabled={!canEdit} onClick={() => openEditDialog(rendicion)}>
+                    Editar tesorería
+                  </Button>
+                </div>
+              </div>
+
+              {rendicion.archivos_urls && rendicion.archivos_urls.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {rendicion.archivos_urls.map((url, index) => (
+                    <a key={`${rendicion.id}-${index}`} href={url} target="_blank" rel="noreferrer" className="text-sm text-primary underline">
+                      Respaldo {index + 1}
+                    </a>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+          {!loading && rendiciones.length === 0 && (
+            <div className="rounded-xl border border-dashed p-8 text-center text-muted-foreground">
+              No hay rendiciones registradas.
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Nueva rendición</DialogTitle>
+            <DialogDescription>Se registrará con metadata de tesorería desde el origen.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <Field label="Trabajador">
+              <Select value={selectedTercero} onValueChange={setSelectedTercero}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecciona trabajador" />
+                </SelectTrigger>
+                <SelectContent>
+                  {terceros.map((tercero) => (
+                    <SelectItem key={tercero.id} value={tercero.id}>
+                      {tercero.razon_social}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="Descripción">
+              <Input value={descripcion} onChange={(event) => setDescripcion(event.target.value)} />
+            </Field>
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field label="Categoría tesorería">
+                <Select value={treasuryForm.categoryId} onValueChange={(value) => setTreasuryForm((current) => ({ ...current, categoryId: value }))}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecciona categoría" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {treasuryCategories.map((category) => (
+                      <SelectItem key={category.id} value={category.id}>
+                        {category.nombre}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Prioridad">
+                <Select value={treasuryForm.priority} onValueChange={(value) => setTreasuryForm((current) => ({ ...current, priority: value }))}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="critical">Critica</SelectItem>
+                    <SelectItem value="high">Alta</SelectItem>
+                    <SelectItem value="normal">Normal</SelectItem>
+                    <SelectItem value="deferrable">Postergable</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Fecha esperada de pago">
+                <Input type="date" value={treasuryForm.plannedCashDate} onChange={(event) => setTreasuryForm((current) => ({ ...current, plannedCashDate: event.target.value }))} />
+              </Field>
+              <Field label="Cuenta preferida">
+                <Select value={treasuryForm.preferredBankAccountId} onValueChange={(value) => setTreasuryForm((current) => ({ ...current, preferredBankAccountId: value }))}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Sin cuenta</SelectItem>
+                    {bankAccounts.map((account) => (
+                      <SelectItem key={account.id} value={account.id}>
+                        {account.nombre}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <Label>Detalle</Label>
+                <Button type="button" size="sm" variant="outline" onClick={handleAddItem}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  Agregar ítem
+                </Button>
+              </div>
+              {items.map((item, index) => (
+                <div key={index} className="grid gap-3 md:grid-cols-[1fr_180px_48px]">
+                  <Input value={item.descripcion} onChange={(event) => handleUpdateItem(index, "descripcion", event.target.value)} placeholder="Descripción del gasto" />
+                  <Input type="number" min="0" value={item.monto} onChange={(event) => handleUpdateItem(index, "monto", event.target.value)} placeholder="Monto" />
+                  <Button type="button" variant="ghost" size="icon" onClick={() => handleRemoveItem(index)}>
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+
+            <Field label="Respaldos">
+              <div className="space-y-3">
+                <Input type="file" multiple onChange={handleFileChange} />
+                <div className="flex flex-wrap gap-2">
+                  {files.map((file, index) => (
+                    <div key={`${file.name}-${index}`} className="flex items-center gap-2 rounded-full border px-3 py-1 text-sm">
+                      <Paperclip className="h-3 w-3" />
+                      {file.name}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </Field>
+
+            <div className="rounded-xl border bg-muted/20 p-4 text-sm">
+              Total rendición: <strong>{formatTreasuryCurrency(totalMonto)}</strong>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsCreateOpen(false)}>Cancelar</Button>
+            <Button onClick={handleSubmit} disabled={isSubmitting}>
+              {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Guardar rendición
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(editingRendicion)} onOpenChange={(open) => !open && setEditingRendicion(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Editar tesorería de rendición</DialogTitle>
+            <DialogDescription>
+              {editingRendicion ? `${editingRendicion.tercero_nombre || "Sin responsable"} • ${editingRendicion.descripcion || "Rendición"}` : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <Field label="Categoría">
+              <Select value={editForm.categoryId} onValueChange={(value) => setEditForm((current) => ({ ...current, categoryId: value }))}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {treasuryCategories.map((category) => (
+                    <SelectItem key={category.id} value={category.id}>
+                      {category.nombre}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="Prioridad">
+              <Select value={editForm.priority} onValueChange={(value) => setEditForm((current) => ({ ...current, priority: value }))}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="critical">Critica</SelectItem>
+                  <SelectItem value="high">Alta</SelectItem>
+                  <SelectItem value="normal">Normal</SelectItem>
+                  <SelectItem value="deferrable">Postergable</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="Fecha esperada de pago">
+              <Input type="date" value={editForm.plannedCashDate} onChange={(event) => setEditForm((current) => ({ ...current, plannedCashDate: event.target.value }))} />
+            </Field>
+            <Field label="Cuenta preferida">
+              <Select value={editForm.preferredBankAccountId} onValueChange={(value) => setEditForm((current) => ({ ...current, preferredBankAccountId: value }))}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Sin cuenta</SelectItem>
+                  {bankAccounts.map((account) => (
+                    <SelectItem key={account.id} value={account.id}>
+                      {account.nombre}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingRendicion(null)}>Cancelar</Button>
+            <Button onClick={handleSaveTreasury} disabled={savingTreasury}>
+              {savingTreasury ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Guardar cambios
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function SummaryCard({
+  title,
+  value,
+  description,
+  tone = "default",
+}: {
+  title: string;
+  value: string;
+  description: string;
+  tone?: "default" | "warning";
+}) {
+  return (
+    <Card className={tone === "warning" ? "border-amber-200" : undefined}>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="text-2xl font-bold">{value}</div>
+        <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function MetaBlock({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <div>
+      <div className="text-xs uppercase text-muted-foreground">{label}</div>
+      <div>{value}</div>
+    </div>
+  );
+}
+
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label>{label}</Label>
+      {children}
+    </div>
+  );
 }

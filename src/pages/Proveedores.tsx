@@ -1,550 +1,681 @@
-import { Label } from "@/components/ui/label";
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { Loader2, Plus, Search } from "lucide-react";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import {
-    Table,
-    TableBody,
-    TableCell,
-    TableHead,
-    TableHeader,
-    TableRow,
-} from "@/components/ui/table";
-import { ArrowRight, Plus, Loader2, Search, Trash2 } from "lucide-react";
-import { cn } from "@/lib/utils";
-import { supabase } from "@/lib/supabase";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { useCompany } from "@/contexts/CompanyContext";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { supabase } from "@/lib/supabase";
+import { useBankAccounts, useTreasuryCategories } from "@/hooks/useTreasury";
+import {
+  PRIORITY_BADGE_CLASSES,
+  PRIORITY_LABELS,
+  canEditTreasury,
+  formatTreasuryCurrency,
+  formatTreasuryDate,
+} from "@/lib/treasury";
+import { cn } from "@/lib/utils";
 
-import { useNavigate } from "react-router-dom";
+type Proveedor = {
+  id: string;
+  rut: string;
+  razon_social: string;
+  email: string | null;
+  telefono: string | null;
+  direccion: string | null;
+};
+
+type PurchaseInvoice = {
+  id: string;
+  tercero_id: string;
+  tercero_nombre: string;
+  numero_documento: string;
+  monto: number;
+  estado: string;
+  fecha_emision: string;
+  fecha_vencimiento: string | null;
+  planned_cash_date: string | null;
+  treasury_priority: "critical" | "high" | "normal" | "deferrable" | null;
+  preferred_bank_account_id: string | null;
+  blocked_reason: string | null;
+  treasury_category_id: string | null;
+};
 
 export default function Proveedores() {
-    const { selectedEmpresaId } = useCompany();
-    const navigate = useNavigate();
-    const [proveedores, setProveedores] = useState<any[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [searchQuery, setSearchQuery] = useState("");
-    const [isNewProvOpen, setIsNewProvOpen] = useState(false);
-    const [isSavingProv, setIsSavingProv] = useState(false);
-    const [isNewInvoiceOpen, setIsNewInvoiceOpen] = useState(false);
-    const [isSavingInvoice, setIsSavingInvoice] = useState(false);
-    const [newProvData, setNewProvData] = useState({
-        rut: "",
-        razon_social: "",
-        email: "",
-        telefono: "",
-        direccion: ""
-    });
-    const [newInvoiceData, setNewInvoiceData] = useState({
+  const { selectedEmpresaId, selectedRole } = useCompany();
+  const canEdit = canEditTreasury(selectedRole);
+  const [proveedores, setProveedores] = useState<Proveedor[]>([]);
+  const [invoices, setInvoices] = useState<PurchaseInvoice[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [isNewProvOpen, setIsNewProvOpen] = useState(false);
+  const [isSavingProv, setIsSavingProv] = useState(false);
+  const [isNewInvoiceOpen, setIsNewInvoiceOpen] = useState(false);
+  const [isSavingInvoice, setIsSavingInvoice] = useState(false);
+  const [editingInvoice, setEditingInvoice] = useState<PurchaseInvoice | null>(null);
+  const [savingTreasury, setSavingTreasury] = useState(false);
+  const [newProvData, setNewProvData] = useState({
+    rut: "",
+    razon_social: "",
+    email: "",
+    telefono: "",
+    direccion: "",
+  });
+  const [newInvoiceData, setNewInvoiceData] = useState({
+    tercero_id: "",
+    fecha_emision: new Date().toISOString().split("T")[0],
+    fecha_vencimiento: "",
+    numero_documento: "",
+    monto: "",
+    treasury_category_id: "",
+    treasury_priority: "normal",
+    preferred_bank_account_id: "none",
+    planned_cash_date: "",
+    blocked_reason: "",
+  });
+  const [editForm, setEditForm] = useState({
+    treasury_category_id: "",
+    treasury_priority: "normal",
+    preferred_bank_account_id: "none",
+    planned_cash_date: "",
+    blocked_reason: "",
+  });
+
+  const { data: bankAccounts } = useBankAccounts(selectedEmpresaId);
+  const { data: treasuryCategories } = useTreasuryCategories(selectedEmpresaId);
+
+  useEffect(() => {
+    if (selectedEmpresaId) {
+      void fetchData();
+    }
+  }, [selectedEmpresaId]);
+
+  const fetchData = async () => {
+    if (!selectedEmpresaId) return;
+    setLoading(true);
+    try {
+      const [{ data: supplierData, error: supplierError }, { data: invoiceData, error: invoiceError }] =
+        await Promise.all([
+          supabase
+            .from("terceros")
+            .select("id, rut, razon_social, email, telefono, direccion")
+            .eq("empresa_id", selectedEmpresaId)
+            .eq("tipo", "proveedor")
+            .eq("estado", "activo")
+            .order("razon_social", { ascending: true }),
+          supabase
+            .from("facturas")
+            .select("id, tercero_id, tercero_nombre, numero_documento, monto, estado, fecha_emision, fecha_vencimiento, planned_cash_date, treasury_priority, preferred_bank_account_id, blocked_reason, treasury_category_id")
+            .eq("empresa_id", selectedEmpresaId)
+            .eq("tipo", "compra")
+            .in("estado", ["pendiente", "morosa"])
+            .order("planned_cash_date", { ascending: true }),
+        ]);
+
+      if (supplierError) throw supplierError;
+      if (invoiceError) throw invoiceError;
+      setProveedores((supplierData || []) as Proveedor[]);
+      setInvoices((invoiceData || []) as PurchaseInvoice[]);
+    } catch (error) {
+      console.error("Error fetching proveedores:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const categoriesById = useMemo(
+    () => new Map(treasuryCategories.map((category) => [category.id, category.nombre])),
+    [treasuryCategories]
+  );
+  const accountsById = useMemo(
+    () => new Map(bankAccounts.map((account) => [account.id, account.nombre])),
+    [bankAccounts]
+  );
+
+  const groupedSuppliers = useMemo(() => {
+    return proveedores
+      .map((supplier) => {
+        const supplierInvoices = invoices.filter((invoice) => invoice.tercero_id === supplier.id);
+        const outstanding = supplierInvoices.reduce((sum, invoice) => sum + invoice.monto, 0);
+        const dueSoon = supplierInvoices.filter((invoice) => {
+          if (!invoice.planned_cash_date) return false;
+          const diff = new Date(invoice.planned_cash_date).getTime() - Date.now();
+          return diff <= 7 * 24 * 60 * 60 * 1000;
+        }).length;
+        return { ...supplier, supplierInvoices, outstanding, dueSoon };
+      })
+      .filter((supplier) => {
+        const normalized = searchQuery.toLowerCase().trim();
+        if (!normalized) return true;
+        return (
+          supplier.razon_social.toLowerCase().includes(normalized) ||
+          supplier.rut.toLowerCase().includes(normalized) ||
+          supplier.supplierInvoices.some((invoice) => invoice.numero_documento?.toLowerCase().includes(normalized))
+        );
+      });
+  }, [proveedores, invoices, searchQuery]);
+
+  const totals = useMemo(() => {
+    return groupedSuppliers.reduce(
+      (acc, supplier) => {
+        acc.outstanding += supplier.outstanding;
+        acc.dueSoon += supplier.supplierInvoices
+          .filter((invoice) => invoice.planned_cash_date && new Date(invoice.planned_cash_date).getTime() <= Date.now() + 7 * 24 * 60 * 60 * 1000)
+          .reduce((sum, invoice) => sum + invoice.monto, 0);
+        return acc;
+      },
+      { outstanding: 0, dueSoon: 0 }
+    );
+  }, [groupedSuppliers]);
+
+  const suppliersCategoryId = treasuryCategories.find((category) => category.code === "suppliers")?.id ?? "";
+
+  const handleCreateProvManual = async () => {
+    if (!selectedEmpresaId) return;
+    if (!newProvData.rut || !newProvData.razon_social || !newProvData.email || !newProvData.telefono) {
+      alert("RUT, Razón Social, Email y Teléfono son obligatorios.");
+      return;
+    }
+
+    setIsSavingProv(true);
+    try {
+      const cleanRut = newProvData.rut.replace(/\./g, "").replace(/-/g, "").toUpperCase();
+      const { error } = await supabase.from("terceros").insert({
+        empresa_id: selectedEmpresaId,
+        ...newProvData,
+        rut: cleanRut,
+        tipo: "proveedor",
+        estado: "activo",
+      });
+      if (error) throw error;
+
+      setIsNewProvOpen(false);
+      setNewProvData({ rut: "", razon_social: "", email: "", telefono: "", direccion: "" });
+      await fetchData();
+    } catch (error: any) {
+      console.error("Error al crear proveedor:", error);
+      alert(`No se pudo crear el proveedor: ${error.message}`);
+    } finally {
+      setIsSavingProv(false);
+    }
+  };
+
+  const handleCreateCompraInvoice = async () => {
+    if (!selectedEmpresaId) return;
+    if (!newInvoiceData.tercero_id || !newInvoiceData.fecha_emision || !newInvoiceData.fecha_vencimiento || !newInvoiceData.numero_documento || !newInvoiceData.monto) {
+      alert("Completa proveedor, fechas, folio y monto.");
+      return;
+    }
+
+    const selectedSupplier = proveedores.find((supplier) => supplier.id === newInvoiceData.tercero_id);
+    if (!selectedSupplier) {
+      alert("Proveedor no válido.");
+      return;
+    }
+
+    setIsSavingInvoice(true);
+    try {
+      const { error } = await supabase.from("facturas").insert({
+        empresa_id: selectedEmpresaId,
+        tipo: "compra",
+        tercero_id: selectedSupplier.id,
+        tercero_nombre: selectedSupplier.razon_social,
+        rut: selectedSupplier.rut,
+        fecha_emision: newInvoiceData.fecha_emision,
+        fecha_vencimiento: newInvoiceData.fecha_vencimiento,
+        numero_documento: newInvoiceData.numero_documento.trim(),
+        monto: Number(newInvoiceData.monto),
+        estado: "pendiente",
+        treasury_category_id: newInvoiceData.treasury_category_id || suppliersCategoryId || null,
+        treasury_priority: newInvoiceData.treasury_priority,
+        preferred_bank_account_id: newInvoiceData.preferred_bank_account_id === "none" ? null : newInvoiceData.preferred_bank_account_id,
+        planned_cash_date: newInvoiceData.planned_cash_date || newInvoiceData.fecha_vencimiento,
+        blocked_reason: newInvoiceData.blocked_reason || null,
+      });
+      if (error) throw error;
+
+      setIsNewInvoiceOpen(false);
+      setNewInvoiceData({
         tercero_id: "",
         fecha_emision: new Date().toISOString().split("T")[0],
         fecha_vencimiento: "",
         numero_documento: "",
-        monto: ""
+        monto: "",
+        treasury_category_id: suppliersCategoryId,
+        treasury_priority: "normal",
+        preferred_bank_account_id: "none",
+        planned_cash_date: "",
+        blocked_reason: "",
+      });
+      await fetchData();
+    } catch (error: any) {
+      console.error("Error creando factura de compra:", error);
+      alert(`No se pudo guardar la factura: ${error.message}`);
+    } finally {
+      setIsSavingInvoice(false);
+    }
+  };
+
+  const openEditDialog = (invoice: PurchaseInvoice) => {
+    setEditingInvoice(invoice);
+    setEditForm({
+      treasury_category_id: invoice.treasury_category_id || suppliersCategoryId,
+      treasury_priority: invoice.treasury_priority || "normal",
+      preferred_bank_account_id: invoice.preferred_bank_account_id || "none",
+      planned_cash_date: invoice.planned_cash_date || invoice.fecha_vencimiento || "",
+      blocked_reason: invoice.blocked_reason || "",
     });
+  };
 
-    useEffect(() => {
-        if (selectedEmpresaId) fetchProveedores();
-    }, [selectedEmpresaId]);
+  const handleSaveTreasury = async () => {
+    if (!selectedEmpresaId || !editingInvoice) return;
+    setSavingTreasury(true);
+    try {
+      const { error } = await supabase
+        .from("facturas")
+        .update({
+          treasury_category_id: editForm.treasury_category_id || null,
+          treasury_priority: editForm.treasury_priority,
+          preferred_bank_account_id: editForm.preferred_bank_account_id === "none" ? null : editForm.preferred_bank_account_id,
+          planned_cash_date: editForm.planned_cash_date || null,
+          blocked_reason: editForm.blocked_reason || null,
+        })
+        .eq("id", editingInvoice.id)
+        .eq("empresa_id", selectedEmpresaId);
+      if (error) throw error;
+      setEditingInvoice(null);
+      await fetchData();
+    } catch (error: any) {
+      console.error("Error saving treasury data:", error);
+      alert(`No se pudo guardar la metadata de tesorería: ${error.message}`);
+    } finally {
+      setSavingTreasury(false);
+    }
+  };
 
-    const handleDeleteProveedor = async (prov: any) => {
-        if (!selectedEmpresaId) return;
-        const hasDocs = (prov.facturas || []).length > 0;
-        const msg = hasDocs
-            ? `ATENCIÓN: El proveedor ${prov.razon_social} tiene ${prov.facturas.length} facturas asociadas. Si lo borras, estas facturas quedarán sin vínculo. ¿Deseas continuar?`
-            : `¿Estás seguro de que deseas eliminar al proveedor ${prov.razon_social}?`;
-
-        const confirm = window.confirm(msg);
-        if (!confirm) return;
-
-        try {
-            const { error } = await supabase
-                .from('terceros')
-                .delete()
-                .eq('id', prov.id)
-                .eq('empresa_id', selectedEmpresaId);
-
-            if (error) throw error;
-
-            setProveedores(prev => prev.filter(p => p.id !== prov.id));
-            alert("Proveedor eliminado correctamente.");
-        } catch (error: any) {
-            console.error("Error al eliminar proveedor:", error);
-            alert(`Error al eliminar: ${error.message}`);
-        }
-    };
-
-    const handleCreateProvManual = async () => {
-        if (!selectedEmpresaId) return;
-        if (!newProvData.rut || !newProvData.razon_social || !newProvData.direccion || !newProvData.email || !newProvData.telefono) {
-            alert("RUT, Razón Social, Dirección, Email y Teléfono son obligatorios para registrar un nuevo proveedor.");
-            return;
-        }
-
-        setIsSavingProv(true);
-        try {
-            const cleanRut = newProvData.rut.replace(/\./g, '').replace(/-/g, '').toUpperCase();
-            const { data, error } = await supabase
-                .from('terceros')
-                .insert([{
-                    empresa_id: selectedEmpresaId,
-                    ...newProvData,
-                    rut: cleanRut,
-                    tipo: 'proveedor',
-                    estado: 'activo'
-                }])
-                .select()
-                .single();
-
-            if (error) throw error;
-
-            setProveedores(prev => [data, ...prev]);
-            setIsNewProvOpen(false);
-            setNewProvData({ rut: "", razon_social: "", email: "", telefono: "", direccion: "" });
-            alert("Proveedor creado correctamente.");
-        } catch (error: any) {
-            console.error("Error al crear proveedor:", error);
-            alert(`Error: ${error.message}`);
-        } finally {
-            setIsSavingProv(false);
-        }
-    };
-
-    const handleCreateCompraInvoice = async () => {
-        if (!selectedEmpresaId) return;
-        if (!newInvoiceData.tercero_id || !newInvoiceData.fecha_emision || !newInvoiceData.fecha_vencimiento || !newInvoiceData.numero_documento || !newInvoiceData.monto) {
-            alert("Selecciona proveedor y completa fecha documento, folio, vencimiento y total con IVA.");
-            return;
-        }
-
-        const selectedProv = proveedores.find((p) => p.id === newInvoiceData.tercero_id);
-        if (!selectedProv) {
-            alert("Proveedor no válido.");
-            return;
-        }
-
-        setIsSavingInvoice(true);
-        try {
-            const { count, error: dupError } = await supabase
-                .from('facturas')
-                .select('*', { count: 'exact', head: true })
-                .eq('empresa_id', selectedEmpresaId)
-                .eq('tercero_id', newInvoiceData.tercero_id)
-                .eq('numero_documento', newInvoiceData.numero_documento.trim());
-
-            if (dupError) throw dupError;
-            if ((count || 0) > 0) {
-                alert("Ya existe una factura con ese folio para este proveedor.");
-                return;
-            }
-
-            const { error } = await supabase
-                .from('facturas')
-                .insert([{
-                    empresa_id: selectedEmpresaId,
-                    tipo: 'compra',
-                    tercero_id: selectedProv.id,
-                    tercero_nombre: selectedProv.razon_social,
-                    rut: selectedProv.rut,
-                    fecha_emision: newInvoiceData.fecha_emision,
-                    fecha_vencimiento: newInvoiceData.fecha_vencimiento,
-                    numero_documento: newInvoiceData.numero_documento.trim(),
-                    monto: Number(newInvoiceData.monto),
-                    estado: 'pendiente'
-                }]);
-
-            if (error) throw error;
-
-            setIsNewInvoiceOpen(false);
-            setNewInvoiceData({
-                tercero_id: "",
-                fecha_emision: new Date().toISOString().split("T")[0],
-                fecha_vencimiento: "",
-                numero_documento: "",
-                monto: ""
-            });
-            await fetchProveedores();
-            alert("Factura de compra registrada correctamente.");
-        } catch (error: any) {
-            console.error("Error creando factura de compra:", error);
-            alert(`Error al guardar factura: ${error.message}`);
-        } finally {
-            setIsSavingInvoice(false);
-        }
-    };
-
-    const fetchProveedores = async () => {
-        if (!selectedEmpresaId) return;
-        setLoading(true);
-        try {
-            const { data, error } = await supabase
-                .from('terceros')
-                .select(`
-                    *,
-                    facturas (
-                        id,
-                        monto,
-                        estado,
-                        fecha_emision,
-                        tipo
-                    )
-                `)
-                .eq('empresa_id', selectedEmpresaId)
-                .eq('tipo', 'proveedor')
-                .order('razon_social', { ascending: true });
-
-            if (error) throw error;
-            setProveedores(data || []);
-        } catch (error) {
-            console.error("Error fetching proveedores:", error);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const formatCurrency = (amount: number) => {
-        return new Intl.NumberFormat('es-CL', {
-            style: 'currency',
-            currency: 'CLP',
-            minimumFractionDigits: 0
-        }).format(amount);
-    };
-
-    const calculateTotals = () => {
-        let totalDeuda = 0;
-        let totalSemana = 0;
-
-        const now = new Date();
-        const nextWeek = new Date();
-        nextWeek.setDate(now.getDate() + 7);
-
-        proveedores.forEach(prov => {
-            (prov.facturas || []).forEach((f: any) => {
-                const monto = parseFloat(f.monto);
-                if (f.estado === 'pendiente' || f.estado === 'morosa') {
-                    totalDeuda += monto;
-                    // Aproximación de pagos pendientes esta semana (facturas de hace > 20 días ya venciendo)
-                    const fechaEmi = new Date(f.fecha_emision);
-                    const diffDays = Math.ceil((now.getTime() - fechaEmi.getTime()) / (1000 * 60 * 60 * 24));
-                    if (diffDays >= 25) {
-                        totalSemana += monto;
-                    }
-                }
-            });
-        });
-
-        return { totalDeuda, totalSemana };
-    };
-
-    const getAgingData = (facturas: any[]) => {
-        const pendientes = (facturas || []).filter(f => f.estado === 'pendiente' || f.estado === 'morosa');
-        if (pendientes.length === 0) return null;
-
-        const now = new Date().getTime();
-        let oldestDate = now;
-
-        pendientes.forEach(f => {
-            const fecha = new Date(f.fecha_emision).getTime();
-            if (fecha < oldestDate) oldestDate = fecha;
-        });
-
-        return Math.floor((now - oldestDate) / (1000 * 60 * 60 * 24));
-    };
-
-    const getProveedorSaldo = (facturas: any[]) => {
-        return (facturas || [])
-            .filter(f => f.estado === 'pendiente' || f.estado === 'morosa')
-            .reduce((sum, f) => sum + parseFloat(f.monto), 0);
-    };
-
-    const totals = calculateTotals();
-
-
-
-    const filteredProveedores = proveedores.filter(p =>
-        p.razon_social.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        p.rut.toLowerCase().includes(searchQuery.toLowerCase())
-    );
-
+  if (!selectedEmpresaId) {
     return (
-        <div className="container mx-auto py-10 space-y-8">
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                <div>
-                    <h2 className="text-3xl font-bold tracking-tight">Proveedores</h2>
-                    <p className="text-muted-foreground">Administra tus compras y cuentas por pagar.</p>
-                </div>
-                <div className="flex gap-2 w-full md:w-auto">
-                    <Dialog open={isNewInvoiceOpen} onOpenChange={setIsNewInvoiceOpen}>
-                        <DialogTrigger asChild>
-                            <Button variant="outline" className="flex-1 md:flex-none">
-                                Ingresar Factura Compra
-                            </Button>
-                        </DialogTrigger>
-                        <DialogContent className="sm:max-w-[520px]">
-                            <DialogHeader>
-                                <DialogTitle>Nueva Factura de Compra</DialogTitle>
-                            </DialogHeader>
-                            <div className="grid gap-4 py-4">
-                                <div className="grid gap-2">
-                                    <Label>Proveedor *</Label>
-                                    <div className="flex gap-2">
-                                        <Select
-                                            value={newInvoiceData.tercero_id}
-                                            onValueChange={(value) => setNewInvoiceData({ ...newInvoiceData, tercero_id: value })}
-                                        >
-                                            <SelectTrigger>
-                                                <SelectValue placeholder="Selecciona proveedor" />
-                                            </SelectTrigger>
-                                            <SelectContent>
-                                                {proveedores.map((p) => (
-                                                    <SelectItem key={p.id} value={p.id}>
-                                                        {p.razon_social}
-                                                    </SelectItem>
-                                                ))}
-                                            </SelectContent>
-                                        </Select>
-                                        <Button
-                                            type="button"
-                                            variant="outline"
-                                            onClick={() => {
-                                                setIsNewInvoiceOpen(false);
-                                                setIsNewProvOpen(true);
-                                            }}
-                                        >
-                                            Nuevo Proveedor
-                                        </Button>
-                                    </div>
-                                </div>
-                                <div className="grid grid-cols-2 gap-3">
-                                    <div className="grid gap-2">
-                                        <Label>Fecha Documento *</Label>
-                                        <Input
-                                            type="date"
-                                            value={newInvoiceData.fecha_emision}
-                                            onChange={(e) => setNewInvoiceData({ ...newInvoiceData, fecha_emision: e.target.value })}
-                                        />
-                                    </div>
-                                    <div className="grid gap-2">
-                                        <Label>Fecha Vencimiento *</Label>
-                                        <Input
-                                            type="date"
-                                            value={newInvoiceData.fecha_vencimiento}
-                                            onChange={(e) => setNewInvoiceData({ ...newInvoiceData, fecha_vencimiento: e.target.value })}
-                                        />
-                                    </div>
-                                </div>
-                                <div className="grid grid-cols-2 gap-3">
-                                    <div className="grid gap-2">
-                                        <Label>Folio *</Label>
-                                        <Input
-                                            value={newInvoiceData.numero_documento}
-                                            onChange={(e) => setNewInvoiceData({ ...newInvoiceData, numero_documento: e.target.value })}
-                                            placeholder="Ej: 98765"
-                                        />
-                                    </div>
-                                    <div className="grid gap-2">
-                                        <Label>Total con IVA *</Label>
-                                        <Input
-                                            type="number"
-                                            min="0"
-                                            step="1"
-                                            value={newInvoiceData.monto}
-                                            onChange={(e) => setNewInvoiceData({ ...newInvoiceData, monto: e.target.value })}
-                                            placeholder="0"
-                                        />
-                                    </div>
-                                </div>
-                            </div>
-                            <Button onClick={handleCreateCompraInvoice} disabled={isSavingInvoice} className="w-full">
-                                {isSavingInvoice ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                                Guardar Factura Compra
-                            </Button>
-                        </DialogContent>
-                    </Dialog>
-
-                    <Dialog open={isNewProvOpen} onOpenChange={setIsNewProvOpen}>
-                        <DialogTrigger asChild>
-                            <Button className="flex-1 md:flex-none">
-                                <Plus className="mr-2 h-4 w-4" /> Nuevo Proveedor
-                            </Button>
-                        </DialogTrigger>
-                        <DialogContent className="sm:max-w-[425px]">
-                            <DialogHeader>
-                                <DialogTitle>Registrar Nuevo Proveedor</DialogTitle>
-                                <p className="text-sm text-muted-foreground">Ingresa los datos del proveedor. RUT, Nombre y Dirección son requeridos.</p>
-                            </DialogHeader>
-                            <div className="grid gap-4 py-4">
-                                <div className="grid gap-2">
-                                    <Label htmlFor="rut">RUT</Label>
-                                    <Input
-                                        id="rut"
-                                        placeholder="12.345.678-9"
-                                        value={newProvData.rut}
-                                        onChange={(e) => setNewProvData({ ...newProvData, rut: e.target.value })}
-                                    />
-                                </div>
-                                <div className="grid gap-2">
-                                    <Label htmlFor="name">Razón Social</Label>
-                                    <Input
-                                        id="name"
-                                        placeholder="Proveedor SpA..."
-                                        value={newProvData.razon_social}
-                                        onChange={(e) => setNewProvData({ ...newProvData, razon_social: e.target.value })}
-                                    />
-                                </div>
-                                <div className="grid gap-2">
-                                    <Label htmlFor="email" className="flex items-center gap-1">Email <Badge variant="secondary" className="text-[10px] px-1 py-0 h-4">REQ</Badge></Label>
-                                    <Input
-                                        id="email"
-                                        type="email"
-                                        placeholder="contacto@proveedor.com"
-                                        value={newProvData.email}
-                                        onChange={(e) => setNewProvData({ ...newProvData, email: e.target.value })}
-                                    />
-                                </div>
-                                <div className="grid gap-2">
-                                    <Label htmlFor="phone" className="flex items-center gap-1">Teléfono <Badge variant="secondary" className="text-[10px] px-1 py-0 h-4">REQ</Badge></Label>
-                                    <Input
-                                        id="phone"
-                                        placeholder="+56..."
-                                        value={newProvData.telefono}
-                                        onChange={(e) => setNewProvData({ ...newProvData, telefono: e.target.value })}
-                                    />
-                                </div>
-                                <div className="grid gap-2">
-                                    <Label htmlFor="address" className="flex items-center gap-1">Dirección <Badge variant="secondary" className="text-[10px] px-1 py-0 h-4">REQ</Badge></Label>
-                                    <Input
-                                        id="address"
-                                        placeholder="Calle 123..."
-                                        value={newProvData.direccion}
-                                        onChange={(e) => setNewProvData({ ...newProvData, direccion: e.target.value })}
-                                    />
-                                </div>
-                            </div>
-                            <Button
-                                onClick={handleCreateProvManual}
-                                disabled={isSavingProv}
-                                className="w-full"
-                            >
-                                {isSavingProv ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : "Guardar Proveedor"}
-                            </Button>
-                        </DialogContent>
-                    </Dialog>
-                </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <Card className="bg-slate-50 border-slate-200">
-                    <CardHeader className="pb-2">
-                        <CardTitle className="text-sm font-medium text-muted-foreground">Deuda Total a Proveedores</CardTitle>
-                        <CardDescription className="text-2xl font-bold text-slate-900">{formatCurrency(totals.totalDeuda)}</CardDescription>
-                    </CardHeader>
-                </Card>
-                <Card className="bg-orange-50 border-orange-100">
-                    <CardHeader className="pb-2">
-                        <CardTitle className="text-sm font-medium text-muted-foreground">Pagos Pendientes (Estimados Semana)</CardTitle>
-                        <CardDescription className="text-2xl font-bold text-orange-600">{formatCurrency(totals.totalSemana)}</CardDescription>
-                    </CardHeader>
-                </Card>
-            </div>
-
-            <div className="flex items-center space-x-2">
-                <div className="relative flex-1 max-w-sm">
-                    <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-                    <Input
-                        placeholder="Buscar proveedor..."
-                        className="pl-8"
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                    />
-                </div>
-            </div>
-
-            <Card>
-                <CardHeader>
-                    <CardTitle>Listado de Proveedores</CardTitle>
-                </CardHeader>
-                <CardContent>
-                    {loading ? (
-                        <div className="flex justify-center py-20">
-                            <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                        </div>
-                    ) : (
-                        <Table>
-                            <TableHeader>
-                                <TableRow>
-                                    <TableHead>Razón Social</TableHead>
-                                    <TableHead>RUT</TableHead>
-                                    <TableHead>Estado</TableHead>
-                                    <TableHead className="text-right">Saldo Pendiente</TableHead>
-                                    <TableHead className="text-right">Acciones</TableHead>
-                                </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                                {filteredProveedores.length === 0 ? (
-                                    <TableRow>
-                                        <TableCell colSpan={5} className="text-center py-10 text-muted-foreground">
-                                            No se encontraron proveedores.
-                                        </TableCell>
-                                    </TableRow>
-                                ) : (
-                                    filteredProveedores.map((supplier) => (
-                                        <TableRow key={supplier.id}>
-                                            <TableCell className="font-medium">{supplier.razon_social}</TableCell>
-                                            <TableCell className="font-mono text-xs">{supplier.rut}</TableCell>
-                                            <TableCell>
-                                                <Badge variant={supplier.estado === 'activo' ? 'default' : 'secondary'}>
-                                                    {supplier.estado === 'activo' ? 'Activo' : 'Inactivo'}
-                                                </Badge>
-                                            </TableCell>
-                                            <TableCell className="text-right">
-                                                <span className={cn(
-                                                    "font-bold",
-                                                    getProveedorSaldo(supplier.facturas) > 0 ? "text-red-600" : "text-green-600"
-                                                )}>
-                                                    {formatCurrency(getProveedorSaldo(supplier.facturas))}
-                                                </span>
-                                            </TableCell>
-                                            <TableCell className="text-right">
-                                                {getAgingData(supplier.facturas) !== null ? (
-                                                    <span className={cn(
-                                                        "font-medium px-2 py-1 rounded-full text-xs",
-                                                        (getAgingData(supplier.facturas) || 0) > 30 ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
-                                                    )}>
-                                                        {getAgingData(supplier.facturas)} días
-                                                    </span>
-                                                ) : (
-                                                    <span className="text-muted-foreground text-xs">N/A</span>
-                                                )}
-                                            </TableCell>
-                                            <TableCell className="text-right">
-                                                <Button
-                                                    variant="ghost"
-                                                    size="sm"
-                                                    onClick={() => navigate(`/proveedores/${supplier.id}`)}
-                                                >
-                                                    Ver Cta. Cte. <ArrowRight className="ml-2 h-4 w-4" />
-                                                </Button>
-                                                <Button
-                                                    variant="ghost"
-                                                    size="sm"
-                                                    className="text-red-500 hover:text-red-700 hover:bg-red-50"
-                                                    onClick={() => handleDeleteProveedor(supplier)}
-                                                >
-                                                    <Trash2 className="h-4 w-4" />
-                                                </Button>
-                                            </TableCell>
-                                        </TableRow>
-                                    ))
-                                )}
-                            </TableBody>
-                        </Table>
-                    )}
-                </CardContent>
-            </Card>
-        </div>
+      <div className="flex h-[70vh] items-center justify-center">
+        <Card>
+          <CardHeader>
+            <CardTitle>Proveedores</CardTitle>
+            <CardDescription>Selecciona una empresa para revisar la cola de pagos.</CardDescription>
+          </CardHeader>
+        </Card>
+      </div>
     );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Proveedores y Pagos</h1>
+          <p className="mt-1 text-muted-foreground">
+            Administra proveedores y configura tesorería en facturas de compra abiertas.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button onClick={() => setIsNewInvoiceOpen(true)} disabled={!canEdit}>
+            <Plus className="mr-2 h-4 w-4" />
+            Nueva factura compra
+          </Button>
+          <Button variant="outline" onClick={() => setIsNewProvOpen(true)} disabled={!canEdit}>
+            Nuevo proveedor
+          </Button>
+        </div>
+      </div>
+
+      {!canEdit && (
+        <Card className="border-amber-200">
+          <CardContent className="pt-6 text-sm text-amber-700">
+            Tu rol actual es solo lectura. Puedes revisar la cola de pagos, pero no modificar proveedores ni facturas.
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="grid gap-4 md:grid-cols-3">
+        <SummaryCard title="Proveedores activos" value={String(proveedores.length)} description="Base de contrapartes" />
+        <SummaryCard title="Deuda abierta" value={formatTreasuryCurrency(totals.outstanding)} description="Facturas de compra pendientes o morosas" />
+        <SummaryCard title="Pagar en 7 días" value={formatTreasuryCurrency(totals.dueSoon)} description="Según planned cash date" tone="warning" />
+      </div>
+
+      <Card>
+        <CardHeader>
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <CardTitle>Proveedores</CardTitle>
+              <CardDescription>Facturas abiertas y metadata de pago por proveedor.</CardDescription>
+            </div>
+            <div className="relative w-full max-w-sm">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="Buscar proveedor, RUT o folio..."
+                className="pl-10"
+              />
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {loading && groupedSuppliers.length === 0 && <Loader2 className="h-5 w-5 animate-spin text-primary" />}
+          {groupedSuppliers.map((supplier) => (
+            <div key={supplier.id} className="rounded-xl border p-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <div className="font-medium">{supplier.razon_social}</div>
+                  <div className="text-sm text-muted-foreground">
+                    {supplier.rut} • {supplier.email || "sin email"} • {supplier.telefono || "sin teléfono"}
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant="outline">{formatTreasuryCurrency(supplier.outstanding)}</Badge>
+                  {supplier.dueSoon > 0 && <Badge className="bg-amber-100 text-amber-700 hover:bg-amber-100">{supplier.dueSoon} por vencer</Badge>}
+                </div>
+              </div>
+              <div className="mt-4 space-y-3">
+                {supplier.supplierInvoices.length === 0 && (
+                  <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
+                    Sin facturas abiertas.
+                  </div>
+                )}
+                {supplier.supplierInvoices.map((invoice) => (
+                  <div key={invoice.id} className="rounded-xl border bg-muted/15 p-4">
+                    <div className="grid gap-3 lg:grid-cols-[1.2fr_0.8fr_0.8fr_0.8fr_0.9fr_1fr]">
+                      <div>
+                        <div className="font-medium">Factura {invoice.numero_documento || "Sin folio"}</div>
+                        <div className="text-sm text-muted-foreground">
+                          Emisión {formatTreasuryDate(invoice.fecha_emision)} • vence {formatTreasuryDate(invoice.fecha_vencimiento)}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs uppercase text-muted-foreground">Monto</div>
+                        <div className="font-semibold">{formatTreasuryCurrency(invoice.monto)}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs uppercase text-muted-foreground">Pago esperado</div>
+                        <div>{formatTreasuryDate(invoice.planned_cash_date)}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs uppercase text-muted-foreground">Prioridad</div>
+                        <Badge variant="outline" className={cn("capitalize", PRIORITY_BADGE_CLASSES[invoice.treasury_priority || "normal"])}>
+                          {PRIORITY_LABELS[invoice.treasury_priority || "normal"]}
+                        </Badge>
+                      </div>
+                      <div>
+                        <div className="text-xs uppercase text-muted-foreground">Cuenta / categoría</div>
+                        <div>{accountsById.get(invoice.preferred_bank_account_id || "") || "Sin cuenta"}</div>
+                        <div className="text-sm text-muted-foreground">{categoriesById.get(invoice.treasury_category_id || "") || "Sin categoría"}</div>
+                      </div>
+                      <div className="flex flex-col items-start gap-2 lg:items-end">
+                        <div className="text-sm">{invoice.blocked_reason || "Sin bloqueo"}</div>
+                        <Button size="sm" variant="outline" disabled={!canEdit} onClick={() => openEditDialog(invoice)}>
+                          Editar tesorería
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+          {!loading && groupedSuppliers.length === 0 && (
+            <div className="rounded-xl border border-dashed p-8 text-center text-muted-foreground">
+              No se encontraron proveedores para el filtro actual.
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Dialog open={isNewProvOpen} onOpenChange={setIsNewProvOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Nuevo proveedor</DialogTitle>
+            <DialogDescription>Alta manual de proveedor activo.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <Field label="RUT">
+              <Input value={newProvData.rut} onChange={(event) => setNewProvData((current) => ({ ...current, rut: event.target.value }))} />
+            </Field>
+            <Field label="Razón social">
+              <Input value={newProvData.razon_social} onChange={(event) => setNewProvData((current) => ({ ...current, razon_social: event.target.value }))} />
+            </Field>
+            <Field label="Email">
+              <Input value={newProvData.email} onChange={(event) => setNewProvData((current) => ({ ...current, email: event.target.value }))} />
+            </Field>
+            <Field label="Teléfono">
+              <Input value={newProvData.telefono} onChange={(event) => setNewProvData((current) => ({ ...current, telefono: event.target.value }))} />
+            </Field>
+            <Field label="Dirección">
+              <Input value={newProvData.direccion} onChange={(event) => setNewProvData((current) => ({ ...current, direccion: event.target.value }))} />
+            </Field>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsNewProvOpen(false)}>Cancelar</Button>
+            <Button onClick={handleCreateProvManual} disabled={isSavingProv}>
+              {isSavingProv ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Guardar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isNewInvoiceOpen} onOpenChange={setIsNewInvoiceOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Nueva factura de compra</DialogTitle>
+            <DialogDescription>Se crea con metadata base de tesorería.</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <Field label="Proveedor">
+              <select
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm"
+                value={newInvoiceData.tercero_id}
+                onChange={(event) => setNewInvoiceData((current) => ({ ...current, tercero_id: event.target.value }))}
+              >
+                <option value="">Selecciona un proveedor</option>
+                {proveedores.map((supplier) => (
+                  <option key={supplier.id} value={supplier.id}>
+                    {supplier.razon_social}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Fecha emisión">
+              <Input type="date" value={newInvoiceData.fecha_emision} onChange={(event) => setNewInvoiceData((current) => ({ ...current, fecha_emision: event.target.value }))} />
+            </Field>
+            <Field label="Fecha vencimiento">
+              <Input type="date" value={newInvoiceData.fecha_vencimiento} onChange={(event) => setNewInvoiceData((current) => ({ ...current, fecha_vencimiento: event.target.value, planned_cash_date: event.target.value }))} />
+            </Field>
+            <Field label="Número documento">
+              <Input value={newInvoiceData.numero_documento} onChange={(event) => setNewInvoiceData((current) => ({ ...current, numero_documento: event.target.value }))} />
+            </Field>
+            <Field label="Monto">
+              <Input type="number" min="0" value={newInvoiceData.monto} onChange={(event) => setNewInvoiceData((current) => ({ ...current, monto: event.target.value }))} />
+            </Field>
+            <Field label="Categoría tesorería">
+              <Select value={newInvoiceData.treasury_category_id || suppliersCategoryId || ""} onValueChange={(value) => setNewInvoiceData((current) => ({ ...current, treasury_category_id: value }))}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecciona categoría" />
+                </SelectTrigger>
+                <SelectContent>
+                  {treasuryCategories.map((category) => (
+                    <SelectItem key={category.id} value={category.id}>
+                      {category.nombre}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="Prioridad">
+              <Select value={newInvoiceData.treasury_priority} onValueChange={(value) => setNewInvoiceData((current) => ({ ...current, treasury_priority: value }))}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="critical">Critica</SelectItem>
+                  <SelectItem value="high">Alta</SelectItem>
+                  <SelectItem value="normal">Normal</SelectItem>
+                  <SelectItem value="deferrable">Postergable</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="Cuenta preferida">
+              <Select value={newInvoiceData.preferred_bank_account_id} onValueChange={(value) => setNewInvoiceData((current) => ({ ...current, preferred_bank_account_id: value }))}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Sin cuenta</SelectItem>
+                  {bankAccounts.map((account) => (
+                    <SelectItem key={account.id} value={account.id}>
+                      {account.nombre}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="Fecha esperada de pago">
+              <Input type="date" value={newInvoiceData.planned_cash_date} onChange={(event) => setNewInvoiceData((current) => ({ ...current, planned_cash_date: event.target.value }))} />
+            </Field>
+            <Field label="Nota / bloqueo">
+              <Textarea value={newInvoiceData.blocked_reason} onChange={(event) => setNewInvoiceData((current) => ({ ...current, blocked_reason: event.target.value }))} />
+            </Field>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsNewInvoiceOpen(false)}>Cancelar</Button>
+            <Button onClick={handleCreateCompraInvoice} disabled={isSavingInvoice}>
+              {isSavingInvoice ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Crear factura
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(editingInvoice)} onOpenChange={(open) => !open && setEditingInvoice(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Editar tesorería de factura</DialogTitle>
+            <DialogDescription>
+              {editingInvoice ? `Factura ${editingInvoice.numero_documento || "sin folio"} • ${editingInvoice.tercero_nombre}` : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <Field label="Categoría">
+              <Select value={editForm.treasury_category_id} onValueChange={(value) => setEditForm((current) => ({ ...current, treasury_category_id: value }))}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {treasuryCategories.map((category) => (
+                    <SelectItem key={category.id} value={category.id}>
+                      {category.nombre}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="Prioridad">
+              <Select value={editForm.treasury_priority} onValueChange={(value) => setEditForm((current) => ({ ...current, treasury_priority: value }))}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="critical">Critica</SelectItem>
+                  <SelectItem value="high">Alta</SelectItem>
+                  <SelectItem value="normal">Normal</SelectItem>
+                  <SelectItem value="deferrable">Postergable</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="Cuenta preferida">
+              <Select value={editForm.preferred_bank_account_id} onValueChange={(value) => setEditForm((current) => ({ ...current, preferred_bank_account_id: value }))}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Sin cuenta</SelectItem>
+                  {bankAccounts.map((account) => (
+                    <SelectItem key={account.id} value={account.id}>
+                      {account.nombre}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="Fecha esperada de pago">
+              <Input type="date" value={editForm.planned_cash_date} onChange={(event) => setEditForm((current) => ({ ...current, planned_cash_date: event.target.value }))} />
+            </Field>
+            <Field label="Nota / bloqueo">
+              <Textarea value={editForm.blocked_reason} onChange={(event) => setEditForm((current) => ({ ...current, blocked_reason: event.target.value }))} />
+            </Field>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingInvoice(null)}>Cancelar</Button>
+            <Button onClick={handleSaveTreasury} disabled={savingTreasury}>
+              {savingTreasury ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Guardar cambios
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function SummaryCard({
+  title,
+  value,
+  description,
+  tone = "default",
+}: {
+  title: string;
+  value: string;
+  description: string;
+  tone?: "default" | "warning";
+}) {
+  return (
+    <Card className={tone === "warning" ? "border-amber-200" : undefined}>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="text-2xl font-bold">{value}</div>
+        <p className="mt-1 text-xs text-muted-foreground">{description}</p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label>{label}</Label>
+      {children}
+    </div>
+  );
 }

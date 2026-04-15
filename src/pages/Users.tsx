@@ -35,7 +35,6 @@ import { es } from 'date-fns/locale';
 import { createUserInternal } from '@/lib/internalAutomation';
 import { useCompany } from '@/contexts/CompanyContext';
 import { useAuth } from '@/contexts/AuthContext';
-const OWNER_ADMIN_EMAIL = "aterraza@3dental.cl";
 
 const ASSIGNABLE_COMPANY_ROLES = ['user', 'viewer'] as const;
 type CompanyRole = typeof ASSIGNABLE_COMPANY_ROLES[number];
@@ -121,9 +120,15 @@ export default function Users() {
     const [isUploadingLogo, setIsUploadingLogo] = useState(false);
     const [companyForm, setCompanyForm] = useState<CompanyForm>(EMPTY_COMPANY_FORM);
     const logoInputRef = useRef<HTMLInputElement>(null);
-    const isOwnerAdmin = user?.email?.toLowerCase() === OWNER_ADMIN_EMAIL;
 
     useEffect(() => {
+        if (!isGlobalAdmin) {
+            setUsers([]);
+            setMemberships({});
+            setLoading(false);
+            return;
+        }
+
         if (selectedEmpresaId) {
             fetchUsers();
         } else {
@@ -131,7 +136,7 @@ export default function Users() {
             setMemberships({});
             setLoading(false);
         }
-    }, [selectedEmpresaId]);
+    }, [isGlobalAdmin, selectedEmpresaId]);
 
     useEffect(() => {
         if (isGlobalAdmin) {
@@ -159,7 +164,7 @@ export default function Users() {
     };
 
     const fetchUsers = async () => {
-        if (!selectedEmpresaId) return;
+        if (!selectedEmpresaId || !isGlobalAdmin) return;
 
         setLoading(true);
         try {
@@ -404,10 +409,10 @@ export default function Users() {
 
     const usersWithAccess = useMemo(() => users.filter((u) => memberships[u.id]), [users, memberships]);
 
-    if (!isGlobalAdmin || !isOwnerAdmin) {
+    if (!isGlobalAdmin) {
         return (
             <div className="rounded-lg border bg-card p-6 text-muted-foreground">
-                Solo el administrador principal puede acceder a este módulo.
+                Solo los administradores pueden acceder a este módulo.
             </div>
         );
     }
@@ -442,11 +447,11 @@ export default function Users() {
                             <div className="grid gap-4 py-4 md:grid-cols-2">
                                 <div className="grid gap-2">
                                     <Label>Nombre Comercial *</Label>
-                                    <Input value={companyForm.nombre} onChange={(e) => setCompanyForm({ ...companyForm, nombre: e.target.value })} placeholder="LAB3D" />
+                                    <Input value={companyForm.nombre} onChange={(e) => setCompanyForm({ ...companyForm, nombre: e.target.value })} placeholder="EMPRESA" />
                                 </div>
                                 <div className="grid gap-2">
                                     <Label>Razón Social *</Label>
-                                    <Input value={companyForm.razon_social} onChange={(e) => setCompanyForm({ ...companyForm, razon_social: e.target.value })} placeholder="Laboratorio Dental 3D SpA" />
+                                    <Input value={companyForm.razon_social} onChange={(e) => setCompanyForm({ ...companyForm, razon_social: e.target.value })} placeholder="Empresa Ejemplo SpA" />
                                 </div>
                                 <div className="grid gap-2">
                                     <Label>RUT Empresa</Label>

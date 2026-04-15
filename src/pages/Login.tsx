@@ -39,7 +39,7 @@ export default function Login() {
         <div className="flex items-center justify-center min-h-screen bg-slate-50">
             <Card className="w-full max-w-md">
                 <CardHeader className="space-y-1">
-                    <CardTitle className="text-2xl font-bold text-center">Gestión Laboratorio</CardTitle>
+                    <CardTitle className="text-2xl font-bold text-center">Gestión Empresarial</CardTitle>
                     <CardDescription className="text-center">
                         Ingresa tus credenciales para acceder
                     </CardDescription>

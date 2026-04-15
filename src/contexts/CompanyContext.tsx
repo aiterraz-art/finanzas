@@ -9,7 +9,15 @@ type Empresa = {
   activa: boolean;
 };
 
-type MembershipRole = 'admin' | 'user' | 'viewer' | null;
+const MEMBERSHIP_ROLES = ['owner', 'admin', 'manager', 'user', 'viewer'] as const;
+type MembershipRole = (typeof MEMBERSHIP_ROLES)[number] | null;
+
+const normalizeMembershipRole = (role: unknown): MembershipRole => {
+  if (typeof role !== 'string') return null;
+  return (MEMBERSHIP_ROLES as readonly string[]).includes(role)
+    ? (role as Exclude<MembershipRole, null>)
+    : null;
+};
 
 type CompanyContextType = {
   empresas: Empresa[];
@@ -73,7 +81,10 @@ export const CompanyProvider = ({ children }: { children: React.ReactNode }) => 
         const allEmpresas = (empresasData || []) as Empresa[];
         const roleMap: Record<string, MembershipRole> = {};
         for (const row of membershipData || []) {
-          roleMap[row.empresa_id] = row.role === 'viewer' ? 'viewer' : 'user';
+          const normalizedRole = normalizeMembershipRole(row.role);
+          if (normalizedRole) {
+            roleMap[row.empresa_id] = normalizedRole;
+          }
         }
 
         setEmpresas(allEmpresas);
@@ -97,7 +108,10 @@ export const CompanyProvider = ({ children }: { children: React.ReactNode }) => 
 
         const roleMap: Record<string, MembershipRole> = {};
         for (const row of allowedRows as any[]) {
-          roleMap[row.empresa_id] = row.role === 'viewer' ? 'viewer' : 'user';
+          const normalizedRole = normalizeMembershipRole(row.role);
+          if (normalizedRole) {
+            roleMap[row.empresa_id] = normalizedRole;
+          }
         }
 
         setEmpresas(scopedEmpresas);
