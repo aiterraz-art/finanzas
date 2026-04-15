@@ -28,9 +28,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useCompany } from "@/contexts/CompanyContext";
+import { useAuth } from "@/contexts/AuthContext";
 
 export default function TerceroDetalle() {
     const { selectedEmpresaId } = useCompany();
+    const { user } = useAuth();
     const { id } = useParams();
     const navigate = useNavigate();
     const [tercero, setTercero] = useState<any>(null);
@@ -71,39 +73,32 @@ export default function TerceroDetalle() {
         if (!selectedEmpresaId) return;
         const hasDocs = documentos.length > 0;
         const msg = hasDocs
-            ? `ATENCIÓN: El cliente ${tercero.razon_social} tiene ${documentos.length} documentos asociados. Si lo borras, se ELIMINARÁN permanentemente todas sus facturas. ¿Deseas continuar?`
-            : `¿Estás seguro de que deseas eliminar al cliente ${tercero.razon_social}?`;
+            ? `El cliente ${tercero.razon_social} tiene ${documentos.length} documentos asociados. Se inactivará la ficha, pero las facturas seguirán disponibles en histórico. ¿Deseas continuar?`
+            : `¿Inactivar al cliente ${tercero.razon_social}? Su historial se conservará.`;
 
         const confirm = window.confirm(msg);
         if (!confirm) return;
 
         try {
             setIsSaving(true);
-            // 1. Primero eliminamos las facturas asociadas
-            if (hasDocs) {
-                const { error: fError } = await supabase
-                    .from('facturas')
-                    .delete()
-                    .eq('rut', tercero.rut)
-                    .eq('empresa_id', selectedEmpresaId);
-
-                if (fError) throw fError;
-            }
-
-            // 2. Ahora borramos al tercero
             const { error } = await supabase
                 .from('terceros')
-                .delete()
+                .update({
+                    estado: 'inactivo',
+                    archived_at: new Date().toISOString(),
+                    archived_by: user?.id ?? null,
+                    archive_reason: 'Ficha inactivada desde detalle de tercero',
+                })
                 .eq('id', id)
                 .eq('empresa_id', selectedEmpresaId);
 
             if (error) throw error;
 
-            alert("Cliente y sus documentos eliminados correctamente.");
+            alert("Cliente inactivado correctamente. Su historial sigue disponible.");
             navigate('/clientes');
         } catch (error: any) {
-            console.error("Error al eliminar cliente:", error);
-            alert(`Error al eliminar: ${error.message}`);
+            console.error("Error al inactivar cliente:", error);
+            alert(`Error al inactivar: ${error.message}`);
         } finally {
             setIsSaving(false);
         }
@@ -190,24 +185,32 @@ export default function TerceroDetalle() {
 
     const handleDeleteFactura = async (id: string, numero: string) => {
         if (!selectedEmpresaId) return;
-        const confirm = window.confirm(`¿Estás seguro de que deseas eliminar la factura folio ${numero}? Esta acción no se puede deshacer.`);
+        const confirm = window.confirm(`¿Archivar la factura folio ${numero}? No se borrará, pero saldrá de la operación diaria.`);
         if (!confirm) return;
 
         try {
             const { error } = await supabase
                 .from('facturas')
-                .delete()
+                .update({
+                    estado: 'archivada',
+                    archived_at: new Date().toISOString(),
+                    archived_by: user?.id ?? null,
+                    archive_reason: 'Factura archivada desde detalle de tercero',
+                })
                 .eq('id', id)
                 .eq('empresa_id', selectedEmpresaId);
 
             if (error) throw error;
 
-            // Actualizar estado local
-            setDocumentos(prev => prev.filter(d => d.id !== id));
-            alert("Factura eliminada correctamente.");
+            setDocumentos(prev => prev.map((d) => (
+                d.id === id
+                    ? { ...d, estado: 'archivada', archived_at: new Date().toISOString() }
+                    : d
+            )));
+            alert("Factura archivada correctamente.");
         } catch (error) {
-            console.error("Error al eliminar factura:", error);
-            alert("Error al eliminar la factura.");
+            console.error("Error al archivar factura:", error);
+            alert("Error al archivar la factura.");
         }
     };
 
@@ -323,11 +326,11 @@ export default function TerceroDetalle() {
 
                     <Button
                         variant="ghost"
-                        className="text-red-500 hover:text-red-700 hover:bg-red-50 gap-2 border border-red-100"
+                        className="text-amber-600 hover:text-amber-700 hover:bg-amber-50 gap-2 border border-amber-100"
                         onClick={handleDeleteTercero}
                         disabled={isSaving}
                     >
-                        <Trash2 className="h-4 w-4" /> Eliminar
+                        <Trash2 className="h-4 w-4" /> Inactivar
                     </Button>
 
                     <Card className="w-full md:w-auto min-w-[200px] bg-primary/5 border-primary/20">
@@ -394,6 +397,8 @@ export default function TerceroDetalle() {
                                                     <div className="flex items-center gap-2">
                                                         {doc.estado === 'pagada' ? (
                                                             <CheckCircle2 className="h-4 w-4 text-green-500" />
+                                                        ) : doc.estado === 'archivada' ? (
+                                                            <Clock className="h-4 w-4 text-slate-500" />
                                                         ) : (
                                                             <Clock className="h-4 w-4 text-orange-500" />
                                                         )}
@@ -413,8 +418,9 @@ export default function TerceroDetalle() {
                                                     <Button
                                                         variant="ghost"
                                                         size="sm"
-                                                        className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                                                        className="text-amber-600 hover:text-amber-700 hover:bg-amber-50"
                                                         onClick={() => handleDeleteFactura(doc.id, doc.numero_documento)}
+                                                        title="Archivar factura"
                                                     >
                                                         <Trash2 className="h-4 w-4" />
                                                     </Button>

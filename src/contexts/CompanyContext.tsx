@@ -65,9 +65,18 @@ export const CompanyProvider = ({ children }: { children: React.ReactNode }) => 
     try {
       const { data: profile } = await supabase
         .from('profiles')
-        .select('role')
+        .select('role, activo')
         .eq('id', user.id)
         .single();
+
+      if (profile && profile.activo === false) {
+        setEmpresas([]);
+        setMemberships({});
+        setSelectedEmpresaIdState(null);
+        setIsGlobalAdmin(false);
+        setLoading(false);
+        return;
+      }
 
       const globalAdmin = profile?.role === 'admin';
       setIsGlobalAdmin(globalAdmin);
@@ -75,7 +84,7 @@ export const CompanyProvider = ({ children }: { children: React.ReactNode }) => 
       if (globalAdmin) {
         const [{ data: empresasData }, { data: membershipData }] = await Promise.all([
           supabase.from('empresas').select('id, nombre, logo_url, activa').eq('activa', true).order('nombre', { ascending: true }),
-          supabase.from('user_empresas').select('empresa_id, role').eq('user_id', user.id),
+          supabase.from('user_empresas').select('empresa_id, role').eq('user_id', user.id).is('revoked_at', null),
         ]);
 
         const allEmpresas = (empresasData || []) as Empresa[];
@@ -99,6 +108,7 @@ export const CompanyProvider = ({ children }: { children: React.ReactNode }) => 
           .from('user_empresas')
           .select('empresa_id, role, empresas(id, nombre, logo_url, activa)')
           .eq('user_id', user.id)
+          .is('revoked_at', null)
           .order('created_at', { ascending: true });
 
         const allowedRows = (rows || []).filter((r: any) => r.empresas?.activa);

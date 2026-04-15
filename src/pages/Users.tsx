@@ -29,7 +29,7 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Building2, Copy, Loader2, Pencil, Plus, Save, ShieldPlus, Trash2, Upload } from 'lucide-react';
+import { Building2, Copy, Loader2, Pencil, Plus, Save, ShieldPlus, Upload, UserX } from 'lucide-react';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { createUserInternal } from '@/lib/internalAutomation';
@@ -170,7 +170,7 @@ export default function Users() {
         try {
             const [{ data: profileData, error: profilesError }, { data: membershipData, error: membershipsError }] = await Promise.all([
                 supabase.from('profiles').select('*').order('created_at', { ascending: false }),
-                supabase.from('user_empresas').select('user_id, role').eq('empresa_id', selectedEmpresaId),
+                supabase.from('user_empresas').select('user_id, role').eq('empresa_id', selectedEmpresaId).is('revoked_at', null),
             ]);
 
             if (profilesError) throw profilesError;
@@ -209,7 +209,14 @@ export default function Users() {
                 const { error: membershipError } = await supabase
                     .from('user_empresas')
                     .upsert(
-                        [{ user_id: created.user_id, empresa_id: selectedEmpresaId, role: newUserForm.company_role }],
+                        [{
+                            user_id: created.user_id,
+                            empresa_id: selectedEmpresaId,
+                            role: newUserForm.company_role,
+                            revoked_at: null,
+                            revoked_by: null,
+                            revoke_reason: null,
+                        }],
                         { onConflict: 'user_id,empresa_id' }
                     );
                 if (membershipError) throw membershipError;
@@ -243,18 +250,35 @@ export default function Users() {
         }
     };
 
-    const handleDeleteUser = async (userId: string) => {
-        if (!confirm("¿Estás seguro de que deseas eliminar este usuario? Esta acción no se puede deshacer.")) return;
+    const handleDeactivateUser = async (userId: string) => {
+        if (!confirm("¿Desactivar este usuario? Mantendrá su historial, pero ya no podrá ingresar ni operar en la app.")) return;
 
         try {
-            const { error } = await supabase.rpc('delete_user_completely', { user_id: userId });
+            const { error } = await supabase.rpc('deactivate_user_account', {
+                user_id: userId,
+                p_reason: 'Usuario desactivado desde administración',
+            });
             if (error) throw error;
 
-            setUsers(prev => prev.filter(u => u.id !== userId));
-            alert("Usuario eliminado correctamente (Auth + Perfil).");
+            setUsers(prev => prev.map((u) => (
+                u.id === userId
+                    ? {
+                        ...u,
+                        activo: false,
+                        deactivated_at: new Date().toISOString(),
+                        deactivation_reason: 'Usuario desactivado desde administración',
+                    }
+                    : u
+            )));
+            setMemberships((prev) => {
+                const next = { ...prev };
+                delete next[userId];
+                return next;
+            });
+            alert("Usuario desactivado correctamente. Su historial se conserva.");
         } catch (error: any) {
-            console.error("Error deleting user:", error);
-            alert(`Error al eliminar usuario: ${error.message}`);
+            console.error("Error deactivating user:", error);
+            alert(`Error al desactivar usuario: ${error.message}`);
         }
     };
 
@@ -265,7 +289,14 @@ export default function Users() {
             const { error } = await supabase
                 .from('user_empresas')
                 .upsert([
-                    { user_id: userId, empresa_id: selectedEmpresaId, role },
+                    {
+                        user_id: userId,
+                        empresa_id: selectedEmpresaId,
+                        role,
+                        revoked_at: null,
+                        revoked_by: null,
+                        revoke_reason: null,
+                    },
                 ], { onConflict: 'user_id,empresa_id' });
 
             if (error) throw error;
@@ -281,14 +312,19 @@ export default function Users() {
 
     const handleRemoveAccess = async (userId: string) => {
         if (!selectedEmpresaId) return;
-        if (!confirm('¿Quitar acceso de este usuario a la empresa actual?')) return;
+        if (!confirm('¿Revocar acceso de este usuario a la empresa actual? El historial se conservará.')) return;
 
         try {
             const { error } = await supabase
                 .from('user_empresas')
-                .delete()
+                .update({
+                    revoked_at: new Date().toISOString(),
+                    revoked_by: user?.id ?? null,
+                    revoke_reason: 'Acceso revocado desde administración',
+                })
                 .eq('user_id', userId)
-                .eq('empresa_id', selectedEmpresaId);
+                .eq('empresa_id', selectedEmpresaId)
+                .is('revoked_at', null);
 
             if (error) throw error;
             setMemberships((prev) => {
@@ -297,7 +333,7 @@ export default function Users() {
                 return next;
             });
         } catch (error: any) {
-            alert(`No se pudo quitar acceso: ${error.message}`);
+            alert(`No se pudo revocar acceso: ${error.message}`);
         }
     };
 
@@ -366,7 +402,14 @@ export default function Users() {
 
                 const { error: membershipError } = await supabase
                     .from('user_empresas')
-                    .upsert([{ user_id: user.id, empresa_id: data.id, role: 'owner' }], { onConflict: 'user_id,empresa_id' });
+                    .upsert([{
+                        user_id: user.id,
+                        empresa_id: data.id,
+                        role: 'owner',
+                        revoked_at: null,
+                        revoked_by: null,
+                        revoke_reason: null,
+                    }], { onConflict: 'user_id,empresa_id' });
 
                 if (membershipError) throw membershipError;
             }
@@ -725,6 +768,7 @@ export default function Users() {
                                 ) : (
                                     users.map((profile) => {
                                         const companyRole = memberships[profile.id];
+                                        const isActiveProfile = profile.activo !== false;
                                         const isGlobalAdminRow = profile.role === 'admin';
                                         return (
                                             <TableRow key={profile.id}>
@@ -740,17 +784,27 @@ export default function Users() {
                                                                     {profile.full_name || '-'} {profile.job_title ? `· ${profile.job_title}` : ''} {profile.phone ? `· ${profile.phone}` : ''}
                                                                 </p>
                                                             )}
+                                                            {!isActiveProfile && (
+                                                                <p className="text-xs text-amber-700">
+                                                                    Usuario desactivado
+                                                                </p>
+                                                            )}
                                                         </div>
                                                     </div>
                                                 </TableCell>
                                                 <TableCell>
-                                                    <Badge variant={profile.role === 'admin' ? 'default' : 'secondary'} className="capitalize">
-                                                        {profile.role}
-                                                    </Badge>
+                                                    <div className="flex items-center gap-2">
+                                                        <Badge variant={profile.role === 'admin' ? 'default' : 'secondary'} className="capitalize">
+                                                            {profile.role}
+                                                        </Badge>
+                                                        {!isActiveProfile && <Badge variant="outline">Inactivo</Badge>}
+                                                    </div>
                                                 </TableCell>
                                                 <TableCell>
                                                     {isGlobalAdminRow ? (
                                                         <Badge>Admin total</Badge>
+                                                    ) : !isActiveProfile ? (
+                                                        <Badge variant="outline">Sin acceso operativo</Badge>
                                                     ) : (
                                                         <div className="flex items-center gap-2">
                                                             <Select
@@ -783,7 +837,8 @@ export default function Users() {
                                                                 size="icon"
                                                                 className="h-8 w-8 text-muted-foreground hover:text-amber-600"
                                                                 onClick={() => handleRemoveAccess(profile.id)}
-                                                                title="Quitar acceso a esta empresa"
+                                                                title="Revocar acceso a esta empresa"
+                                                                disabled={!isActiveProfile}
                                                             >
                                                                 <ShieldPlus className="h-4 w-4" />
                                                             </Button>
@@ -793,10 +848,11 @@ export default function Users() {
                                                                 variant="ghost"
                                                                 size="icon"
                                                                 className="h-8 w-8 text-muted-foreground hover:text-red-600"
-                                                                onClick={() => handleDeleteUser(profile.id)}
-                                                                title="Eliminar usuario"
+                                                                onClick={() => handleDeactivateUser(profile.id)}
+                                                                title="Desactivar usuario"
+                                                                disabled={!isActiveProfile}
                                                             >
-                                                                <Trash2 className="h-4 w-4" />
+                                                                <UserX className="h-4 w-4" />
                                                             </Button>
                                                         )}
                                                     </div>

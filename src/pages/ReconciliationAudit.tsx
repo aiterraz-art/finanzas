@@ -33,7 +33,11 @@ export default function ReconciliationAudit() {
             // 2. Facturas (Venta) pagadas pero sin relación en facturas_pagos
             // Detectamos inconsistencias de integridad localmente
             const { data: paidInv } = await supabase.from('facturas').select('id, monto, tercero_nombre').eq('empresa_id', selectedEmpresaId).eq('estado', 'pagada');
-            const { data: rels } = await supabase.from('facturas_pagos').select('factura_id').eq('empresa_id', selectedEmpresaId);
+            const { data: rels } = await supabase
+                .from('facturas_pagos')
+                .select('factura_id')
+                .eq('empresa_id', selectedEmpresaId)
+                .eq('estado', 'aplicado');
             const relSet = new Set(rels?.map(r => r.factura_id));
             const orphanPaid = paidInv?.filter(inv => !relSet.has(inv.id)) || [];
             setUnpaidInvoices(orphanPaid);

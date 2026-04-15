@@ -57,6 +57,7 @@ type BankMovement = {
     factura_id: string | null;
     rendicion_id: string | null;
     monto_aplicado: number;
+    estado: string;
     facturas?: { numero_documento: string | null; tercero_nombre: string | null }[] | null;
     rendiciones?: { descripcion: string | null; tercero_nombre: string | null }[] | null;
   }>;
@@ -159,6 +160,7 @@ export default function BankReconciliation() {
             factura_id,
             rendicion_id,
             monto_aplicado,
+            estado,
             facturas (numero_documento, tercero_nombre),
             rendiciones (descripcion, tercero_nombre)
           ),
@@ -321,6 +323,7 @@ export default function BankReconciliation() {
           rendicion_id: candidate.type === "rendicion" ? candidate.id : null,
           movimiento_banco_id: selectedTxn.id,
           monto_aplicado: Math.min(Math.abs(selectedTxn.monto), candidate.amount),
+          estado: "aplicado",
         };
         const { error: paymentError } = await supabase.from("facturas_pagos").insert(payload);
         if (paymentError) throw paymentError;
@@ -401,7 +404,7 @@ export default function BankReconciliation() {
 
   const handleUndoMatch = async (txn: BankMovement) => {
     if (!selectedEmpresaId) return;
-    const payments = txn.facturas_pagos || [];
+    const payments = (txn.facturas_pagos || []).filter((payment) => payment.estado !== "revertido");
     const linkedCheque = txn.cheques_cartera?.[0];
     const linkedWebpay = txn.webpay_liquidaciones?.[0];
     if (payments.length === 0 && !linkedCheque && !linkedWebpay) return;
@@ -411,12 +414,18 @@ export default function BankReconciliation() {
       const rendicionIds = payments.map((payment) => payment.rendicion_id).filter(Boolean) as string[];
 
       if (payments.length > 0) {
-        const { error: deleteError } = await supabase
+        const { error: revertError } = await supabase
           .from("facturas_pagos")
-          .delete()
+          .update({
+            estado: "revertido",
+            reversed_at: new Date().toISOString(),
+            reversed_by: user?.id ?? null,
+            reversal_reason: "Conciliación revertida manualmente",
+          })
           .eq("movimiento_banco_id", txn.id)
-          .eq("empresa_id", selectedEmpresaId);
-        if (deleteError) throw deleteError;
+          .eq("empresa_id", selectedEmpresaId)
+          .eq("estado", "aplicado");
+        if (revertError) throw revertError;
       }
 
       const { error: movementError } = await supabase
@@ -457,7 +466,8 @@ export default function BankReconciliation() {
           .from("facturas_pagos")
           .select("id", { count: "exact", head: true })
           .eq("empresa_id", selectedEmpresaId)
-          .eq("factura_id", facturaId);
+          .eq("factura_id", facturaId)
+          .eq("estado", "aplicado");
         if ((count || 0) === 0) {
           await supabase.from("facturas").update({ estado: "pendiente" }).eq("id", facturaId).eq("empresa_id", selectedEmpresaId);
         }
@@ -468,7 +478,8 @@ export default function BankReconciliation() {
           .from("facturas_pagos")
           .select("id", { count: "exact", head: true })
           .eq("empresa_id", selectedEmpresaId)
-          .eq("rendicion_id", rendicionId);
+          .eq("rendicion_id", rendicionId)
+          .eq("estado", "aplicado");
         if ((count || 0) === 0) {
           await supabase.from("rendiciones").update({ estado: "pendiente" }).eq("id", rendicionId).eq("empresa_id", selectedEmpresaId);
         }
@@ -779,7 +790,7 @@ export default function BankReconciliation() {
             </thead>
             <tbody>
               {filteredTransactions.map((txn) => {
-                const payment = txn.facturas_pagos?.[0];
+                const payment = txn.facturas_pagos?.find((row) => row.estado !== "revertido");
                 const invoiceInfo = Array.isArray(payment?.facturas) ? payment.facturas[0] : payment?.facturas;
                 const rendicionInfo = Array.isArray(payment?.rendiciones) ? payment.rendiciones[0] : payment?.rendiciones;
                 const chequeInfo = txn.cheques_cartera?.[0];

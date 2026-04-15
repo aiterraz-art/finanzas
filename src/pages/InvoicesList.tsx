@@ -16,9 +16,11 @@ import { Link } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
 import { useCompany } from "@/contexts/CompanyContext";
+import { useAuth } from "@/contexts/AuthContext";
 
 export default function InvoicesList() {
     const { selectedEmpresaId } = useCompany();
+    const { user } = useAuth();
     const [invoices, setInvoices] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState("");
@@ -48,23 +50,32 @@ export default function InvoicesList() {
 
     const handleDeleteFactura = async (id: string, numero: string) => {
         if (!selectedEmpresaId) return;
-        const confirm = window.confirm(`¿Estás seguro de que deseas eliminar la factura folio ${numero}? Esta acción no se puede deshacer.`);
+        const confirm = window.confirm(`¿Archivar la factura folio ${numero}? El documento seguirá existiendo para revisión histórica.`);
         if (!confirm) return;
 
         try {
             const { error } = await supabase
                 .from('facturas')
-                .delete()
+                .update({
+                    estado: 'archivada',
+                    archived_at: new Date().toISOString(),
+                    archived_by: user?.id ?? null,
+                    archive_reason: 'Factura archivada desde listado de facturas',
+                })
                 .eq('id', id)
                 .eq('empresa_id', selectedEmpresaId);
 
             if (error) throw error;
 
-            setInvoices(prev => prev.filter(inv => inv.id !== id));
-            alert("Factura eliminada correctamente.");
+            setInvoices(prev => prev.map((inv) => (
+                inv.id === id
+                    ? { ...inv, estado: 'archivada', archived_at: new Date().toISOString() }
+                    : inv
+            )));
+            alert("Factura archivada correctamente.");
         } catch (error) {
-            console.error("Error al eliminar factura:", error);
-            alert("Error al eliminar la factura.");
+            console.error("Error al archivar factura:", error);
+            alert("Error al archivar la factura.");
         }
     };
 
@@ -135,7 +146,8 @@ export default function InvoicesList() {
                                             <TableCell>
                                                 <Badge variant={
                                                     invoice.estado === 'pagada' ? 'default' :
-                                                        invoice.estado === 'pendiente' ? 'secondary' : 'destructive'
+                                                        invoice.estado === 'pendiente' ? 'secondary' :
+                                                            invoice.estado === 'archivada' ? 'outline' : 'destructive'
                                                 }>
                                                     {invoice.estado?.toUpperCase()}
                                                 </Badge>
@@ -156,8 +168,9 @@ export default function InvoicesList() {
                                                 <Button
                                                     variant="ghost"
                                                     size="sm"
-                                                    className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                                                    className="text-amber-600 hover:text-amber-700 hover:bg-amber-50"
                                                     onClick={() => handleDeleteFactura(invoice.id, invoice.numero_documento)}
+                                                    title="Archivar factura"
                                                 >
                                                     <Trash2 className="h-4 w-4" />
                                                 </Button>
