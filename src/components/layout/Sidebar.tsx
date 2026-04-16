@@ -15,6 +15,7 @@ import {
     Target,
     ShieldCheck,
     ClipboardList,
+    WalletCards,
     LogOut
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -24,7 +25,8 @@ import { useCompany } from "@/contexts/CompanyContext";
 const navigation = [
     { name: "Dashboard", href: "/", icon: LayoutDashboard },
     { name: "Banco", href: "/reconciliation", icon: Scale },
-    { name: "Tesoreria", href: "/cashflow", icon: TrendingUp },
+    { name: "Flujo de Caja", href: "/cashflow", icon: TrendingUp },
+    { name: "Cuentas por pagar", href: "/cuentas-por-pagar", icon: WalletCards },
     { name: "Egresos", href: "/egresos", icon: ReceiptText },
     { name: "Cheques", href: "/cheques", icon: ScrollText },
     { name: "WebPay", href: "/webpay", icon: CreditCard },

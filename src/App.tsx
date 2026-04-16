@@ -67,12 +67,14 @@ function App() {
                 <Route path="clientes" element={<Clientes />} />
                 <Route path="clientes/:id" element={<TerceroDetalle />} />
                 <Route path="proveedores" element={<Proveedores />} />
+                <Route path="cuentas-por-pagar" element={<Proveedores />} />
                 <Route path="proveedores/:id" element={<TerceroDetalle />} />
                 <Route path="reports" element={<Reports />} />
                 <Route path="settings" element={<Settings />} />
                 <Route path="reconciliation" element={<BankReconciliation />} />
                 <Route path="banco" element={<Navigate to="/reconciliation" replace />} />
                 <Route path="cashflow" element={<CashFlow />} />
+                <Route path="flujo-caja" element={<Navigate to="/cashflow" replace />} />
                 <Route path="egresos" element={<Egresos />} />
                 <Route path="cheques" element={<Cheques />} />
                 <Route path="webpay" element={<WebPay />} />

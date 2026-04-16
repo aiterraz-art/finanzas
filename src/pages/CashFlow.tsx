@@ -184,7 +184,7 @@ export default function CashFlow() {
       <div className="flex h-[70vh] items-center justify-center">
         <Card className="max-w-lg">
           <CardHeader>
-            <CardTitle>Tesoreria sin empresa activa</CardTitle>
+            <CardTitle>Flujo de Caja sin empresa activa</CardTitle>
             <CardDescription>Selecciona una empresa para calcular forecast, colas y alertas.</CardDescription>
           </CardHeader>
         </Card>
@@ -204,9 +204,9 @@ export default function CashFlow() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Tesoreria</h1>
+          <h1 className="text-3xl font-bold tracking-tight">Flujo de Caja</h1>
           <p className="text-muted-foreground mt-1">
-            Cockpit de caja para {selectedEmpresa?.nombre || "la empresa"} con forecast semanal, pagos y cobranzas.
+            Caja actual y proyectada para {selectedEmpresa?.nombre || "la empresa"}, con forecast semanal, pagos y cobranzas.
           </p>
         </div>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">

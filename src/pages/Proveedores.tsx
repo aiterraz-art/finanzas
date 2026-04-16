@@ -327,9 +327,9 @@ export default function Proveedores() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Proveedores y Pagos</h1>
+          <h1 className="text-3xl font-bold tracking-tight">Cuentas por pagar</h1>
           <p className="mt-1 text-muted-foreground">
-            Administra proveedores y configura tesorería en facturas de compra abiertas.
+            Registra deudas por pagar a proveedores y configura la salida de caja de facturas de compra abiertas.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -361,7 +361,7 @@ export default function Proveedores() {
         <CardHeader>
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
-              <CardTitle>Proveedores</CardTitle>
+            <CardTitle>Deudas con proveedores</CardTitle>
               <CardDescription>Facturas abiertas y metadata de pago por proveedor.</CardDescription>
             </div>
             <div className="relative w-full max-w-sm">
