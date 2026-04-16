@@ -137,6 +137,14 @@ const addFrequencyStep = (baseDate: string, frequency: QuickExpenseForm["frequen
   return next.toISOString().split("T")[0];
 };
 
+type InvoiceMismatchDialogState = {
+  candidate: MatchCandidate;
+  bankAmount: number;
+  invoiceAmount: number;
+  difference: number;
+  partialAmount: string;
+};
+
 export default function BankReconciliation() {
   const { selectedEmpresaId, selectedRole } = useCompany();
   const { user } = useAuth();
@@ -155,6 +163,7 @@ export default function BankReconciliation() {
   const [selectedInflowSource, setSelectedInflowSource] = useState<InflowMatchSource>("factura");
   const [candidateSearchTerm, setCandidateSearchTerm] = useState("");
   const [selectedInvoiceMatches, setSelectedInvoiceMatches] = useState<Record<string, { mode: "full" | "partial"; amount: string }>>({});
+  const [invoiceMismatchDialog, setInvoiceMismatchDialog] = useState<InvoiceMismatchDialogState | null>(null);
   const [loadingCandidates, setLoadingCandidates] = useState(false);
   const [matchingId, setMatchingId] = useState<string | null>(null);
   const [quickExpenseForm, setQuickExpenseForm] = useState<QuickExpenseForm>({
@@ -499,6 +508,28 @@ export default function BankReconciliation() {
 
   const handleMatch = async (candidate: MatchCandidate) => {
     if (!selectedEmpresaId || !selectedTxn) return;
+
+    if (candidate.type === "factura" && selectedTxn.monto >= 0) {
+      const bankAmount = Math.abs(selectedTxn.monto);
+      const difference = Number((bankAmount - candidate.amount).toFixed(2));
+
+      if (Math.abs(difference) > 0.009) {
+        if (difference > 10) {
+          alert("El movimiento supera el saldo de la factura por más de $10. Usa conciliación múltiple o selecciona otra factura.");
+          return;
+        }
+
+        setInvoiceMismatchDialog({
+          candidate,
+          bankAmount,
+          invoiceAmount: candidate.amount,
+          difference,
+          partialAmount: bankAmount.toFixed(2),
+        });
+        return;
+      }
+    }
+
     setMatchingId(candidate.id);
     try {
       if (candidate.type === "factura" || candidate.type === "rendicion") {
@@ -590,6 +621,81 @@ export default function BankReconciliation() {
     } catch (error: any) {
       console.error("Error matching transaction:", error);
       alert(`No se pudo conciliar el movimiento: ${error.message}`);
+    } finally {
+      setMatchingId(null);
+    }
+  };
+
+  const finalizeInvoiceMismatchMatch = async (mode: "adjustment" | "partial") => {
+    if (!selectedEmpresaId || !selectedTxn || !invoiceMismatchDialog) return;
+
+    const appliedAmount =
+      mode === "adjustment"
+        ? invoiceMismatchDialog.bankAmount
+        : Number(invoiceMismatchDialog.partialAmount || 0);
+
+    if (!Number.isFinite(appliedAmount) || appliedAmount <= 0) {
+      alert("Ingresa un monto de abono válido.");
+      return;
+    }
+
+    if (appliedAmount - invoiceMismatchDialog.invoiceAmount > 0.01) {
+      alert("El monto abonado no puede superar el saldo de la factura.");
+      return;
+    }
+
+    if (mode === "adjustment" && Math.abs(invoiceMismatchDialog.difference) > 10) {
+      alert("El ajuste sencillo solo se permite para diferencias de hasta $10.");
+      return;
+    }
+
+    setMatchingId(invoiceMismatchDialog.candidate.id);
+    try {
+      const { error: paymentError } = await supabase.from("facturas_pagos").insert({
+        empresa_id: selectedEmpresaId,
+        factura_id: invoiceMismatchDialog.candidate.id,
+        rendicion_id: null,
+        movimiento_banco_id: selectedTxn.id,
+        monto_aplicado: appliedAmount,
+        estado: "aplicado",
+      });
+      if (paymentError) throw paymentError;
+
+      const reconciliationLabel =
+        mode === "adjustment"
+          ? `${invoiceMismatchDialog.candidate.label} • ajuste ${invoiceMismatchDialog.difference > 0 ? "+" : ""}${invoiceMismatchDialog.difference.toFixed(2)}`
+          : `${invoiceMismatchDialog.candidate.label} • abono ${appliedAmount.toFixed(2)}`;
+
+      const { error: movementError } = await supabase
+        .from("movimientos_banco")
+        .update({
+          estado: "conciliado",
+          tipo_conciliacion: "factura",
+          numero_documento: reconciliationLabel,
+        })
+        .eq("id", selectedTxn.id)
+        .eq("empresa_id", selectedEmpresaId);
+      if (movementError) throw movementError;
+
+      if (mode === "adjustment") {
+        const { error: invoiceError } = await supabase
+          .from("facturas")
+          .update({ estado: "pagada" })
+          .eq("id", invoiceMismatchDialog.candidate.id)
+          .eq("empresa_id", selectedEmpresaId);
+        if (invoiceError) throw invoiceError;
+      } else {
+        await syncInvoiceStatuses([invoiceMismatchDialog.candidate.id]);
+      }
+
+      setInvoiceMismatchDialog(null);
+      setSelectedTxn(null);
+      setCandidates([]);
+      await fetchTransactions();
+      await refreshPositions();
+    } catch (error: any) {
+      console.error("Error resolving invoice mismatch reconciliation:", error);
+      alert(`No se pudo registrar la conciliación: ${error.message}`);
     } finally {
       setMatchingId(null);
     }
@@ -1464,6 +1570,7 @@ export default function BankReconciliation() {
           if (!open) {
             setSelectedTxn(null);
             setSelectedInflowSource("factura");
+            setInvoiceMismatchDialog(null);
           }
         }}
       >
@@ -1756,6 +1863,82 @@ export default function BankReconciliation() {
               Cerrar
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(invoiceMismatchDialog)} onOpenChange={(open) => !open && setInvoiceMismatchDialog(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Monto no cuadra con la factura</DialogTitle>
+            <DialogDescription>
+              {invoiceMismatchDialog
+                ? `Banco ${formatTreasuryCurrency(invoiceMismatchDialog.bankAmount, selectedAccount?.moneda || "CLP")} vs factura ${formatTreasuryCurrency(invoiceMismatchDialog.invoiceAmount, selectedAccount?.moneda || "CLP")}.`
+                : "Define cómo tratar la diferencia."}
+            </DialogDescription>
+          </DialogHeader>
+
+          {invoiceMismatchDialog && (
+            <div className="space-y-4">
+              <div className="rounded-lg border bg-muted/20 p-4 text-sm">
+                <div className="font-medium">{invoiceMismatchDialog.candidate.label}</div>
+                <div className="mt-1 text-muted-foreground">
+                  Diferencia: {formatTreasuryCurrency(invoiceMismatchDialog.difference, selectedAccount?.moneda || "CLP")}
+                </div>
+              </div>
+
+              {invoiceMismatchDialog.bankAmount < invoiceMismatchDialog.invoiceAmount && (
+                <div className="space-y-2">
+                  <Label>Monto abonado</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    max={invoiceMismatchDialog.invoiceAmount}
+                    value={invoiceMismatchDialog.partialAmount}
+                    onChange={(event) =>
+                      setInvoiceMismatchDialog((current) =>
+                        current ? { ...current, partialAmount: event.target.value } : current
+                      )
+                    }
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Si eliges abono, la factura quedará como `abonada` hasta completar el saldo.
+                  </p>
+                </div>
+              )}
+
+              <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+                <Button variant="outline" onClick={() => setInvoiceMismatchDialog(null)}>
+                  Cancelar
+                </Button>
+                <Button
+                  variant="outline"
+                  disabled={Math.abs(invoiceMismatchDialog.difference) > 10 || matchingId === invoiceMismatchDialog.candidate.id}
+                  onClick={() => void finalizeInvoiceMismatchMatch("adjustment")}
+                >
+                  {matchingId === invoiceMismatchDialog.candidate.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  Ajuste sencillo
+                </Button>
+                <Button
+                  disabled={invoiceMismatchDialog.bankAmount > invoiceMismatchDialog.invoiceAmount || matchingId === invoiceMismatchDialog.candidate.id}
+                  onClick={() => void finalizeInvoiceMismatchMatch("partial")}
+                >
+                  {matchingId === invoiceMismatchDialog.candidate.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  Registrar abono
+                </Button>
+              </div>
+
+              {Math.abs(invoiceMismatchDialog.difference) > 10 && (
+                <p className="text-xs text-amber-700">
+                  El ajuste sencillo solo se permite para diferencias de hasta $10.
+                </p>
+              )}
+              {invoiceMismatchDialog.bankAmount > invoiceMismatchDialog.invoiceAmount && (
+                <p className="text-xs text-amber-700">
+                  Este movimiento supera el saldo de la factura. Para repartirlo, usa conciliación múltiple.
+                </p>
+              )}
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>
