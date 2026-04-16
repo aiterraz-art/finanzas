@@ -186,16 +186,18 @@ export default function InvoiceImport() {
 
     if (missing.size === 0) return { count: 0, clients };
 
-    const { error } = await supabase.from("terceros").insert(
-      Array.from(missing.values()).map((client) => ({
+    for (const client of missing.values()) {
+      const { error } = await supabase.from("terceros").insert({
         empresa_id: selectedEmpresaId,
         rut: client.rut,
         razon_social: client.razon_social,
         tipo: "cliente",
         estado: "activo",
-      }))
-    );
-    if (error) throw error;
+      });
+      if (error) {
+        throw new Error(`No se pudo crear el cliente ${client.razon_social}${client.rut ? ` (${client.rut})` : ""}: ${error.message}`);
+      }
+    }
 
     const { data: refreshedClients, error: refreshError } = await supabase
       .from("terceros")
@@ -307,11 +309,11 @@ export default function InvoiceImport() {
           })
           .eq("id", existing.id)
           .eq("empresa_id", selectedEmpresaId);
-        if (error) throw error;
+        if (error) throw new Error(`No se pudo actualizar la factura ${row.numeroDocumento}: ${error.message}`);
         updatedRows += 1;
       } else {
         const { error } = await supabase.from("facturas").insert(basePayload);
-        if (error) throw error;
+        if (error) throw new Error(`No se pudo insertar la factura ${row.numeroDocumento}: ${error.message}`);
         insertedRows += 1;
       }
     }
@@ -425,11 +427,11 @@ export default function InvoiceImport() {
           })
           .eq("id", existing.id)
           .eq("empresa_id", selectedEmpresaId);
-        if (error) throw error;
+        if (error) throw new Error(`No se pudo actualizar la factura pendiente ${row.numeroDocumento || row.terceroNombre}: ${error.message}`);
         updatedRows += 1;
       } else {
         const { error } = await supabase.from("facturas").insert(payload);
-        if (error) throw error;
+        if (error) throw new Error(`No se pudo insertar la factura pendiente ${row.numeroDocumento || row.terceroNombre}: ${error.message}`);
         insertedRows += 1;
       }
     }
