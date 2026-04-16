@@ -81,7 +81,12 @@ export default function InvoicesList() {
 
     const filteredInvoices = invoices.filter(inv =>
         inv.tercero_nombre?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        inv.descripcion?.toLowerCase().includes(searchTerm.toLowerCase())
+        inv.descripcion?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        inv.numero_documento?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        inv.rut?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        inv.vendedor_asignado?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        inv.tipo_documento?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        inv.nombre_documento?.toLowerCase().includes(searchTerm.toLowerCase())
     );
 
     return (
@@ -89,18 +94,20 @@ export default function InvoicesList() {
             <div className="flex justify-between items-center">
                 <div>
                     <h2 className="text-3xl font-bold tracking-tight">Facturas</h2>
-                    <p className="text-muted-foreground">Gestiona y revisa todas tus facturas reales almacenadas en la base de datos.</p>
+                    <p className="text-muted-foreground">Revisa facturas con tipo de documento, folio, RUT, razón social, fecha, monto y vendedor asignado.</p>
                 </div>
-                <Link to="/facturas/nueva">
-                    <Button>
-                        <Plus className="mr-2 h-4 w-4" /> Nueva Factura
-                    </Button>
-                </Link>
-                <Link to="/facturas/importar">
-                    <Button variant="outline">
-                        <Plus className="mr-2 h-4 w-4" /> Importar Base
-                    </Button>
-                </Link>
+                <div className="flex items-center gap-2">
+                    <Link to="/facturas/nueva">
+                        <Button>
+                            <Plus className="mr-2 h-4 w-4" /> Nueva Factura
+                        </Button>
+                    </Link>
+                    <Link to="/facturas/importar">
+                        <Button variant="outline">
+                            <Plus className="mr-2 h-4 w-4" /> Importar Base
+                        </Button>
+                    </Link>
+                </div>
             </div>
 
             <Card>
@@ -127,8 +134,13 @@ export default function InvoicesList() {
                         <Table>
                             <TableHeader>
                                 <TableRow>
+                                    <TableHead>Tipo Doc</TableHead>
+                                    <TableHead>Nombre Doc</TableHead>
+                                    <TableHead>Factura</TableHead>
+                                    <TableHead>RUT</TableHead>
+                                    <TableHead>Razón social</TableHead>
+                                    <TableHead>Vendedor</TableHead>
                                     <TableHead>Fecha</TableHead>
-                                    <TableHead>Cliente/Tercero</TableHead>
                                     <TableHead>Estado</TableHead>
                                     <TableHead className="text-right">Monto</TableHead>
                                     <TableHead className="text-right">Acciones</TableHead>
@@ -137,17 +149,22 @@ export default function InvoicesList() {
                             <TableBody>
                                 {filteredInvoices.length === 0 ? (
                                     <TableRow>
-                                        <TableCell colSpan={5} className="text-center py-10 text-muted-foreground">
+                                        <TableCell colSpan={10} className="text-center py-10 text-muted-foreground">
                                             No se encontraron facturas.
                                         </TableCell>
                                     </TableRow>
                                 ) : (
                                     filteredInvoices.map((invoice) => (
                                         <TableRow key={invoice.id}>
+                                            <TableCell>{invoice.tipo_documento || "-"}</TableCell>
+                                            <TableCell>{invoice.nombre_documento || "-"}</TableCell>
+                                            <TableCell className="font-medium">{invoice.numero_documento || "-"}</TableCell>
+                                            <TableCell>{invoice.rut || "-"}</TableCell>
+                                            <TableCell>{invoice.tercero_nombre || "Sin nombre"}</TableCell>
+                                            <TableCell>{invoice.vendedor_asignado || "-"}</TableCell>
                                             <TableCell>
                                                 {new Date((invoice.fecha_emision || invoice.created_at).split('T')[0] + 'T12:00:00').toLocaleDateString()}
                                             </TableCell>
-                                            <TableCell>{invoice.tercero_nombre || "Sin nombre"}</TableCell>
                                             <TableCell>
                                                 <Badge variant={
                                                     invoice.estado === 'pagada' ? 'default' :

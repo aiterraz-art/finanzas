@@ -22,6 +22,9 @@ export type IssuedInvoiceImportRow = {
   fechaVencimiento: string | null;
   monto: number;
   descripcion: string | null;
+  tipoDocumento: string | null;
+  nombreDocumento: string | null;
+  vendedorAsignado: string | null;
 };
 
 export type ReceivableInvoiceImportRow = {
@@ -68,6 +71,30 @@ const getValueFromRow = (rawRow: RawSheetRow, ...keys: string[]) => {
   return undefined;
 };
 
+const inferRutFromRow = (rawRow: RawSheetRow) => {
+  const preferred = normalizeRut(
+    getValueFromRow(rawRow, "rut", "r.u.t.", "codigo del cliente", "codigo cliente")
+  );
+  if (preferred) return preferred;
+
+  let fallback: string | null = null;
+  for (const [key, value] of Object.entries(rawRow)) {
+    const normalizedKey = normalizeImportHeaderToken(key);
+    const normalizedValue = normalizeRut(value);
+    if (!normalizedValue) continue;
+    if (
+      normalizedKey.includes("rut") ||
+      normalizedKey.includes("cliente") ||
+      normalizedKey.includes("codigo")
+    ) {
+      return normalizedValue;
+    }
+    fallback = fallback || normalizedValue;
+  }
+
+  return fallback;
+};
+
 const rowContainsPatterns = (tokens: string[], patterns: string[]) =>
   tokens.some((token) => patterns.some((pattern) => token.includes(pattern)));
 
@@ -83,9 +110,11 @@ export const detectIssuedInvoiceWorksheetFormat = (rows: unknown[][]): InvoiceIm
     if (tokens.length === 0) continue;
 
     const looksLikeIssuedHeader =
-      rowContainsPatterns(tokens, ["numero", "folio", "documento"]) &&
-      rowContainsPatterns(tokens, ["cliente", "razonsocial", "nombre"]) &&
-      rowContainsPatterns(tokens, ["fechaemision", "emision"]) &&
+      (
+        rowContainsPatterns(tokens, ["numero", "folio", "documento", "nmerodeldocumento"]) &&
+        rowContainsPatterns(tokens, ["cliente", "razonsocial", "nombre"])
+      ) &&
+      rowContainsPatterns(tokens, ["fechaemision", "emision", "fecha"]) &&
       rowContainsPatterns(tokens, ["monto", "total"]);
 
     if (looksLikeIssuedHeader) {
@@ -126,11 +155,19 @@ export const detectReceivablesWorksheetFormat = (rows: unknown[][]): InvoiceImpo
 export const normalizeIssuedInvoiceImportRow = (rawRow: RawSheetRow): IssuedInvoiceImportRow | null => {
   const numeroDocumento =
     normalizeText(
-      getValueFromRow(rawRow, "numero documento", "n documento", "folio", "numero", "factura")
+      getValueFromRow(
+        rawRow,
+        "numero documento",
+        "nmero del documento",
+        "n documento",
+        "folio",
+        "numero",
+        "factura"
+      )
     ) || "";
   const terceroNombre =
     normalizeText(
-      getValueFromRow(rawRow, "cliente", "razon social", "nombre cliente", "nombre")
+      getValueFromRow(rawRow, "cliente", "razon social", "nombre cliente", "nombre del cliente", "nombre")
     ) || "";
   const fechaEmision = normalizeDateInput(
     getValueFromRow(rawRow, "fecha emision", "emision", "fecha")
@@ -141,6 +178,12 @@ export const normalizeIssuedInvoiceImportRow = (rawRow: RawSheetRow): IssuedInvo
   const monto = normalizeMoneyInput(
     getValueFromRow(rawRow, "monto", "monto total", "total", "importe", "saldo")
   );
+  const tipoDocumento =
+    normalizeText(getValueFromRow(rawRow, "tipo doc", "tipo documento")) || null;
+  const nombreDocumento =
+    normalizeText(getValueFromRow(rawRow, "nombre doc", "nombre documento")) || null;
+  const vendedorAsignado =
+    normalizeText(getValueFromRow(rawRow, "nombre del vendedor", "vendedor", "seller")) || null;
 
   if (!numeroDocumento || !terceroNombre || !fechaEmision || !monto) {
     return null;
@@ -148,13 +191,16 @@ export const normalizeIssuedInvoiceImportRow = (rawRow: RawSheetRow): IssuedInvo
 
   return {
     numeroDocumento,
-    rut: normalizeRut(getValueFromRow(rawRow, "rut", "r.u.t.")),
+    rut: inferRutFromRow(rawRow),
     terceroNombre,
     fechaEmision,
     fechaVencimiento,
     monto,
     descripcion:
-      normalizeText(getValueFromRow(rawRow, "descripcion", "detalle", "glosa", "concepto")) || null,
+      normalizeText(getValueFromRow(rawRow, "descripcion", "detalle", "glosa", "concepto")) || nombreDocumento,
+    tipoDocumento,
+    nombreDocumento,
+    vendedorAsignado,
   };
 };
 

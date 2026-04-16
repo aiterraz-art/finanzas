@@ -51,6 +51,9 @@ type InvoiceRow = {
   fecha_vencimiento: string | null;
   monto: number;
   descripcion: string | null;
+  tipo_documento: string | null;
+  nombre_documento: string | null;
+  vendedor_asignado: string | null;
   estado: string | null;
   archivo_url: string | null;
 };
@@ -121,7 +124,7 @@ export default function InvoiceImport() {
           .is("archived_at", null),
         supabase
           .from("facturas")
-          .select("id, numero_documento, rut, tercero_nombre, tercero_id, fecha_emision, fecha_vencimiento, monto, descripcion, estado, archivo_url")
+          .select("id, numero_documento, rut, tercero_nombre, tercero_id, fecha_emision, fecha_vencimiento, monto, descripcion, tipo_documento, nombre_documento, vendedor_asignado, estado, archivo_url")
           .eq("empresa_id", selectedEmpresaId)
           .eq("tipo", "venta")
           .is("archived_at", null),
@@ -271,6 +274,9 @@ export default function InvoiceImport() {
         numero_documento: row.numeroDocumento,
         monto: row.monto,
         descripcion: row.descripcion,
+        tipo_documento: row.tipoDocumento,
+        nombre_documento: row.nombreDocumento,
+        vendedor_asignado: row.vendedorAsignado,
         estado: statusFromDueDate(dueDate),
         planned_cash_date: dueDate,
         cash_confidence_pct: confidenceFromDueDate(dueDate),
@@ -290,6 +296,9 @@ export default function InvoiceImport() {
             fecha_vencimiento: basePayload.fecha_vencimiento,
             monto: basePayload.monto,
             descripcion: existing.descripcion || basePayload.descripcion,
+            tipo_documento: existing.tipo_documento || basePayload.tipo_documento,
+            nombre_documento: existing.nombre_documento || basePayload.nombre_documento,
+            vendedor_asignado: existing.vendedor_asignado || basePayload.vendedor_asignado,
             estado: existing.estado === "pagada" ? existing.estado : basePayload.estado,
             planned_cash_date: basePayload.planned_cash_date,
             cash_confidence_pct: basePayload.cash_confidence_pct,

@@ -112,6 +112,7 @@ type ImportSummary = {
 
 const HASH_QUERY_CHUNK = 20;
 const INSERT_CHUNK_SIZE = 200;
+type InflowMatchSource = "factura" | "cheque" | "webpay";
 
 type QuickExpenseForm = {
   description: string;
@@ -149,6 +150,7 @@ export default function BankReconciliation() {
   const [importSummary, setImportSummary] = useState<ImportSummary | null>(null);
   const [selectedTxn, setSelectedTxn] = useState<BankMovement | null>(null);
   const [candidates, setCandidates] = useState<MatchCandidate[]>([]);
+  const [selectedInflowSource, setSelectedInflowSource] = useState<InflowMatchSource>("factura");
   const [loadingCandidates, setLoadingCandidates] = useState(false);
   const [matchingId, setMatchingId] = useState<string | null>(null);
   const [quickExpenseForm, setQuickExpenseForm] = useState<QuickExpenseForm>({
@@ -288,6 +290,7 @@ export default function BankReconciliation() {
   const fetchCandidates = async (txn: BankMovement) => {
     if (!selectedEmpresaId) return;
     setSelectedTxn(txn);
+    setSelectedInflowSource("factura");
     setLoadingCandidates(true);
     try {
       const absAmount = Math.abs(txn.monto);
@@ -971,12 +974,16 @@ export default function BankReconciliation() {
   }, [transactions]);
 
   const searchableCandidates = useMemo(() => {
-    if (!searchTerm.trim()) return candidates;
+    const filteredBySource =
+      selectedTxn && selectedTxn.monto >= 0
+        ? candidates.filter((candidate) => candidate.type === selectedInflowSource)
+        : candidates;
+    if (!searchTerm.trim()) return filteredBySource;
     const normalized = searchTerm.toLowerCase();
-    return candidates.filter((candidate) =>
+    return filteredBySource.filter((candidate) =>
       `${candidate.label} ${candidate.subtitle}`.toLowerCase().includes(normalized)
     );
-  }, [candidates, searchTerm]);
+  }, [candidates, searchTerm, selectedInflowSource, selectedTxn]);
 
   if (!selectedEmpresaId) {
     return (
@@ -1238,7 +1245,15 @@ export default function BankReconciliation() {
         </CardContent>
       </Card>
 
-      <Dialog open={Boolean(selectedTxn)} onOpenChange={(open) => !open && setSelectedTxn(null)}>
+      <Dialog
+        open={Boolean(selectedTxn)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectedTxn(null);
+            setSelectedInflowSource("factura");
+          }
+        }}
+      >
         <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Conciliar movimiento</DialogTitle>
@@ -1250,6 +1265,40 @@ export default function BankReconciliation() {
           </DialogHeader>
 
           <div className="space-y-4">
+            {!loadingCandidates && selectedTxn && selectedTxn.monto >= 0 && (
+              <div className="rounded-xl border border-dashed p-4">
+                <div className="mb-4">
+                  <div className="font-medium">Fuente del ingreso</div>
+                  <div className="text-sm text-muted-foreground">
+                    Selecciona si el abono corresponde a un cheque, una liquidación de WebPay o una transferencia que paga una factura.
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label>Tipo de conciliación</Label>
+                  <Select
+                    value={selectedInflowSource}
+                    onValueChange={(value) => setSelectedInflowSource(value as InflowMatchSource)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Selecciona el origen del ingreso" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="factura">Transferencia / Factura</SelectItem>
+                      <SelectItem value="cheque">Cheque</SelectItem>
+                      <SelectItem value="webpay">WebPay</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <div className="text-xs text-muted-foreground">
+                    {selectedInflowSource === "factura"
+                      ? "Se mostrarán facturas abiertas con razón social y número de documento."
+                      : selectedInflowSource === "cheque"
+                        ? "Se mostrarán solo los cheques disponibles para conciliar. Al aceptar pasarán a cobrados."
+                        : "Se mostrarán solo pagos WebPay pendientes de abono."}
+                  </div>
+                </div>
+              </div>
+            )}
+
             {!loadingCandidates && selectedTxn && selectedTxn.monto < 0 && (
               <div className="rounded-xl border border-dashed p-4">
                 <div className="mb-4">
@@ -1372,7 +1421,13 @@ export default function BankReconciliation() {
             {loadingCandidates && <Loader2 className="h-5 w-5 animate-spin text-primary" />}
             {!loadingCandidates && searchableCandidates.length === 0 && (
               <div className="rounded-xl border border-dashed p-8 text-center text-muted-foreground">
-                No se encontraron candidatos para este movimiento.
+                {selectedTxn && selectedTxn.monto >= 0
+                  ? selectedInflowSource === "factura"
+                    ? "No hay facturas abiertas para este ingreso."
+                    : selectedInflowSource === "cheque"
+                      ? "No hay cheques disponibles para este ingreso."
+                      : "No hay liquidaciones WebPay pendientes para este ingreso."
+                  : "No se encontraron candidatos para este movimiento."}
               </div>
             )}
             {searchableCandidates.map((candidate) => (

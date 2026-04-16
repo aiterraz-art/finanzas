@@ -31,6 +31,29 @@ describe("invoice import helpers", () => {
     expect(parsed?.monto).toBe(1250000);
   });
 
+  it("parses the issued invoice format used by FacturasFlujo exports", () => {
+    const rows = [
+      ["Tipo Doc", "Nombre Doc", "Nmero del Documento", "C󤩧o del Cliente", "Nombre del Cliente", "Nombre del Vendedor", "Fecha", "Total"],
+      ["FACTURAE", "33 Factura Electrónica", "15001", "76.123.456-7", "Cliente Flujo", "Vendedor Uno", "10/13/25", "428487"],
+    ];
+
+    const detection = detectIssuedInvoiceWorksheetFormat(rows);
+    expect(detection.kind).toBe("issued");
+
+    const parsed = normalizeIssuedInvoiceImportRow(
+      buildObjectsFromWorksheetRows(rows, detection.headerRowIndex!)[0]
+    );
+
+    expect(parsed).not.toBeNull();
+    expect(parsed?.numeroDocumento).toBe("15001");
+    expect(parsed?.rut).toBe("76123456-7");
+    expect(parsed?.terceroNombre).toBe("Cliente Flujo");
+    expect(parsed?.tipoDocumento).toBe("FACTURAE");
+    expect(parsed?.nombreDocumento).toBe("33 Factura Electrónica");
+    expect(parsed?.vendedorAsignado).toBe("Vendedor Uno");
+    expect(parsed?.monto).toBe(428487);
+  });
+
   it("detects and parses receivable invoice rows", () => {
     const rows = [
       ["Cliente", "RUT", "Folio", "Fecha Vencimiento", "Saldo", "Días Mora"],
