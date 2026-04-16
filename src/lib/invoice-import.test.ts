@@ -54,6 +54,22 @@ describe("invoice import helpers", () => {
     expect(parsed?.monto).toBe(428487);
   });
 
+  it("removes broken surrogate characters from imported customer names", () => {
+    const rows = [
+      ["Tipo Doc", "Nombre Doc", "Nmero del Documento", "C󤩧o del Cliente", "Nombre del Cliente", "Nombre del Vendedor", "Fecha", "Total"],
+      ["BOLETAELEC", "39 Boleta Electronica", "6044", "5.642.862-3", "Elias Tram\udb7aart\udba5z", "CRISTINA GONZALEZ", 46100, 121724],
+    ];
+
+    const detection = detectIssuedInvoiceWorksheetFormat(rows);
+    const parsed = normalizeIssuedInvoiceImportRow(
+      buildObjectsFromWorksheetRows(rows, detection.headerRowIndex!)[0]
+    );
+
+    expect(parsed).not.toBeNull();
+    expect(parsed?.terceroNombre).toBe("Elias Tramartz");
+    expect(parsed?.rut).toBe("5642862-3");
+  });
+
   it("detects and parses receivable invoice rows", () => {
     const rows = [
       ["Cliente", "RUT", "Folio", "Fecha Vencimiento", "Saldo", "Días Mora"],

@@ -43,6 +43,7 @@ type RawSheetRow = Record<string, unknown>;
 
 const sanitizeImportText = (value: unknown) =>
   normalizeText(value)
+    .replace(/[\uD800-\uDFFF\uFFFD]/g, "")
     .replace(/[\u0000-\u001F\u007F]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
