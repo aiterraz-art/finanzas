@@ -1492,6 +1492,22 @@ export default function BankReconciliation() {
                                   .join(", ")
                               : invoiceInfo?.numero_documento || rendicionInfo?.descripcion || "Sin detalle"}
                           </div>
+                          {txn.monto >= 0 && (
+                            <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                              {activePayments.slice(0, 5).map((row) => {
+                                const factura = Array.isArray(row.facturas) ? row.facturas[0] : row.facturas;
+                                if (!factura) return null;
+                                return (
+                                  <div key={row.id}>
+                                    Factura {factura.numero_documento || "S/F"} • {factura.tercero_nombre || "Sin cliente"} • {formatTreasuryCurrency(Number(row.monto_aplicado || 0), selectedAccount?.moneda || "CLP")}
+                                  </div>
+                                );
+                              })}
+                              {activePayments.length > 5 && (
+                                <div>+ {activePayments.length - 5} factura(s) más</div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       ) : chequeInfo ? (
                         <div>
