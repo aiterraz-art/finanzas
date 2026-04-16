@@ -184,6 +184,7 @@ export default function InvoicesList() {
                                     <SelectItem value="all">Ver todos</SelectItem>
                                     <SelectItem value="paid">Pagadas</SelectItem>
                                     <SelectItem value="unpaid">No pagadas</SelectItem>
+                                    <SelectItem value="abonada">Abonadas</SelectItem>
                                     <SelectItem value="pendiente">Pendientes</SelectItem>
                                     <SelectItem value="morosa">Morosas</SelectItem>
                                     <SelectItem value="archivada">Archivadas</SelectItem>
@@ -248,6 +249,7 @@ export default function InvoicesList() {
                                             <TableCell>
                                                 <Badge variant={
                                                     invoice.estado === 'pagada' ? 'default' :
+                                                        invoice.estado === 'abonada' ? 'secondary' :
                                                         invoice.estado === 'pendiente' ? 'secondary' :
                                                             invoice.estado === 'archivada' ? 'outline' : 'destructive'
                                                 }>

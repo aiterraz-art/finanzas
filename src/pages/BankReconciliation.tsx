@@ -99,6 +99,8 @@ type MatchCandidate = {
   amount: number;
   dueDate: string | null;
   status?: string | null;
+  invoiceNumber?: string | null;
+  customerName?: string | null;
 };
 
 type ImportSummary = {
@@ -151,6 +153,8 @@ export default function BankReconciliation() {
   const [selectedTxn, setSelectedTxn] = useState<BankMovement | null>(null);
   const [candidates, setCandidates] = useState<MatchCandidate[]>([]);
   const [selectedInflowSource, setSelectedInflowSource] = useState<InflowMatchSource>("factura");
+  const [candidateSearchTerm, setCandidateSearchTerm] = useState("");
+  const [selectedInvoiceMatches, setSelectedInvoiceMatches] = useState<Record<string, { mode: "full" | "partial"; amount: string }>>({});
   const [loadingCandidates, setLoadingCandidates] = useState(false);
   const [matchingId, setMatchingId] = useState<string | null>(null);
   const [quickExpenseForm, setQuickExpenseForm] = useState<QuickExpenseForm>({
@@ -203,6 +207,63 @@ export default function BankReconciliation() {
       frequency: "monthly",
     });
   }, [selectedTxn]);
+
+  useEffect(() => {
+    if (!selectedTxn || selectedTxn.monto < 0 || selectedInflowSource !== "factura") {
+      setCandidateSearchTerm("");
+      setSelectedInvoiceMatches({});
+    }
+  }, [selectedInflowSource, selectedTxn]);
+
+  const syncInvoiceStatuses = async (invoiceIds: string[]) => {
+    if (!selectedEmpresaId || invoiceIds.length === 0) return;
+
+    const uniqueIds = Array.from(new Set(invoiceIds));
+    const [{ data: invoices, error: invoicesError }, { data: payments, error: paymentsError }] = await Promise.all([
+      supabase
+        .from("facturas")
+        .select("id, monto, fecha_vencimiento")
+        .eq("empresa_id", selectedEmpresaId)
+        .in("id", uniqueIds),
+      supabase
+        .from("facturas_pagos")
+        .select("factura_id, monto_aplicado")
+        .eq("empresa_id", selectedEmpresaId)
+        .in("factura_id", uniqueIds)
+        .eq("estado", "aplicado"),
+    ]);
+    if (invoicesError) throw invoicesError;
+    if (paymentsError) throw paymentsError;
+
+    const appliedByInvoice = new Map<string, number>();
+    for (const payment of payments || []) {
+      const facturaId = payment.factura_id as string | null;
+      if (!facturaId) continue;
+      appliedByInvoice.set(facturaId, (appliedByInvoice.get(facturaId) || 0) + Number(payment.monto_aplicado || 0));
+    }
+
+    for (const invoice of invoices || []) {
+      const totalAmount = Number(invoice.monto || 0);
+      const appliedAmount = appliedByInvoice.get(invoice.id) || 0;
+      const dueDate = invoice.fecha_vencimiento || null;
+      const isOverdue = Boolean(dueDate && dueDate < new Date().toISOString().split("T")[0]);
+      const nextStatus =
+        appliedAmount >= totalAmount - 0.01
+          ? "pagada"
+          : appliedAmount > 0
+            ? "abonada"
+            : isOverdue
+              ? "morosa"
+              : "pendiente";
+
+      const { error: updateError } = await supabase
+        .from("facturas")
+        .update({ estado: nextStatus })
+        .eq("id", invoice.id)
+        .eq("empresa_id", selectedEmpresaId);
+      if (updateError) throw updateError;
+    }
+  };
 
   const fetchTransactions = async () => {
     if (!selectedEmpresaId || !selectedAccountId) return;
@@ -291,6 +352,8 @@ export default function BankReconciliation() {
     if (!selectedEmpresaId) return;
     setSelectedTxn(txn);
     setSelectedInflowSource("factura");
+    setCandidateSearchTerm("");
+    setSelectedInvoiceMatches({});
     setLoadingCandidates(true);
     try {
       const absAmount = Math.abs(txn.monto);
@@ -298,10 +361,10 @@ export default function BankReconciliation() {
       const invoiceQuery = txn.monto >= 0
         ? supabase
             .from("facturas")
-            .select("id, numero_documento, tercero_nombre, monto, fecha_vencimiento")
+            .select("id, numero_documento, tercero_nombre, monto, fecha_vencimiento, facturas_pagos(monto_aplicado, estado)")
             .eq("empresa_id", selectedEmpresaId)
             .eq("tipo", "venta")
-            .in("estado", ["pendiente", "morosa"])
+            .in("estado", ["pendiente", "morosa", "abonada"])
         : supabase
             .from("facturas")
             .select("id, numero_documento, tercero_nombre, monto, fecha_vencimiento")
@@ -367,8 +430,16 @@ export default function BankReconciliation() {
           type: "factura" as const,
           label: `${invoice.tercero_nombre || "Sin tercero"} • ${invoice.numero_documento || "Sin folio"}`,
           subtitle: "Factura abierta",
-          amount: Number(invoice.monto),
+          amount: Math.max(
+            Number(invoice.monto || 0) -
+              ((invoice.facturas_pagos || []) as any[])
+                .filter((payment) => payment.estado === "aplicado")
+                .reduce((sum, payment) => sum + Number(payment.monto_aplicado || 0), 0),
+            0
+          ),
           dueDate: invoice.fecha_vencimiento || null,
+          invoiceNumber: invoice.numero_documento || null,
+          customerName: invoice.tercero_nombre || null,
         })),
         ...((rendiciones || []) as any[]).map((rendicion) => ({
           id: rendicion.id,
@@ -409,7 +480,7 @@ export default function BankReconciliation() {
         })),
       ].sort((a, b) => Math.abs(absAmount - a.amount) - Math.abs(absAmount - b.amount));
 
-      setCandidates(nextCandidates);
+      setCandidates(nextCandidates.filter((candidate) => candidate.type !== "factura" || candidate.amount > 0));
     } catch (error) {
       console.error("Error fetching reconciliation candidates:", error);
       setCandidates([]);
@@ -461,12 +532,7 @@ export default function BankReconciliation() {
       if (movementError) throw movementError;
 
       if (candidate.type === "factura") {
-        const { error } = await supabase
-          .from("facturas")
-          .update({ estado: "pagada" })
-          .eq("id", candidate.id)
-          .eq("empresa_id", selectedEmpresaId);
-        if (error) throw error;
+        await syncInvoiceStatuses([candidate.id]);
       } else if (candidate.type === "rendicion") {
         const { error } = await supabase
           .from("rendiciones")
@@ -595,15 +661,7 @@ export default function BankReconciliation() {
       }
 
       for (const facturaId of facturaIds) {
-        const { count } = await supabase
-          .from("facturas_pagos")
-          .select("id", { count: "exact", head: true })
-          .eq("empresa_id", selectedEmpresaId)
-          .eq("factura_id", facturaId)
-          .eq("estado", "aplicado");
-        if ((count || 0) === 0) {
-          await supabase.from("facturas").update({ estado: "pendiente" }).eq("id", facturaId).eq("empresa_id", selectedEmpresaId);
-        }
+        await syncInvoiceStatuses([facturaId]);
       }
 
       for (const rendicionId of rendicionIds) {
@@ -978,12 +1036,145 @@ export default function BankReconciliation() {
       selectedTxn && selectedTxn.monto >= 0
         ? candidates.filter((candidate) => candidate.type === selectedInflowSource)
         : candidates;
-    if (!searchTerm.trim()) return filteredBySource;
-    const normalized = searchTerm.toLowerCase();
+    if (!candidateSearchTerm.trim()) return filteredBySource;
+    const normalized = candidateSearchTerm.toLowerCase();
     return filteredBySource.filter((candidate) =>
       `${candidate.label} ${candidate.subtitle}`.toLowerCase().includes(normalized)
     );
-  }, [candidates, searchTerm, selectedInflowSource, selectedTxn]);
+  }, [candidateSearchTerm, candidates, selectedInflowSource, selectedTxn]);
+
+  const selectedInvoiceCandidates = useMemo(
+    () =>
+      candidates.filter(
+        (candidate) => candidate.type === "factura" && selectedInvoiceMatches[candidate.id]
+      ),
+    [candidates, selectedInvoiceMatches]
+  );
+
+  const selectedInvoiceTotal = useMemo(
+    () =>
+      selectedInvoiceCandidates.reduce((sum, candidate) => {
+        const selection = selectedInvoiceMatches[candidate.id];
+        if (!selection) return sum;
+        const amount = selection.mode === "partial" ? Number(selection.amount || 0) : candidate.amount;
+        return sum + amount;
+      }, 0),
+    [selectedInvoiceCandidates, selectedInvoiceMatches]
+  );
+
+  const toggleInvoiceCandidate = (candidate: MatchCandidate) => {
+    setSelectedInvoiceMatches((current) => {
+      if (current[candidate.id]) {
+        const next = { ...current };
+        delete next[candidate.id];
+        return next;
+      }
+      return {
+        ...current,
+        [candidate.id]: {
+          mode: "full",
+          amount: candidate.amount.toFixed(2),
+        },
+      };
+    });
+  };
+
+  const handleInvoiceSelectionMode = (candidateId: string, mode: "full" | "partial", candidateAmount: number) => {
+    setSelectedInvoiceMatches((current) => ({
+      ...current,
+      [candidateId]: {
+        mode,
+        amount: mode === "partial" ? current[candidateId]?.amount || candidateAmount.toFixed(2) : candidateAmount.toFixed(2),
+      },
+    }));
+  };
+
+  const handleInvoiceSelectionAmount = (candidateId: string, value: string) => {
+    setSelectedInvoiceMatches((current) => ({
+      ...current,
+      [candidateId]: {
+        ...(current[candidateId] || { mode: "partial" as const }),
+        amount: value,
+      },
+    }));
+  };
+
+  const handleMatchSelectedInvoices = async () => {
+    if (!selectedEmpresaId || !selectedTxn || selectedTxn.monto < 0) return;
+    const selectedInvoices = candidates.filter(
+      (candidate) => candidate.type === "factura" && selectedInvoiceMatches[candidate.id]
+    );
+    if (selectedInvoices.length === 0) {
+      alert("Selecciona al menos una factura para conciliar.");
+      return;
+    }
+
+    const payloads = selectedInvoices.map((candidate) => {
+      const selection = selectedInvoiceMatches[candidate.id];
+      const amount = selection?.mode === "partial" ? Number(selection.amount || 0) : candidate.amount;
+      return { candidate, amount };
+    });
+
+    if (payloads.some((item) => !Number.isFinite(item.amount) || item.amount <= 0)) {
+      alert("Todos los montos aplicados deben ser mayores a cero.");
+      return;
+    }
+
+    if (payloads.some((item) => item.amount - item.candidate.amount > 0.01)) {
+      alert("Un abono no puede superar el saldo pendiente de la factura.");
+      return;
+    }
+
+    const totalApplied = payloads.reduce((sum, item) => sum + item.amount, 0);
+    const bankAmount = Math.abs(selectedTxn.monto);
+    if (Math.abs(totalApplied - bankAmount) > 0.01) {
+      alert(`El total aplicado (${formatTreasuryCurrency(totalApplied, selectedAccount?.moneda || "CLP")}) debe coincidir con el movimiento bancario (${formatTreasuryCurrency(bankAmount, selectedAccount?.moneda || "CLP")}).`);
+      return;
+    }
+
+    setMatchingId("multi-factura");
+    try {
+      const rows = payloads.map((item) => ({
+        empresa_id: selectedEmpresaId,
+        factura_id: item.candidate.id,
+        rendicion_id: null,
+        movimiento_banco_id: selectedTxn.id,
+        monto_aplicado: item.amount,
+        estado: "aplicado",
+      }));
+      const { error: paymentsError } = await supabase.from("facturas_pagos").insert(rows);
+      if (paymentsError) throw paymentsError;
+
+      const summary = payloads
+        .map((item) => item.candidate.invoiceNumber || item.candidate.id)
+        .slice(0, 3)
+        .join(", ");
+      const suffix = payloads.length > 3 ? ` +${payloads.length - 3} más` : "";
+
+      const { error: movementError } = await supabase
+        .from("movimientos_banco")
+        .update({
+          estado: "conciliado",
+          tipo_conciliacion: "factura",
+          numero_documento: `Facturas ${summary}${suffix}`,
+        })
+        .eq("id", selectedTxn.id)
+        .eq("empresa_id", selectedEmpresaId);
+      if (movementError) throw movementError;
+
+      await syncInvoiceStatuses(payloads.map((item) => item.candidate.id));
+      setSelectedTxn(null);
+      setCandidates([]);
+      setSelectedInvoiceMatches({});
+      await fetchTransactions();
+      await refreshPositions();
+    } catch (error: any) {
+      console.error("Error matching multiple invoices:", error);
+      alert(`No se pudo conciliar las facturas seleccionadas: ${error.message}`);
+    } finally {
+      setMatchingId(null);
+    }
+  };
 
   if (!selectedEmpresaId) {
     return (
@@ -1143,7 +1334,8 @@ export default function BankReconciliation() {
             </thead>
             <tbody>
               {filteredTransactions.map((txn) => {
-                const payment = txn.facturas_pagos?.find((row) => row.estado !== "revertido");
+                const activePayments = (txn.facturas_pagos || []).filter((row) => row.estado !== "revertido");
+                const payment = activePayments[0];
                 const invoiceInfo = Array.isArray(payment?.facturas) ? payment.facturas[0] : payment?.facturas;
                 const rendicionInfo = Array.isArray(payment?.rendiciones) ? payment.rendiciones[0] : payment?.rendiciones;
                 const chequeInfo = txn.cheques_cartera?.[0];
@@ -1169,9 +1361,22 @@ export default function BankReconciliation() {
                     <td className="px-4 py-3">
                       {payment ? (
                         <div>
-                          <div className="font-medium">{invoiceInfo?.tercero_nombre || rendicionInfo?.tercero_nombre || "Documento conciliado"}</div>
+                          <div className="font-medium">
+                            {activePayments.length > 1
+                              ? `${activePayments.length} facturas conciliadas`
+                              : invoiceInfo?.tercero_nombre || rendicionInfo?.tercero_nombre || "Documento conciliado"}
+                          </div>
                           <div className="text-xs text-muted-foreground">
-                            {invoiceInfo?.numero_documento || rendicionInfo?.descripcion || "Sin detalle"}
+                            {activePayments.length > 1
+                              ? activePayments
+                                  .map((row) => {
+                                    const factura = Array.isArray(row.facturas) ? row.facturas[0] : row.facturas;
+                                    return factura?.numero_documento;
+                                  })
+                                  .filter(Boolean)
+                                  .slice(0, 3)
+                                  .join(", ")
+                              : invoiceInfo?.numero_documento || rendicionInfo?.descripcion || "Sin detalle"}
                           </div>
                         </div>
                       ) : chequeInfo ? (
@@ -1293,9 +1498,19 @@ export default function BankReconciliation() {
                       ? "Se mostrarán facturas abiertas con razón social y número de documento."
                       : selectedInflowSource === "cheque"
                         ? "Se mostrarán solo los cheques disponibles para conciliar. Al aceptar pasarán a cobrados."
-                        : "Se mostrarán solo pagos WebPay pendientes de abono."}
+                      : "Se mostrarán solo pagos WebPay pendientes de abono."}
                   </div>
                 </div>
+                {selectedInflowSource === "factura" && (
+                  <div className="mt-4 space-y-2">
+                    <Label>Buscar factura</Label>
+                    <Input
+                      value={candidateSearchTerm}
+                      onChange={(event) => setCandidateSearchTerm(event.target.value)}
+                      placeholder="Filtra por razón social o número de factura"
+                    />
+                  </div>
+                )}
               </div>
             )}
 
@@ -1419,6 +1634,22 @@ export default function BankReconciliation() {
             )}
 
             {loadingCandidates && <Loader2 className="h-5 w-5 animate-spin text-primary" />}
+            {!loadingCandidates && selectedTxn && selectedTxn.monto >= 0 && selectedInflowSource === "factura" && (
+              <div className="rounded-xl border bg-muted/20 p-4">
+                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <div className="font-medium">Facturas seleccionadas</div>
+                    <div className="text-sm text-muted-foreground">
+                      Total aplicado: {formatTreasuryCurrency(selectedInvoiceTotal, selectedAccount?.moneda || "CLP")} de {formatTreasuryCurrency(Math.abs(selectedTxn.monto), selectedAccount?.moneda || "CLP")}
+                    </div>
+                  </div>
+                  <Button onClick={() => void handleMatchSelectedInvoices()} disabled={!canEdit || matchingId === "multi-factura" || selectedInvoiceCandidates.length === 0}>
+                    {matchingId === "multi-factura" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
+                    Conciliar facturas seleccionadas
+                  </Button>
+                </div>
+              </div>
+            )}
             {!loadingCandidates && searchableCandidates.length === 0 && (
               <div className="rounded-xl border border-dashed p-8 text-center text-muted-foreground">
                 {selectedTxn && selectedTxn.monto >= 0
@@ -1455,12 +1686,59 @@ export default function BankReconciliation() {
                       </div>
                     </div>
                   </div>
-                <div className="mt-3 flex justify-end">
-                  <Button onClick={() => void handleMatch(candidate)} disabled={!canEdit || matchingId === candidate.id}>
-                    {matchingId === candidate.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
-                    Conciliar
-                  </Button>
-                </div>
+                {selectedTxn && selectedTxn.monto >= 0 && selectedInflowSource === "factura" && candidate.type === "factura" ? (
+                  <div className="mt-3 space-y-3 rounded-lg border bg-background p-3">
+                    <Label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(selectedInvoiceMatches[candidate.id])}
+                        onChange={() => toggleInvoiceCandidate(candidate)}
+                      />
+                      Seleccionar esta factura
+                    </Label>
+                    {selectedInvoiceMatches[candidate.id] && (
+                      <div className="grid gap-3 md:grid-cols-[220px_1fr]">
+                        <div className="space-y-2">
+                          <Label>Tipo de aplicación</Label>
+                          <Select
+                            value={selectedInvoiceMatches[candidate.id]?.mode || "full"}
+                            onValueChange={(value) =>
+                              handleInvoiceSelectionMode(candidate.id, value as "full" | "partial", candidate.amount)
+                            }
+                          >
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="full">Pago completo</SelectItem>
+                              <SelectItem value="partial">Abono</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        {selectedInvoiceMatches[candidate.id]?.mode === "partial" && (
+                          <div className="space-y-2">
+                            <Label>Monto abonado</Label>
+                            <Input
+                              type="number"
+                              min="0"
+                              max={candidate.amount}
+                              value={selectedInvoiceMatches[candidate.id]?.amount || ""}
+                              onChange={(event) => handleInvoiceSelectionAmount(candidate.id, event.target.value)}
+                              placeholder={`Máximo ${candidate.amount}`}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="mt-3 flex justify-end">
+                    <Button onClick={() => void handleMatch(candidate)} disabled={!canEdit || matchingId === candidate.id}>
+                      {matchingId === candidate.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
+                      Conciliar
+                    </Button>
+                  </div>
+                )}
               </div>
             ))}
           </div>
