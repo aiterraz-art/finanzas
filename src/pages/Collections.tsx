@@ -61,6 +61,16 @@ const quickMessage = (invoice: CollectionPipelineItem) =>
   `Hola ${invoice.terceroNombre}, seguimos la factura ${invoice.numeroDocumento || ""} por ${formatTreasuryCurrency(invoice.amount)}. ` +
   `Necesitamos confirmar fecha de pago${invoice.promisedPaymentDate ? ` comprometida para ${formatTreasuryDate(invoice.promisedPaymentDate)}` : ""}.`;
 
+const IMPORT_CHUNK_SIZE = 100;
+
+const chunkArray = <T,>(items: T[], chunkSize: number) => {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += chunkSize) {
+    chunks.push(items.slice(index, index + chunkSize));
+  }
+  return chunks;
+};
+
 export default function Collections() {
   const { selectedEmpresaId, selectedRole } = useCompany();
   const { user } = useAuth();
@@ -140,16 +150,29 @@ export default function Collections() {
       missing.set(rut || nameKey, { razon_social: row.terceroNombre, rut });
     }
 
-    for (const client of missing.values()) {
-      const { error: insertError } = await supabase.from("terceros").insert({
+    const missingClients = Array.from(missing.values());
+    for (const chunk of chunkArray(missingClients, IMPORT_CHUNK_SIZE)) {
+      const payload = chunk.map((client) => ({
         empresa_id: selectedEmpresaId,
         rut: client.rut,
         razon_social: client.razon_social,
         tipo: "cliente",
         estado: "activo",
-      });
-      if (insertError) {
-        throw new Error(`No se pudo crear el cliente ${client.razon_social}${client.rut ? ` (${client.rut})` : ""}: ${insertError.message}`);
+      }));
+      const { error: insertError } = await supabase.from("terceros").insert(payload);
+      if (!insertError) continue;
+
+      for (const client of chunk) {
+        const { error: singleInsertError } = await supabase.from("terceros").insert({
+          empresa_id: selectedEmpresaId,
+          rut: client.rut,
+          razon_social: client.razon_social,
+          tipo: "cliente",
+          estado: "activo",
+        });
+        if (singleInsertError) {
+          throw new Error(`No se pudo crear el cliente ${client.razon_social}${client.rut ? ` (${client.rut})` : ""}: ${singleInsertError.message}`);
+        }
       }
     }
 
@@ -237,6 +260,8 @@ export default function Collections() {
       let duplicateRows = 0;
       let insertedRows = 0;
       let updatedRows = 0;
+      const updates: Array<Record<string, unknown>> = [];
+      const inserts: Array<Record<string, unknown>> = [];
 
       for (const row of validRows) {
         const key = buildInvoiceDuplicateKey({
@@ -280,31 +305,62 @@ export default function Collections() {
 
         const existing = existingInvoiceByKey.get(key);
         if (existing) {
-          const { error: updateError } = await supabase
-            .from("facturas")
-            .update({
-              tercero_id: existing.tercero_id || payload.tercero_id,
-              tercero_nombre: payload.tercero_nombre,
-              rut: payload.rut,
-              fecha_vencimiento: payload.fecha_vencimiento,
-              planned_cash_date: payload.planned_cash_date,
-              cash_confidence_pct: payload.cash_confidence_pct,
-              treasury_priority: "high",
-              estado: payload.estado,
-              tipo_documento: existing.tipo_documento || payload.tipo_documento,
-            })
-            .eq("id", existing.id)
-            .eq("empresa_id", selectedEmpresaId);
-          if (updateError) throw new Error(`No se pudo actualizar la factura pendiente ${row.numeroDocumento || row.terceroNombre}: ${updateError.message}`);
-          updatedRows += 1;
+          updates.push({
+            id: existing.id,
+            empresa_id: selectedEmpresaId,
+            tercero_id: existing.tercero_id || payload.tercero_id,
+            tercero_nombre: payload.tercero_nombre,
+            rut: payload.rut,
+            fecha_vencimiento: payload.fecha_vencimiento,
+            planned_cash_date: payload.planned_cash_date,
+            cash_confidence_pct: payload.cash_confidence_pct,
+            treasury_priority: "high",
+            estado: payload.estado,
+            tipo_documento: existing.tipo_documento || payload.tipo_documento,
+          });
         } else {
-          const { error: insertError } = await supabase.from("facturas").insert(payload);
-          if (insertError) throw new Error(`No se pudo insertar la factura pendiente ${row.numeroDocumento || row.terceroNombre}: ${insertError.message}`);
+          inserts.push(payload);
+        }
+      }
+
+      for (const chunk of chunkArray(updates, IMPORT_CHUNK_SIZE)) {
+        const { error: updateError } = await supabase.from("facturas").upsert(chunk, { onConflict: "id" });
+        if (!updateError) {
+          updatedRows += chunk.length;
+          continue;
+        }
+
+        for (const item of chunk) {
+          const { id, empresa_id, ...payload } = item;
+          const { error: singleUpdateError } = await supabase
+            .from("facturas")
+            .update(payload)
+            .eq("id", String(id))
+            .eq("empresa_id", String(empresa_id));
+          if (singleUpdateError) {
+            throw new Error(`No se pudo actualizar la factura pendiente ${String(payload.numero_documento || payload.tercero_nombre || id)}: ${singleUpdateError.message}`);
+          }
+          updatedRows += 1;
+        }
+      }
+
+      for (const chunk of chunkArray(inserts, IMPORT_CHUNK_SIZE)) {
+        const { error: insertError } = await supabase.from("facturas").insert(chunk);
+        if (!insertError) {
+          insertedRows += chunk.length;
+          continue;
+        }
+
+        for (const item of chunk) {
+          const { error: singleInsertError } = await supabase.from("facturas").insert(item);
+          if (singleInsertError) {
+            throw new Error(`No se pudo insertar la factura pendiente ${String(item.numero_documento || item.tercero_nombre || "sin folio")}: ${singleInsertError.message}`);
+          }
           insertedRows += 1;
         }
       }
 
-      let paidRows = 0;
+      const paidInvoiceIds: string[] = [];
       for (const invoice of invoices || []) {
         const key = buildInvoiceDuplicateKey({
           numeroDocumento: invoice.numero_documento,
@@ -314,6 +370,11 @@ export default function Collections() {
           monto: Number(invoice.monto),
         });
         if (openKeys.has(key) || invoice.estado === "archivada") continue;
+        paidInvoiceIds.push(invoice.id);
+      }
+
+      let paidRows = 0;
+      for (const chunk of chunkArray(paidInvoiceIds, IMPORT_CHUNK_SIZE)) {
         const { error: paidError } = await supabase
           .from("facturas")
           .update({
@@ -322,10 +383,12 @@ export default function Collections() {
             promised_payment_date: null,
             cash_confidence_pct: 100,
           })
-          .eq("id", invoice.id)
-          .eq("empresa_id", selectedEmpresaId);
-        if (paidError) throw new Error(`No se pudo cerrar como pagada la factura ${invoice.numero_documento || invoice.id}: ${paidError.message}`);
-        paidRows += 1;
+          .eq("empresa_id", selectedEmpresaId)
+          .in("id", chunk);
+        if (paidError) {
+          throw new Error(`No se pudo cerrar como pagado un bloque de facturas ausentes del archivo: ${paidError.message}`);
+        }
+        paidRows += chunk.length;
       }
 
       const summaryPayload = {
