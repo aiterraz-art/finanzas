@@ -25,6 +25,16 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 
+const statusButtonOptions = [
+    { value: "all", label: "Ver todos" },
+    { value: "paid", label: "Pagadas" },
+    { value: "unpaid", label: "No pagadas" },
+    { value: "abonada", label: "Abonadas" },
+    { value: "pendiente", label: "Pendientes" },
+    { value: "morosa", label: "Morosas" },
+    { value: "archivada", label: "Archivadas" },
+] as const;
+
 export default function InvoicesList() {
     const { selectedEmpresaId } = useCompany();
     const { user } = useAuth();
@@ -204,6 +214,19 @@ export default function InvoicesList() {
                                 </SelectContent>
                             </Select>
                         </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2 pt-2">
+                        {statusButtonOptions.map((option) => (
+                            <Button
+                                key={option.value}
+                                type="button"
+                                variant={statusFilter === option.value ? "default" : "outline"}
+                                size="sm"
+                                onClick={() => setStatusFilter(option.value)}
+                            >
+                                {option.label}
+                            </Button>
+                        ))}
                     </div>
                 </CardHeader>
                 <CardContent>
