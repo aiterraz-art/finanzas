@@ -711,30 +711,57 @@ export default function BankReconciliation() {
       }
 
       const commitmentLabel = quickExpenseForm.counterparty.trim() || quickExpenseForm.description.trim();
-      const { data: createdCommitment, error: commitmentError } = await supabase
+      const commitmentPayload = {
+        template_id: templateId,
+        bank_account_id: selectedAccountId || null,
+        category_id: quickExpenseForm.categoryId,
+        source_type: sourceType,
+        source_reference: `bank-reconciliation:${selectedTxn.id}`,
+        direction: "outflow" as const,
+        counterparty: quickExpenseForm.counterparty.trim() || null,
+        description: quickExpenseForm.description.trim(),
+        amount: Math.abs(selectedTxn.monto),
+        is_estimated: false,
+        due_date: selectedTxn.fecha_movimiento,
+        expected_date: selectedTxn.fecha_movimiento,
+        priority: quickExpenseForm.priority,
+        status: "paid" as const,
+        notes: quickExpenseForm.notes.trim() || null,
+        movimiento_banco_id: selectedTxn.id,
+        archived_at: null,
+        archived_by: null,
+        archive_reason: null,
+      };
+
+      const { data: existingLinkedCommitment, error: existingLinkedCommitmentError } = await supabase
         .from("cash_commitments")
-        .insert({
-          empresa_id: selectedEmpresaId,
-          template_id: templateId,
-          bank_account_id: selectedAccountId || null,
-          category_id: quickExpenseForm.categoryId,
-          source_type: sourceType,
-          source_reference: `bank-reconciliation:${selectedTxn.id}`,
-          direction: "outflow",
-          counterparty: quickExpenseForm.counterparty.trim() || null,
-          description: quickExpenseForm.description.trim(),
-          amount: Math.abs(selectedTxn.monto),
-          is_estimated: false,
-          due_date: selectedTxn.fecha_movimiento,
-          expected_date: selectedTxn.fecha_movimiento,
-          priority: quickExpenseForm.priority,
-          status: "paid",
-          notes: quickExpenseForm.notes.trim() || null,
-          movimiento_banco_id: selectedTxn.id,
-        })
         .select("id")
-        .single();
-      if (commitmentError) throw commitmentError;
+        .eq("empresa_id", selectedEmpresaId)
+        .eq("movimiento_banco_id", selectedTxn.id)
+        .maybeSingle();
+      if (existingLinkedCommitmentError) throw existingLinkedCommitmentError;
+
+      let commitmentId: string;
+      if (existingLinkedCommitment?.id) {
+        const { error: updateCommitmentError } = await supabase
+          .from("cash_commitments")
+          .update(commitmentPayload)
+          .eq("id", existingLinkedCommitment.id)
+          .eq("empresa_id", selectedEmpresaId);
+        if (updateCommitmentError) throw updateCommitmentError;
+        commitmentId = existingLinkedCommitment.id;
+      } else {
+        const { data: createdCommitment, error: commitmentError } = await supabase
+          .from("cash_commitments")
+          .insert({
+            empresa_id: selectedEmpresaId,
+            ...commitmentPayload,
+          })
+          .select("id")
+          .single();
+        if (commitmentError) throw commitmentError;
+        commitmentId = createdCommitment.id;
+      }
 
       const { error: movementError } = await supabase
         .from("movimientos_banco")
@@ -749,7 +776,7 @@ export default function BankReconciliation() {
         await supabase
           .from("cash_commitments")
           .update({ status: "cancelled", archived_at: new Date().toISOString(), archive_reason: "Rollback por error conciliando movimiento" })
-          .eq("id", createdCommitment.id)
+          .eq("id", commitmentId)
           .eq("empresa_id", selectedEmpresaId);
         throw movementError;
       }
