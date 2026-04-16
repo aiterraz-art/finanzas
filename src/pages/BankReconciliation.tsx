@@ -1212,7 +1212,7 @@ export default function BankReconciliation() {
       </Card>
 
       <Dialog open={Boolean(selectedTxn)} onOpenChange={(open) => !open && setSelectedTxn(null)}>
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Conciliar movimiento</DialogTitle>
             <DialogDescription>
@@ -1223,46 +1223,6 @@ export default function BankReconciliation() {
           </DialogHeader>
 
           <div className="space-y-4">
-            {loadingCandidates && <Loader2 className="h-5 w-5 animate-spin text-primary" />}
-            {!loadingCandidates && searchableCandidates.length === 0 && (
-              <div className="rounded-xl border border-dashed p-8 text-center text-muted-foreground">
-                No se encontraron candidatos para este movimiento.
-              </div>
-            )}
-            {searchableCandidates.map((candidate) => (
-              <div key={`${candidate.type}-${candidate.id}`} className="rounded-xl border p-4">
-                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                  <div>
-                    <div className="font-medium">{candidate.label}</div>
-                    <div className="text-sm text-muted-foreground">
-                      {candidate.subtitle}
-                      {candidate.dueDate ? ` • vence ${formatTreasuryDate(candidate.dueDate)}` : ""}
-                    </div>
-                  </div>
-                    <div className="text-right">
-                      <div className="font-semibold">{formatTreasuryCurrency(candidate.amount, selectedAccount?.moneda || "CLP")}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {candidate.type === "factura"
-                          ? "Factura"
-                          : candidate.type === "rendicion"
-                            ? "Rendición"
-                            : candidate.type === "cheque"
-                              ? "Cheque"
-                              : candidate.type === "webpay"
-                                ? "WebPay"
-                                : "Compromiso"}
-                      </div>
-                    </div>
-                  </div>
-                <div className="mt-3 flex justify-end">
-                  <Button onClick={() => void handleMatch(candidate)} disabled={!canEdit || matchingId === candidate.id}>
-                    {matchingId === candidate.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
-                    Conciliar
-                  </Button>
-                </div>
-              </div>
-            ))}
-
             {!loadingCandidates && selectedTxn && selectedTxn.monto < 0 && (
               <div className="rounded-xl border border-dashed p-4">
                 <div className="mb-4">
@@ -1381,6 +1341,46 @@ export default function BankReconciliation() {
                 </div>
               </div>
             )}
+
+            {loadingCandidates && <Loader2 className="h-5 w-5 animate-spin text-primary" />}
+            {!loadingCandidates && searchableCandidates.length === 0 && (
+              <div className="rounded-xl border border-dashed p-8 text-center text-muted-foreground">
+                No se encontraron candidatos para este movimiento.
+              </div>
+            )}
+            {searchableCandidates.map((candidate) => (
+              <div key={`${candidate.type}-${candidate.id}`} className="rounded-xl border p-4">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <div className="font-medium">{candidate.label}</div>
+                    <div className="text-sm text-muted-foreground">
+                      {candidate.subtitle}
+                      {candidate.dueDate ? ` • vence ${formatTreasuryDate(candidate.dueDate)}` : ""}
+                    </div>
+                  </div>
+                    <div className="text-right">
+                      <div className="font-semibold">{formatTreasuryCurrency(candidate.amount, selectedAccount?.moneda || "CLP")}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {candidate.type === "factura"
+                          ? "Factura"
+                          : candidate.type === "rendicion"
+                            ? "Rendición"
+                            : candidate.type === "cheque"
+                              ? "Cheque"
+                              : candidate.type === "webpay"
+                                ? "WebPay"
+                                : "Compromiso"}
+                      </div>
+                    </div>
+                  </div>
+                <div className="mt-3 flex justify-end">
+                  <Button onClick={() => void handleMatch(candidate)} disabled={!canEdit || matchingId === candidate.id}>
+                    {matchingId === candidate.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
+                    Conciliar
+                  </Button>
+                </div>
+              </div>
+            ))}
           </div>
 
           <DialogFooter>
