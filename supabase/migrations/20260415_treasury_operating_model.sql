@@ -309,6 +309,7 @@ CROSS JOIN (
     ('payroll', 'Nomina', 'outflow', 30),
     ('taxes', 'Impuestos', 'outflow', 40),
     ('rent', 'Arriendos', 'outflow', 50),
+    ('import_costs', 'Gastos de importacion', 'outflow', 55),
     ('services', 'Servicios', 'outflow', 60),
     ('capex', 'Capex', 'outflow', 70),
     ('other_inflow', 'Otros Ingresos', 'inflow', 80),
