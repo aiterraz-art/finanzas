@@ -90,6 +90,28 @@ describe("invoice import helpers", () => {
     expect(parsed?.fechaVencimiento).toBe("2026-04-08");
   });
 
+  it("parses the receivable aging export used by cobranzas", () => {
+    const rows = [
+      ["C󤩧o Cliente", "Nombre", "Docto", "Serie", "Nmero", "Vencimiento", "( > 90 ) $", "(61 - 90) $", "(31 - 60) $", "( 0 - 30) $", "Saldo $"],
+      ["10942793-4", "Fernando Ceron Olgu\udba0", "FVAELECT", "", "7996", "3/20/26", "0", "0", "0", "290,001", "290,001"],
+    ];
+
+    const detection = detectReceivablesWorksheetFormat(rows);
+    expect(detection.kind).toBe("receivables");
+
+    const parsed = normalizeReceivableInvoiceImportRow(
+      buildObjectsFromWorksheetRows(rows, detection.headerRowIndex!)[0]
+    );
+
+    expect(parsed).not.toBeNull();
+    expect(parsed?.numeroDocumento).toBe("7996");
+    expect(parsed?.rut).toBe("10942793-4");
+    expect(parsed?.terceroNombre).toBe("Fernando Ceron Olgu");
+    expect(parsed?.tipoDocumento).toBe("FVAELECT");
+    expect(parsed?.fechaVencimiento).toBe("2026-03-20");
+    expect(parsed?.saldoAbierto).toBe(290001);
+  });
+
   it("builds duplicate keys using folio first and fallback when missing", () => {
     const keyed = buildInvoiceDuplicateKey({
       numeroDocumento: "F-22",

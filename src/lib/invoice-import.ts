@@ -37,6 +37,7 @@ export type ReceivableInvoiceImportRow = {
   saldoAbierto?: number | null;
   diasMora?: number | null;
   descripcion?: string | null;
+  tipoDocumento?: string | null;
 };
 
 type RawSheetRow = Record<string, unknown>;
@@ -104,6 +105,18 @@ const inferRutFromRow = (rawRow: RawSheetRow) => {
 
 const rowContainsPatterns = (tokens: string[], patterns: string[]) =>
   tokens.some((token) => patterns.some((pattern) => token.includes(pattern)));
+
+const normalizeInvoiceMoneyValue = (value: unknown) => {
+  const text = sanitizeImportText(value);
+  if (!text) return null;
+
+  if (/^-?\d{1,3}(,\d{3})+$/.test(text)) {
+    const numeric = Number(text.replace(/,/g, ""));
+    return Number.isFinite(numeric) ? numeric : null;
+  }
+
+  return normalizeMoneyInput(text);
+};
 
 const normalizeInvoiceDateInput = (value: unknown) => {
   if (typeof value === "number" || value instanceof Date) {
@@ -176,7 +189,7 @@ export const detectReceivablesWorksheetFormat = (rows: unknown[][]): InvoiceImpo
 
     const looksLikeReceivablesHeader =
       rowContainsPatterns(tokens, ["cliente", "razonsocial", "nombre"]) &&
-      rowContainsPatterns(tokens, ["folio", "numero", "documento"]) &&
+      rowContainsPatterns(tokens, ["folio", "numero", "documento", "nmero"]) &&
       rowContainsPatterns(tokens, ["saldo", "pendiente", "porcobrar"]) &&
       rowContainsPatterns(tokens, ["vencimiento", "fechaemision", "emision", "mora"]);
 
@@ -247,44 +260,48 @@ export const normalizeIssuedInvoiceImportRow = (rawRow: RawSheetRow): IssuedInvo
 export const normalizeReceivableInvoiceImportRow = (rawRow: RawSheetRow): ReceivableInvoiceImportRow | null => {
   const numeroDocumento =
     sanitizeImportText(
-      getValueFromRow(rawRow, "numero documento", "n documento", "folio", "numero", "factura")
+      getValueFromRow(rawRow, "numero documento", "nmero", "n documento", "folio", "numero", "factura")
     ) || null;
   const terceroNombre =
     sanitizeImportText(
-      getValueFromRow(rawRow, "cliente", "razon social", "nombre cliente", "nombre")
+      getValueFromRow(rawRow, "cliente", "razon social", "nombre cliente", "nombre del cliente", "nombre")
     ) || "";
+  const tipoDocumento =
+    sanitizeImportText(getValueFromRow(rawRow, "docto", "tipo doc", "tipo documento")) || null;
   const fechaEmision = normalizeInvoiceDateInput(
     getValueFromRow(rawRow, "fecha emision", "emision", "fecha")
   );
   const fechaVencimiento = normalizeInvoiceDateInput(
     getValueFromRow(rawRow, "fecha vencimiento", "vencimiento")
   );
-  const saldoAbierto = normalizeMoneyInput(
+  const saldoAbierto = normalizeInvoiceMoneyValue(
     getValueFromRow(rawRow, "saldo abierto", "saldo", "pendiente", "por cobrar")
   );
-  const monto = normalizeMoneyInput(
+  const monto = normalizeInvoiceMoneyValue(
     getValueFromRow(rawRow, "monto", "monto total", "total", "importe", "saldo")
   );
+  const resolvedAmount = monto ?? saldoAbierto;
   const diasMoraValue = getValueFromRow(rawRow, "dias mora", "mora", "dias vencido");
   const diasMora = diasMoraValue === undefined || diasMoraValue === null || normalizeText(diasMoraValue) === ""
     ? null
     : Number(diasMoraValue);
 
-  if (!terceroNombre || (!numeroDocumento && !fechaEmision && !fechaVencimiento) || !(monto || saldoAbierto)) {
+  if (!terceroNombre || (!numeroDocumento && !fechaEmision && !fechaVencimiento) || !resolvedAmount) {
     return null;
   }
 
   return {
     numeroDocumento,
-    rut: normalizeRut(getValueFromRow(rawRow, "rut", "r.u.t.")),
+    rut: inferRutFromRow(rawRow),
     terceroNombre,
     fechaEmision,
     fechaVencimiento,
-    monto: monto || saldoAbierto,
+    monto: resolvedAmount,
     saldoAbierto: saldoAbierto || null,
     diasMora: Number.isFinite(diasMora) ? diasMora : null,
     descripcion:
       sanitizeImportText(getValueFromRow(rawRow, "descripcion", "detalle", "glosa", "concepto")) || null,
+    tipoDocumento,
   };
 };
 
