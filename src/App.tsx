@@ -18,6 +18,7 @@ import WebPay from "@/pages/WebPay";
 
 import ManualInvoiceEntry from "@/pages/ManualInvoiceEntry";
 import InvoicesList from "@/pages/InvoicesList";
+import InvoiceImport from "@/pages/InvoiceImport";
 import Users from "@/pages/Users";
 
 import Login from "@/pages/Login";
@@ -82,6 +83,8 @@ function App() {
                 <Route path="rendiciones" element={<Rendiciones />} />
                 <Route path="rendiciones/print/:id" element={<RendicionPrint />} />
                 <Route path="facturas" element={<InvoicesList />} />
+                <Route path="facturas/importar" element={<InvoiceImport />} />
+                <Route path="invoice-import" element={<InvoiceImport />} />
                 <Route path="invoices/new" element={<ManualInvoiceEntry />} />
                 <Route path="facturas/nueva" element={<ManualInvoiceEntry />} />
                 <Route element={<AdminRoute />}>

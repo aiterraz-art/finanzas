@@ -96,6 +96,11 @@ export default function InvoicesList() {
                         <Plus className="mr-2 h-4 w-4" /> Nueva Factura
                     </Button>
                 </Link>
+                <Link to="/facturas/importar">
+                    <Button variant="outline">
+                        <Plus className="mr-2 h-4 w-4" /> Importar Base
+                    </Button>
+                </Link>
             </div>
 
             <Card>

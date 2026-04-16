@@ -291,6 +291,9 @@ export default function Clientes() {
           <Button variant="outline" asChild>
             <Link to="/collections">Abrir pipeline</Link>
           </Button>
+          <Button variant="outline" asChild>
+            <Link to="/facturas/importar">Importar base</Link>
+          </Button>
           <Button onClick={() => setIsNewInvoiceOpen(true)} disabled={!canEdit}>
             <Plus className="mr-2 h-4 w-4" />
             Nueva factura

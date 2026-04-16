@@ -1,5 +1,6 @@
-import { type FormEvent, useEffect, useMemo, useState } from "react";
-import { ArrowRightLeft, Landmark, Loader2, Plus, RefreshCcw, ScrollText, Wallet } from "lucide-react";
+import { type ChangeEvent, type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import * as XLSX from "xlsx";
+import { ArrowRightLeft, Landmark, Loader2, Plus, RefreshCcw, ScrollText, Upload, Wallet } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -26,7 +27,16 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { useCompany } from "@/contexts/CompanyContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
-import { canEditTreasury, formatTreasuryCurrency, formatTreasuryDate } from "@/lib/treasury";
+import {
+  buildObjectsFromWorksheetRows,
+  canEditTreasury,
+  detectChequeWorksheetFormat,
+  formatTreasuryCurrency,
+  formatTreasuryDate,
+  normalizeChequeImportRow,
+  normalizeRut,
+  normalizeText,
+} from "@/lib/treasury";
 import { useBankAccounts, useChequeReceivables, useTreasuryKpis } from "@/hooks/useTreasury";
 import type { ChequeReceivable } from "@/lib/treasury";
 import { cn } from "@/lib/utils";
@@ -104,12 +114,41 @@ const chequeStatusClasses: Record<ChequeReceivable["estado"], string> = {
   anulado: "border-slate-200 bg-slate-50 text-slate-700",
 };
 
+type ChequeImportSummary = {
+  filename: string;
+  imported: number;
+  duplicates: number;
+  createdClients: number;
+  linkedInvoices: number;
+  rejected: number;
+};
+
+const normalizeMatchText = (value: unknown) => normalizeText(value).toLowerCase();
+
+const buildChequeDuplicateKey = (params: {
+  numeroCheque: string;
+  rut: string | null;
+  razonSocial: string;
+  monto: number;
+  fechaVencimiento: string;
+}) =>
+  [
+    normalizeText(params.numeroCheque),
+    normalizeRut(params.rut) || normalizeMatchText(params.razonSocial),
+    Number(params.monto).toFixed(2),
+    params.fechaVencimiento,
+  ].join("|");
+
 export default function Cheques() {
   const { selectedEmpresa, selectedEmpresaId, selectedRole } = useCompany();
   const { user } = useAuth();
   const canEdit = canEditTreasury(selectedRole);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [form, setForm] = useState<ChequeForm>(createChequeForm());
   const [saving, setSaving] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importBankAccountId, setImportBankAccountId] = useState("none");
+  const [importSummary, setImportSummary] = useState<ChequeImportSummary | null>(null);
   const [supportLoading, setSupportLoading] = useState(false);
   const [invoices, setInvoices] = useState<InvoiceOption[]>([]);
   const [clients, setClients] = useState<ClientOption[]>([]);
@@ -141,6 +180,14 @@ export default function Cheques() {
     }
   }, [selectedEmpresaId]);
 
+  useEffect(() => {
+    if (importBankAccountId !== "none") return;
+    const preferred = bankAccounts.find((account) => account.esPrincipal) || bankAccounts[0];
+    if (preferred) {
+      setImportBankAccountId(preferred.id);
+    }
+  }, [bankAccounts, importBankAccountId]);
+
   const fetchSupportData = async () => {
     if (!selectedEmpresaId) return;
     setSupportLoading(true);
@@ -151,13 +198,14 @@ export default function Cheques() {
           .select("id, numero_documento, tercero_id, tercero_nombre, monto, fecha_vencimiento")
           .eq("empresa_id", selectedEmpresaId)
           .eq("tipo", "venta")
-          .in("estado", ["pendiente", "morosa"])
+          .is("archived_at", null)
           .order("fecha_emision", { ascending: false }),
         supabase
           .from("terceros")
           .select("id, razon_social, rut")
           .eq("empresa_id", selectedEmpresaId)
           .in("tipo", ["cliente", "ambos"])
+          .is("archived_at", null)
           .order("razon_social", { ascending: true }),
       ]);
       if (invoiceError) throw invoiceError;
@@ -168,6 +216,193 @@ export default function Cheques() {
       console.error("Error loading cheque support data:", error);
     } finally {
       setSupportLoading(false);
+    }
+  };
+
+  const handleImportFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file || !selectedEmpresaId || !user || !canEdit) return;
+
+    const bankAccountId = importBankAccountId === "none" ? null : importBankAccountId;
+    setImporting(true);
+    setImportSummary(null);
+
+    try {
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: "array" });
+      const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+      const worksheetRows = XLSX.utils.sheet_to_json<unknown[]>(worksheet, { header: 1, defval: "", raw: true });
+      const detection = detectChequeWorksheetFormat(worksheetRows);
+
+      if (detection.kind !== "cheque_portfolio" || detection.headerRowIndex === null) {
+        throw new Error(detection.reason || "No se detectó un layout compatible de cheques en cartera.");
+      }
+
+      const rawRows = buildObjectsFromWorksheetRows(worksheetRows, detection.headerRowIndex);
+      const parsedRows = rawRows.map((row) => normalizeChequeImportRow(row));
+      const validRows = parsedRows.filter(Boolean);
+      const rejected = parsedRows.length - validRows.length;
+      if (validRows.length === 0) {
+        throw new Error("No se encontraron cheques válidos en el archivo seleccionado.");
+      }
+
+      const [{ data: currentClients, error: clientsError }, { data: currentInvoices, error: invoicesError }, { data: currentCheques, error: chequesError }] =
+        await Promise.all([
+          supabase
+            .from("terceros")
+            .select("id, razon_social, rut")
+            .eq("empresa_id", selectedEmpresaId)
+            .in("tipo", ["cliente", "ambos"])
+            .is("archived_at", null),
+          supabase
+            .from("facturas")
+            .select("id, numero_documento, tercero_id, tercero_nombre, monto, fecha_vencimiento")
+            .eq("empresa_id", selectedEmpresaId)
+            .eq("tipo", "venta")
+            .is("archived_at", null),
+          supabase
+            .from("cheques_cartera")
+            .select("numero_cheque, rut_librador, librador, monto, fecha_vencimiento")
+            .eq("empresa_id", selectedEmpresaId),
+        ]);
+      if (clientsError) throw clientsError;
+      if (invoicesError) throw invoicesError;
+      if (chequesError) throw chequesError;
+
+      const clientByRut = new Map<string, ClientOption>();
+      const clientByName = new Map<string, ClientOption>();
+      for (const client of (currentClients || []) as ClientOption[]) {
+        if (client.rut) clientByRut.set(normalizeRut(client.rut) || "", client);
+        clientByName.set(normalizeMatchText(client.razon_social), client);
+      }
+
+      const missingClients = new Map<string, { razon_social: string; rut: string | null }>();
+      for (const row of validRows) {
+        if (!row) continue;
+        const key = row.rut || normalizeMatchText(row.razonSocial);
+        if (!key) continue;
+        if (row.rut ? clientByRut.has(row.rut) : clientByName.has(normalizeMatchText(row.razonSocial))) continue;
+        if (!missingClients.has(key)) {
+          missingClients.set(key, { razon_social: row.razonSocial, rut: row.rut });
+        }
+      }
+
+      let createdClients = 0;
+      if (missingClients.size > 0) {
+        const { error: insertClientsError } = await supabase.from("terceros").insert(
+          Array.from(missingClients.values()).map((client) => ({
+            empresa_id: selectedEmpresaId,
+            rut: client.rut,
+            razon_social: client.razon_social,
+            tipo: "cliente",
+            estado: "activo",
+          }))
+        );
+        if (insertClientsError) throw insertClientsError;
+        createdClients = missingClients.size;
+
+        const { data: refreshedClients, error: refreshedClientsError } = await supabase
+          .from("terceros")
+          .select("id, razon_social, rut")
+          .eq("empresa_id", selectedEmpresaId)
+          .in("tipo", ["cliente", "ambos"])
+          .is("archived_at", null);
+        if (refreshedClientsError) throw refreshedClientsError;
+        clientByRut.clear();
+        clientByName.clear();
+        for (const client of (refreshedClients || []) as ClientOption[]) {
+          if (client.rut) clientByRut.set(normalizeRut(client.rut) || "", client);
+          clientByName.set(normalizeMatchText(client.razon_social), client);
+        }
+      }
+
+      const invoiceByDocument = new Map<string, InvoiceOption>();
+      for (const invoice of (currentInvoices || []) as InvoiceOption[]) {
+        const key = normalizeText(invoice.numero_documento);
+        if (key && !invoiceByDocument.has(key)) invoiceByDocument.set(key, invoice);
+      }
+
+      const existingChequeKeys = new Set(
+        ((currentCheques || []) as Array<{
+          numero_cheque: string;
+          rut_librador: string | null;
+          librador: string;
+          monto: number;
+          fecha_vencimiento: string;
+        }>).map((row) =>
+          buildChequeDuplicateKey({
+            numeroCheque: row.numero_cheque,
+            rut: row.rut_librador,
+            razonSocial: row.librador,
+            monto: Number(row.monto),
+            fechaVencimiento: row.fecha_vencimiento,
+          })
+        )
+      );
+
+      let linkedInvoices = 0;
+      let duplicates = 0;
+      const rowsToInsert = validRows.flatMap((row) => {
+        if (!row) return [];
+        const duplicateKey = buildChequeDuplicateKey({
+          numeroCheque: row.numeroCheque,
+          rut: row.rut,
+          razonSocial: row.razonSocial,
+          monto: row.monto,
+          fechaVencimiento: row.fechaVencimiento,
+        });
+        if (existingChequeKeys.has(duplicateKey)) {
+          duplicates += 1;
+          return [];
+        }
+        existingChequeKeys.add(duplicateKey);
+
+        const client = (row.rut && clientByRut.get(row.rut)) || clientByName.get(normalizeMatchText(row.razonSocial)) || null;
+        const invoice = row.numeroFactura ? invoiceByDocument.get(normalizeText(row.numeroFactura)) || null : null;
+        if (invoice) linkedInvoices += 1;
+
+        return [{
+          empresa_id: selectedEmpresaId,
+          bank_account_id: bankAccountId,
+          tercero_id: client?.id || invoice?.tercero_id || null,
+          factura_id: invoice?.id || null,
+          numero_cheque: row.numeroCheque,
+          banco_emisor: row.banco,
+          librador: row.razonSocial,
+          rut_librador: row.rut,
+          moneda: "CLP",
+          monto: row.monto,
+          monto_aplicado_factura: invoice ? Math.min(row.monto, Number(invoice.monto || row.monto)) : 0,
+          fecha_emision: row.fechaRecepcion,
+          fecha_vencimiento: row.fechaVencimiento,
+          fecha_cobro_esperada: row.fechaVencimiento,
+          estado: row.montoOriginal < 0 ? "anulado" : "en_cartera",
+          notas: [row.concepto, row.observaciones, row.detalleObservacion].filter(Boolean).join(" | ") || null,
+          created_by: user.id,
+        }];
+      });
+
+      if (rowsToInsert.length > 0) {
+        const { error: insertChequesError } = await supabase.from("cheques_cartera").insert(rowsToInsert);
+        if (insertChequesError) throw insertChequesError;
+      }
+
+      setImportSummary({
+        filename: file.name,
+        imported: rowsToInsert.length,
+        duplicates,
+        createdClients,
+        linkedInvoices,
+        rejected,
+      });
+
+      await Promise.all([refresh(), fetchSupportData()]);
+    } catch (error: any) {
+      console.error("Error importing cheque portfolio:", error);
+      alert(error.message || "No se pudo importar la cartera de cheques.");
+    } finally {
+      setImporting(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
 
@@ -324,6 +559,13 @@ export default function Cheques() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".xlsx,.xls,.csv"
+            className="hidden"
+            onChange={handleImportFile}
+          />
           <Button variant="outline" asChild>
             <Link to="/cashflow">
               <Wallet className="mr-2 h-4 w-4" />
@@ -340,6 +582,10 @@ export default function Cheques() {
             <RefreshCcw className="mr-2 h-4 w-4" />
             Refrescar
           </Button>
+          <Button onClick={() => fileInputRef.current?.click()} disabled={!canEdit || importing}>
+            {importing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
+            Importar Excel
+          </Button>
         </div>
       </div>
 
@@ -350,6 +596,47 @@ export default function Cheques() {
           </CardContent>
         </Card>
       )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Importador de cheques en cartera</CardTitle>
+          <CardDescription>
+            Lee el Excel operativo de cartera, crea clientes faltantes y vincula facturas por número de documento cuando exista coincidencia.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-4 md:grid-cols-[280px_1fr] md:items-end">
+            <div className="space-y-2">
+              <Label>Cuenta destino por defecto</Label>
+              <Select value={importBankAccountId} onValueChange={setImportBankAccountId} disabled={!canEdit || importing}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Sin cuenta asignada</SelectItem>
+                  {bankAccounts.map((account) => (
+                    <SelectItem key={account.id} value={account.id}>
+                      {account.nombre}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="rounded-xl border bg-muted/20 p-4 text-sm text-muted-foreground">
+              El importador deduplica contra cheques ya registrados usando número, RUT o razón social, monto y vencimiento. Los ingresos negativos se cargan como `anulado`.
+            </div>
+          </div>
+
+          {importSummary && (
+            <div className="rounded-xl border border-emerald-200 p-4 text-sm">
+              <div className="font-medium text-emerald-700">Importación completada: {importSummary.filename}</div>
+              <div className="mt-1 text-muted-foreground">
+                {importSummary.imported} cheque(s) importados, {importSummary.duplicates} duplicado(s), {importSummary.createdClients} cliente(s) creados, {importSummary.linkedInvoices} cheque(s) vinculados a factura y {importSummary.rejected} fila(s) rechazadas.
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard

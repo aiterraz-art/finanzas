@@ -32,6 +32,7 @@ const navigation = [
     { name: "Auditoría", href: "/audit", icon: ShieldCheck },
     { name: "Rendiciones", href: "/rendiciones", icon: ClipboardList },
     { name: "Clientes", href: "/clientes", icon: Building2 },
+    { name: "Importar Facturas", href: "/facturas/importar", icon: BarChart3 },
     { name: "Proveedores", href: "/proveedores", icon: Truck },
     { name: "Reportes", href: "/reports", icon: BarChart3 },
 ];

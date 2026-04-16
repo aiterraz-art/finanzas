@@ -190,8 +190,30 @@ export type BankImportPreviewRow = {
   columnasExtra: Record<string, string | number | null>;
 };
 
+export type ChequeImportPreviewRow = {
+  numeroCheque: string;
+  monto: number;
+  montoOriginal: number;
+  fechaRecepcion: string | null;
+  fechaVencimiento: string;
+  concepto: string | null;
+  rut: string | null;
+  numeroFactura: string | null;
+  fechaDeposito: string | null;
+  banco: string | null;
+  razonSocial: string;
+  observaciones: string | null;
+  detalleObservacion: string | null;
+};
+
 export type WorksheetImportDetection = {
   kind: "bank_statement" | "receivables_aging_report" | "unknown";
+  headerRowIndex: number | null;
+  reason?: string;
+};
+
+export type ChequeWorksheetDetection = {
+  kind: "cheque_portfolio" | "unknown";
   headerRowIndex: number | null;
   reason?: string;
 };
@@ -420,6 +442,11 @@ const normalizeImportHeaderToken = (value: unknown) =>
 const rowContainsPatterns = (tokens: string[], patterns: string[]) =>
   tokens.some((token) => patterns.some((pattern) => token.includes(pattern)));
 
+export const normalizeRut = (value: unknown) => {
+  const text = normalizeText(value).replace(/\./g, "").toUpperCase();
+  return text || null;
+};
+
 export const detectWorksheetImportFormat = (rows: unknown[][]): WorksheetImportDetection => {
   const bankDatePatterns = ["fecha", "date", "fechamovimiento", "postedat"];
   const bankDescriptionPatterns = ["descripcion", "glosa", "detalle", "description", "concepto", "movimiento"];
@@ -464,6 +491,31 @@ export const detectWorksheetImportFormat = (rows: unknown[][]): WorksheetImportD
     kind: "unknown",
     headerRowIndex: null,
     reason: "No se encontró un encabezado compatible con cartola bancaria.",
+  };
+};
+
+export const detectChequeWorksheetFormat = (rows: unknown[][]): ChequeWorksheetDetection => {
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+    const tokens = rows[rowIndex].map(normalizeImportHeaderToken).filter(Boolean);
+    if (tokens.length === 0) continue;
+
+    const looksLikeChequeHeader =
+      rowContainsPatterns(tokens, ["ncheque", "numerocheque"]) &&
+      rowContainsPatterns(tokens, ["monto"]) &&
+      rowContainsPatterns(tokens, ["fechaderecepcion", "fecharecepcion"]) &&
+      rowContainsPatterns(tokens, ["fechadevencimiento", "vencimiento"]) &&
+      rowContainsPatterns(tokens, ["razonsocial", "cliente"]) &&
+      rowContainsPatterns(tokens, ["rut"]);
+
+    if (looksLikeChequeHeader) {
+      return { kind: "cheque_portfolio", headerRowIndex: rowIndex };
+    }
+  }
+
+  return {
+    kind: "unknown",
+    headerRowIndex: null,
+    reason: "No se encontró un encabezado compatible con cheques en cartera.",
   };
 };
 
@@ -621,6 +673,62 @@ export const normalizeBankImportRow = (
       numeroOperacion,
     }),
     columnasExtra,
+  };
+};
+
+export const normalizeChequeImportRow = (
+  rawRow: Record<string, unknown>
+): ChequeImportPreviewRow | null => {
+  const entries = Object.entries(rawRow);
+  const normalizedEntries = entries.map(([key, value]) => ({
+    key,
+    normalizedKey: normalizeImportHeaderToken(key),
+    value,
+  }));
+
+  const getValue = (...keys: string[]) => {
+    const normalizedKeys = keys.map(normalizeImportHeaderToken).filter(Boolean);
+
+    for (const candidateKey of normalizedKeys) {
+      const exact = normalizedEntries.find((entry) => entry.normalizedKey === candidateKey);
+      if (exact) return exact.value;
+    }
+
+    for (const candidateKey of normalizedKeys) {
+      const partial = normalizedEntries.find(
+        (entry) =>
+          entry.normalizedKey.includes(candidateKey) || candidateKey.includes(entry.normalizedKey)
+      );
+      if (partial) return partial.value;
+    }
+
+    return undefined;
+  };
+
+  const numeroCheque = normalizeText(getValue("n cheque", "numero cheque", "n° cheque", "nro cheque"));
+  const razonSocial = normalizeText(getValue("razon social", "cliente", "nombre"));
+  const montoOriginal = Number(getValue("monto"));
+  const fechaVencimiento = normalizeDateInput(getValue("fecha de vencimiento", "vencimiento"));
+
+  if (!numeroCheque || !razonSocial || !Number.isFinite(montoOriginal) || !fechaVencimiento) {
+    return null;
+  }
+
+  return {
+    numeroCheque,
+    monto: Math.abs(montoOriginal),
+    montoOriginal,
+    fechaRecepcion: normalizeDateInput(getValue("fecha recepcion", "fecha de recepcion")),
+    fechaVencimiento,
+    concepto: normalizeText(getValue("concepto")) || null,
+    rut: normalizeRut(getValue("rut")),
+    numeroFactura: normalizeText(getValue("n factura", "numero factura", "n° factura")) || null,
+    fechaDeposito: normalizeText(getValue("fecha deposito")) || null,
+    banco: normalizeText(getValue("banco")) || null,
+    razonSocial,
+    observaciones: normalizeText(getValue("observaciones")) || null,
+    detalleObservacion:
+      normalizeText(getValue("cbte contable", "detalle", "observaciones_1", "obs")) || null,
   };
 };
 

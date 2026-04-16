@@ -3,8 +3,10 @@ import {
   buildObjectsFromWorksheetRows,
   buildBankSourceHash,
   canEditTreasury,
+  detectChequeWorksheetFormat,
   detectWorksheetImportFormat,
   normalizeBankImportRow,
+  normalizeChequeImportRow,
   normalizeDateInput,
   normalizeMoneyInput,
 } from "@/lib/treasury";
@@ -115,6 +117,26 @@ describe("treasury helpers", () => {
     const detection = detectWorksheetImportFormat(rows);
     expect(detection.kind).toBe("receivables_aging_report");
     expect(detection.reason).toContain("cuentas por cobrar");
+  });
+
+  it("detects cheque portfolio headers and parses cheque rows", () => {
+    const rows = [
+      ["N° Cheque", "Monto", "Fecha Recepción", "Fecha de Vencimiento", "Concepto", "RUT", "N° Factura", "Fecha Depósito", "Banco", "Razon Social", "Observaciones", "Cbte Contable"],
+      [9231873, 778571, 45937, 46142, "Ingresos Clientes", "17750193-k", 6402, "Por cobrar", "CHILE", "NICOLE FERNANDA CABRERA", "DC", ""],
+    ];
+
+    const detection = detectChequeWorksheetFormat(rows);
+    expect(detection.kind).toBe("cheque_portfolio");
+
+    const objects = buildObjectsFromWorksheetRows(rows, detection.headerRowIndex!);
+    const parsed = normalizeChequeImportRow(objects[0]);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.numeroCheque).toBe("9231873");
+    expect(parsed?.monto).toBe(778571);
+    expect(parsed?.fechaRecepcion).toBe("2025-10-07");
+    expect(parsed?.fechaVencimiento).toBe("2026-04-30");
+    expect(parsed?.rut).toBe("17750193-K");
+    expect(parsed?.numeroFactura).toBe("6402");
   });
 
   it("flags viewer as read only", () => {
