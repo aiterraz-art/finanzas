@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -17,6 +17,13 @@ import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
 import { useCompany } from "@/contexts/CompanyContext";
 import { useAuth } from "@/contexts/AuthContext";
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select";
 
 export default function InvoicesList() {
     const { selectedEmpresaId } = useCompany();
@@ -24,6 +31,10 @@ export default function InvoicesList() {
     const [invoices, setInvoices] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState("");
+    const [invoiceNumberFilter, setInvoiceNumberFilter] = useState("");
+    const [customerFilter, setCustomerFilter] = useState("");
+    const [statusFilter, setStatusFilter] = useState("all");
+    const [vendorFilter, setVendorFilter] = useState("all");
 
     useEffect(() => {
         if (selectedEmpresaId) fetchInvoices();
@@ -79,15 +90,46 @@ export default function InvoicesList() {
         }
     };
 
-    const filteredInvoices = invoices.filter(inv =>
-        inv.tercero_nombre?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        inv.descripcion?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        inv.numero_documento?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        inv.rut?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        inv.vendedor_asignado?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        inv.tipo_documento?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        inv.nombre_documento?.toLowerCase().includes(searchTerm.toLowerCase())
-    );
+    const vendorOptions = useMemo(() => {
+        const vendors = invoices
+            .map((invoice) => invoice.vendedor_asignado?.trim())
+            .filter((vendor): vendor is string => Boolean(vendor));
+        return Array.from(new Set(vendors)).sort((a, b) => a.localeCompare(b, "es"));
+    }, [invoices]);
+
+    const filteredInvoices = useMemo(() => {
+        const normalizedSearch = searchTerm.toLowerCase().trim();
+        const normalizedInvoiceNumber = invoiceNumberFilter.toLowerCase().trim();
+        const normalizedCustomer = customerFilter.toLowerCase().trim();
+
+        return invoices.filter((inv) => {
+            const invoiceNumber = String(inv.numero_documento || "").toLowerCase();
+            const customerName = String(inv.tercero_nombre || "").toLowerCase();
+            const seller = String(inv.vendedor_asignado || "");
+            const status = String(inv.estado || "").toLowerCase();
+
+            const matchesSearch =
+                !normalizedSearch ||
+                customerName.includes(normalizedSearch) ||
+                String(inv.descripcion || "").toLowerCase().includes(normalizedSearch) ||
+                invoiceNumber.includes(normalizedSearch) ||
+                String(inv.rut || "").toLowerCase().includes(normalizedSearch) ||
+                seller.toLowerCase().includes(normalizedSearch) ||
+                String(inv.tipo_documento || "").toLowerCase().includes(normalizedSearch) ||
+                String(inv.nombre_documento || "").toLowerCase().includes(normalizedSearch);
+
+            const matchesInvoiceNumber = !normalizedInvoiceNumber || invoiceNumber.includes(normalizedInvoiceNumber);
+            const matchesCustomer = !normalizedCustomer || customerName.includes(normalizedCustomer);
+            const matchesVendor = vendorFilter === "all" || seller === vendorFilter;
+            const matchesStatus =
+                statusFilter === "all" ||
+                (statusFilter === "paid" && status === "pagada") ||
+                (statusFilter === "unpaid" && status !== "pagada" && status !== "archivada") ||
+                status === statusFilter;
+
+            return matchesSearch && matchesInvoiceNumber && matchesCustomer && matchesVendor && matchesStatus;
+        });
+    }, [customerFilter, invoiceNumberFilter, invoices, searchTerm, statusFilter, vendorFilter]);
 
     return (
         <div className="container mx-auto py-10 space-y-8">
@@ -112,16 +154,54 @@ export default function InvoicesList() {
 
             <Card>
                 <CardHeader>
-                    <div className="flex justify-between items-center">
+                    <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
                         <CardTitle>Historial de Facturación</CardTitle>
-                        <div className="relative w-64">
-                            <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                            <div className="relative min-w-[220px]">
+                                <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                                <Input
+                                    placeholder="Buscar general..."
+                                    className="pl-8"
+                                    value={searchTerm}
+                                    onChange={(e) => setSearchTerm(e.target.value)}
+                                />
+                            </div>
                             <Input
-                                placeholder="Buscar cliente..."
-                                className="pl-8"
-                                value={searchTerm}
-                                onChange={(e) => setSearchTerm(e.target.value)}
+                                placeholder="Filtrar por número"
+                                value={invoiceNumberFilter}
+                                onChange={(e) => setInvoiceNumberFilter(e.target.value)}
                             />
+                            <Input
+                                placeholder="Filtrar por razón social"
+                                value={customerFilter}
+                                onChange={(e) => setCustomerFilter(e.target.value)}
+                            />
+                            <Select value={statusFilter} onValueChange={setStatusFilter}>
+                                <SelectTrigger className="min-w-[180px]">
+                                    <SelectValue placeholder="Estado" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="all">Ver todos</SelectItem>
+                                    <SelectItem value="paid">Pagadas</SelectItem>
+                                    <SelectItem value="unpaid">No pagadas</SelectItem>
+                                    <SelectItem value="pendiente">Pendientes</SelectItem>
+                                    <SelectItem value="morosa">Morosas</SelectItem>
+                                    <SelectItem value="archivada">Archivadas</SelectItem>
+                                </SelectContent>
+                            </Select>
+                            <Select value={vendorFilter} onValueChange={setVendorFilter}>
+                                <SelectTrigger className="min-w-[180px]">
+                                    <SelectValue placeholder="Vendedor" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="all">Todos los vendedores</SelectItem>
+                                    {vendorOptions.map((vendor) => (
+                                        <SelectItem key={vendor} value={vendor}>
+                                            {vendor}
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
                         </div>
                     </div>
                 </CardHeader>

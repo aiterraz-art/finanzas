@@ -84,6 +84,7 @@ export type CollectionPipelineItem = {
   terceroId: string;
   terceroNombre: string;
   numeroDocumento: string;
+  estado?: string;
   amount: number;
   dueDate: string;
   expectedDate: string;
@@ -812,6 +813,7 @@ export const normalizeCollectionPipelineItem = (row: any): CollectionPipelineIte
   terceroId: row?.tercero_id ?? "",
   terceroNombre: row?.tercero_nombre ?? "Sin cliente",
   numeroDocumento: row?.numero_documento ?? "",
+  estado: row?.estado ?? null,
   amount: toNumber(row?.amount),
   dueDate: row?.due_date ?? "",
   expectedDate: row?.expected_date ?? "",

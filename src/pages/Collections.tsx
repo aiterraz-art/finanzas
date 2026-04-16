@@ -1,4 +1,4 @@
-import { type ChangeEvent, type ReactNode, useMemo, useRef, useState } from "react";
+import { type ChangeEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import {
   AlertTriangle,
@@ -78,9 +78,13 @@ export default function Collections() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [asOfDate] = useState(today);
   const [searchTerm, setSearchTerm] = useState("");
+  const [scopeFilter, setScopeFilter] = useState<"open" | "all">("open");
   const [activeInvoice, setActiveInvoice] = useState<CollectionPipelineItem | null>(null);
   const [saving, setSaving] = useState(false);
   const [importingReceivables, setImportingReceivables] = useState(false);
+  const [allInvoices, setAllInvoices] = useState<CollectionPipelineItem[]>([]);
+  const [loadingAllInvoices, setLoadingAllInvoices] = useState(false);
+  const [allInvoicesError, setAllInvoicesError] = useState<string | null>(null);
   const [importSummary, setImportSummary] = useState<null | {
     filename: string;
     totalRows: number;
@@ -90,6 +94,7 @@ export default function Collections() {
     paidRows: number;
     duplicateRows: number;
     rejectedRows: number;
+    omittedRows: number;
     createdClients: number;
   }>(null);
   const [eventForm, setEventForm] = useState({
@@ -102,6 +107,97 @@ export default function Collections() {
 
   const { data: pipeline, loading, error, refresh } = useCollectionPipeline(selectedEmpresaId, asOfDate);
   const { data: policy } = useTreasuryPolicy(selectedEmpresaId);
+
+  useEffect(() => {
+    if (!selectedEmpresaId || scopeFilter !== "all") {
+      setAllInvoices([]);
+      setLoadingAllInvoices(false);
+      setAllInvoicesError(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadAllInvoices = async () => {
+      setLoadingAllInvoices(true);
+      setAllInvoicesError(null);
+      try {
+        const { data, error: fetchError } = await supabase
+          .from("facturas")
+          .select(`
+            id,
+            tercero_id,
+            tercero_nombre,
+            numero_documento,
+            monto,
+            fecha_vencimiento,
+            fecha_emision,
+            planned_cash_date,
+            promised_payment_date,
+            cash_confidence_pct,
+            last_collection_contact_at,
+            disputed,
+            estado
+          `)
+          .eq("empresa_id", selectedEmpresaId)
+          .eq("tipo", "venta")
+          .is("archived_at", null)
+          .order("fecha_vencimiento", { ascending: true });
+        if (fetchError) throw fetchError;
+        if (cancelled) return;
+
+        const mapped = (data || []).map((row) => {
+          const dueDate =
+            row.fecha_vencimiento ||
+            (row.fecha_emision ? new Date(new Date(`${row.fecha_emision}T12:00:00`).getTime() + 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0] : today);
+          const expectedDate = row.planned_cash_date || row.promised_payment_date || dueDate;
+          const referenceDate = row.estado === "pagada" ? expectedDate : today;
+          const daysOverdue = dueDate
+            ? Math.max(
+                Math.floor(
+                  (new Date(`${referenceDate}T12:00:00`).getTime() - new Date(`${dueDate}T12:00:00`).getTime()) /
+                    (1000 * 60 * 60 * 24)
+                ),
+                0
+              )
+            : 0;
+
+          return {
+            facturaId: row.id,
+            terceroId: row.tercero_id || "",
+            terceroNombre: row.tercero_nombre || "Sin cliente",
+            numeroDocumento: row.numero_documento || "",
+            estado: row.estado || "pendiente",
+            amount: Number(row.monto || 0),
+            dueDate,
+            expectedDate,
+            confidencePct: Number(row.cash_confidence_pct || (row.estado === "pagada" ? 100 : 60)),
+            daysOverdue,
+            lastContactAt: row.last_collection_contact_at || null,
+            promisedPaymentDate: row.promised_payment_date || null,
+            lastEventType: row.estado === "pagada" ? "resolved" : null,
+            responsibleEmail: null,
+            disputed: Boolean(row.disputed),
+            suggestedNextAction: row.estado === "pagada" ? "Pagada" : "Monitorear",
+          } satisfies CollectionPipelineItem;
+        });
+
+        setAllInvoices(mapped);
+      } catch (err: any) {
+        if (cancelled) return;
+        console.error("Error loading all collection invoices:", err);
+        setAllInvoicesError(err?.message || "No se pudieron cargar todas las facturas.");
+        setAllInvoices([]);
+      } finally {
+        if (!cancelled) setLoadingAllInvoices(false);
+      }
+    };
+
+    void loadAllInvoices();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedEmpresaId, scopeFilter]);
 
   const inferReceivableDueDate = (row: ReceivableInvoiceImportRow) => {
     if (row.fechaVencimiento) return row.fechaVencimiento;
@@ -204,11 +300,17 @@ export default function Collections() {
       }
 
       const rawObjects = buildInvoiceObjectsFromWorksheet(rows, detection.headerRowIndex);
-      const parsedRows = rawObjects
-        .map((row) => normalizeReceivableInvoiceImportRow(row))
-        .filter((row) => row && row.terceroNombre.toLowerCase() !== "saldo cliente") as ReceivableInvoiceImportRow[];
+      let omittedRows = 0;
+      const parsedRows = rawObjects.flatMap((row) => {
+        const normalized = normalizeReceivableInvoiceImportRow(row);
+        if (normalized && normalized.terceroNombre.toLowerCase() === "saldo cliente") {
+          omittedRows += 1;
+          return [];
+        }
+        return normalized ? [normalized] : [];
+      }) as ReceivableInvoiceImportRow[];
       const validRows = parsedRows.filter(Boolean);
-      const rejectedRows = rawObjects.length - validRows.length;
+      const rejectedRows = rawObjects.length - validRows.length - omittedRows;
 
       const [{ data: clients, error: clientsError }, { data: invoices, error: invoicesError }, { data: salesCategory, error: categoryError }] = await Promise.all([
         supabase
@@ -400,6 +502,7 @@ export default function Collections() {
         paidRows,
         duplicateRows,
         rejectedRows,
+        omittedRows,
         createdClients,
       };
 
@@ -419,6 +522,9 @@ export default function Collections() {
 
       setImportSummary(summaryPayload);
       await refresh();
+      if (scopeFilter === "all") {
+        setScopeFilter("open");
+      }
     } catch (err: any) {
       console.error("Error importing receivables into collections:", err);
       alert(err.message || "No se pudo importar el archivo de cobranzas pendientes.");
@@ -428,16 +534,19 @@ export default function Collections() {
     }
   };
 
+  const visibleInvoices = scopeFilter === "all" ? allInvoices : pipeline;
+
   const filteredPipeline = useMemo(() => {
     const normalized = searchTerm.toLowerCase().trim();
-    if (!normalized) return pipeline;
-    return pipeline.filter(
+    if (!normalized) return visibleInvoices;
+    return visibleInvoices.filter(
       (item) =>
         item.terceroNombre.toLowerCase().includes(normalized) ||
         item.numeroDocumento.toLowerCase().includes(normalized) ||
-        item.suggestedNextAction.toLowerCase().includes(normalized)
+        item.suggestedNextAction.toLowerCase().includes(normalized) ||
+        (item.estado || "").toLowerCase().includes(normalized)
     );
-  }, [pipeline, searchTerm]);
+  }, [visibleInvoices, searchTerm]);
 
   const totals = useMemo(() => {
     return filteredPipeline.reduce(
@@ -566,6 +675,15 @@ export default function Collections() {
               className="pl-10"
             />
           </div>
+          <Select value={scopeFilter} onValueChange={(value) => setScopeFilter(value as "open" | "all")}>
+            <SelectTrigger className="w-full sm:w-[200px]">
+              <SelectValue placeholder="Filtrar facturas" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="open">Solo por cobrar</SelectItem>
+              <SelectItem value="all">Ver todas</SelectItem>
+            </SelectContent>
+          </Select>
           <input
             ref={fileInputRef}
             type="file"
@@ -589,7 +707,7 @@ export default function Collections() {
           <CardContent className="pt-6 text-sm">
             <div className="font-medium text-emerald-700">Importación completada: {importSummary.filename}</div>
             <div className="mt-1 text-muted-foreground">
-              {importSummary.insertedRows} insertadas, {importSummary.updatedRows} actualizadas, {importSummary.paidRows} marcadas como pagadas, {importSummary.duplicateRows} duplicadas, {importSummary.rejectedRows} rechazadas y {importSummary.createdClients} clientes creados.
+              {importSummary.insertedRows} insertadas, {importSummary.updatedRows} actualizadas, {importSummary.paidRows} marcadas como pagadas, {importSummary.duplicateRows} duplicadas, {importSummary.omittedRows} omitidas por subtotal, {importSummary.rejectedRows} rechazadas y {importSummary.createdClients} clientes creados.
             </div>
           </CardContent>
         </Card>
@@ -603,9 +721,9 @@ export default function Collections() {
         </Card>
       )}
 
-      {error && (
+      {(error || allInvoicesError) && (
         <Card className="border-red-200">
-          <CardContent className="pt-6 text-sm text-red-700">{error}</CardContent>
+          <CardContent className="pt-6 text-sm text-red-700">{error || allInvoicesError}</CardContent>
         </Card>
       )}
 
@@ -613,7 +731,7 @@ export default function Collections() {
         <SummaryCard
           title="Saldo vencido / abierto"
           value={formatTreasuryCurrency(totals.total, policy.monedaBase)}
-          description={`${filteredPipeline.length} factura(s) en seguimiento`}
+          description={`${filteredPipeline.length} factura(s) ${scopeFilter === "all" ? "en total" : "en seguimiento"}`}
           icon={<HandCoins className="h-4 w-4" />}
         />
         <SummaryCard
@@ -641,7 +759,9 @@ export default function Collections() {
         <CardHeader>
           <CardTitle>Facturas abiertas en gestion</CardTitle>
           <CardDescription>
-            La ultima promesa actualiza el forecast y los eventos quedan trazados por responsable.
+            {scopeFilter === "all"
+              ? "Vista completa de facturas de venta. Por defecto este modulo muestra solo documentos por cobrar."
+              : "La ultima promesa actualiza el forecast y los eventos quedan trazados por responsable."}
           </CardDescription>
         </CardHeader>
         <CardContent className="overflow-x-auto">
@@ -649,6 +769,7 @@ export default function Collections() {
             <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
               <tr>
                 <th className="px-4 py-3 text-left">Cliente</th>
+                <th className="px-4 py-3 text-left">Estado</th>
                 <th className="px-4 py-3 text-left">Vencimiento</th>
                 <th className="px-4 py-3 text-center">Mora</th>
                 <th className="px-4 py-3 text-right">Monto</th>
@@ -667,6 +788,20 @@ export default function Collections() {
                   <td className="px-4 py-3">
                     <div className="font-medium">{invoice.terceroNombre}</div>
                     <div className="text-xs text-muted-foreground">Doc. {invoice.numeroDocumento || "S/F"}</div>
+                  </td>
+                  <td className="px-4 py-3">
+                    <Badge
+                      variant="outline"
+                      className={
+                        invoice.estado === "pagada"
+                          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                          : invoice.estado === "morosa"
+                            ? "border-red-200 bg-red-50 text-red-700"
+                            : "border-amber-200 bg-amber-50 text-amber-700"
+                      }
+                    >
+                      {invoice.estado === "pagada" ? "Pagada" : invoice.estado === "morosa" ? "Morosa" : "Pendiente"}
+                    </Badge>
                   </td>
                   <td className="px-4 py-3">{formatTreasuryDate(invoice.dueDate)}</td>
                   <td className="px-4 py-3 text-center">
@@ -713,7 +848,7 @@ export default function Collections() {
                         <MessageSquare className="h-4 w-4" />
                         WhatsApp
                       </Button>
-                      <Button size="sm" onClick={() => handleOpenDialog(invoice)} className="gap-2" disabled={!canEdit}>
+                      <Button size="sm" onClick={() => handleOpenDialog(invoice)} className="gap-2" disabled={!canEdit || invoice.estado === "pagada"}>
                         <Plus className="h-4 w-4" />
                         Gestion
                       </Button>
@@ -723,8 +858,8 @@ export default function Collections() {
               ))}
               {filteredPipeline.length === 0 && (
                 <tr>
-                  <td colSpan={11} className="px-4 py-12 text-center text-muted-foreground">
-                    {loading ? <Loader2 className="mx-auto h-5 w-5 animate-spin" /> : "No hay facturas para el filtro actual."}
+                  <td colSpan={12} className="px-4 py-12 text-center text-muted-foreground">
+                    {loading || loadingAllInvoices ? <Loader2 className="mx-auto h-5 w-5 animate-spin" /> : "No hay facturas para el filtro actual."}
                   </td>
                 </tr>
               )}
