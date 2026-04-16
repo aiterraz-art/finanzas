@@ -361,10 +361,10 @@ export default function BankReconciliation() {
       const invoiceQuery = txn.monto >= 0
         ? supabase
             .from("facturas")
-            .select("id, numero_documento, tercero_nombre, monto, fecha_vencimiento, facturas_pagos(monto_aplicado, estado)")
+            .select("id, numero_documento, tercero_nombre, monto, fecha_vencimiento, estado, facturas_pagos(monto_aplicado, estado)")
             .eq("empresa_id", selectedEmpresaId)
             .eq("tipo", "venta")
-            .in("estado", ["pendiente", "morosa", "abonada"])
+            .in("estado", ["pendiente", "morosa", "abonada", "pagada"])
         : supabase
             .from("facturas")
             .select("id, numero_documento, tercero_nombre, monto, fecha_vencimiento")
@@ -429,7 +429,7 @@ export default function BankReconciliation() {
           id: invoice.id,
           type: "factura" as const,
           label: `${invoice.tercero_nombre || "Sin tercero"} • ${invoice.numero_documento || "Sin folio"}`,
-          subtitle: "Factura abierta",
+          subtitle: invoice.estado === "pagada" ? "Factura pagada (vincular histórico)" : "Factura abierta",
           amount: Math.max(
             Number(invoice.monto || 0) -
               ((invoice.facturas_pagos || []) as any[])
@@ -440,6 +440,7 @@ export default function BankReconciliation() {
           dueDate: invoice.fecha_vencimiento || null,
           invoiceNumber: invoice.numero_documento || null,
           customerName: invoice.tercero_nombre || null,
+          status: invoice.estado || null,
         })),
         ...((rendiciones || []) as any[]).map((rendicion) => ({
           id: rendicion.id,
@@ -480,7 +481,14 @@ export default function BankReconciliation() {
         })),
       ].sort((a, b) => Math.abs(absAmount - a.amount) - Math.abs(absAmount - b.amount));
 
-      setCandidates(nextCandidates.filter((candidate) => candidate.type !== "factura" || candidate.amount > 0));
+      setCandidates(
+        nextCandidates.filter(
+          (candidate) =>
+            candidate.type !== "factura" ||
+            candidate.amount > 0 ||
+            candidate.status === "pagada"
+        )
+      );
     } catch (error) {
       console.error("Error fetching reconciliation candidates:", error);
       setCandidates([]);
