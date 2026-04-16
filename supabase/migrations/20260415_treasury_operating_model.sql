@@ -905,7 +905,7 @@ BEGIN
     SELECT generate_series(
       date_trunc('week', as_of_date::timestamp)::date,
       date_trunc('week', as_of_date::timestamp)::date + ((weeks_count - 1) * 7),
-      7
+      INTERVAL '7 days'
     )::date AS week_start
   ),
   week_items AS (
