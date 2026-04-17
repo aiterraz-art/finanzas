@@ -308,6 +308,7 @@ CROSS JOIN (
     ('suppliers', 'Proveedores', 'outflow', 20),
     ('payroll', 'Nomina', 'outflow', 30),
     ('taxes', 'Impuestos', 'outflow', 40),
+    ('debt_service', 'Creditos bancarios', 'outflow', 45),
     ('rent', 'Arriendos', 'outflow', 50),
     ('import_costs', 'Gastos de importacion', 'outflow', 55),
     ('services', 'Servicios', 'outflow', 60),

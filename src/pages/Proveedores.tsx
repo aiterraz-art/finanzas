@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { Loader2, Plus, Search } from "lucide-react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Landmark, Loader2, Plus, Search } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,7 +21,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useCompany } from "@/contexts/CompanyContext";
+import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { useBankAccounts, useTreasuryCategories } from "@/hooks/useTreasury";
 import {
@@ -58,17 +60,81 @@ type PurchaseInvoice = {
   treasury_category_id: string | null;
 };
 
+type BankLoan = {
+  id: string;
+  lender_name: string;
+  loan_name: string;
+  principal_amount: number;
+  installment_amount: number;
+  total_installments: number;
+  first_due_date: string;
+  frequency: "weekly" | "biweekly" | "monthly" | "quarterly" | "annual";
+  priority: "critical" | "high" | "normal" | "deferrable";
+  status: "active" | "completed" | "cancelled";
+  notes: string | null;
+  bank_account_id: string | null;
+  treasury_category_id: string | null;
+};
+
+type LoanCommitment = {
+  id: string;
+  source_reference: string | null;
+  status: "planned" | "confirmed" | "paid" | "cancelled" | "deferred";
+  amount: number;
+  due_date: string;
+  expected_date: string;
+};
+
+type LoanFrequency = BankLoan["frequency"];
+type LoanPriority = BankLoan["priority"];
+
+const frequencyLabels: Record<LoanFrequency, string> = {
+  weekly: "Semanal",
+  biweekly: "Quincenal",
+  monthly: "Mensual",
+  quarterly: "Trimestral",
+  annual: "Anual",
+};
+
+const openCommitmentStatuses = new Set(["planned", "confirmed", "deferred"]);
+
+const addFrequencyStep = (baseDate: string, frequency: LoanFrequency) => {
+  const next = new Date(`${baseDate}T12:00:00`);
+  if (Number.isNaN(next.getTime())) return baseDate;
+  if (frequency === "weekly") next.setDate(next.getDate() + 7);
+  if (frequency === "biweekly") next.setDate(next.getDate() + 14);
+  if (frequency === "monthly") next.setMonth(next.getMonth() + 1);
+  if (frequency === "quarterly") next.setMonth(next.getMonth() + 3);
+  if (frequency === "annual") next.setFullYear(next.getFullYear() + 1);
+  return next.toISOString().split("T")[0];
+};
+
+const buildInstallmentDates = (firstDueDate: string, frequency: LoanFrequency, totalInstallments: number) => {
+  const dates: string[] = [];
+  let currentDate = firstDueDate;
+  for (let index = 0; index < totalInstallments; index += 1) {
+    dates.push(currentDate);
+    currentDate = addFrequencyStep(currentDate, frequency);
+  }
+  return dates;
+};
+
 export default function Proveedores() {
   const { selectedEmpresaId, selectedRole } = useCompany();
+  const { user } = useAuth();
   const canEdit = canEditTreasury(selectedRole);
   const [proveedores, setProveedores] = useState<Proveedor[]>([]);
   const [invoices, setInvoices] = useState<PurchaseInvoice[]>([]);
+  const [bankLoans, setBankLoans] = useState<BankLoan[]>([]);
+  const [loanCommitments, setLoanCommitments] = useState<LoanCommitment[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [isNewProvOpen, setIsNewProvOpen] = useState(false);
   const [isSavingProv, setIsSavingProv] = useState(false);
   const [isNewInvoiceOpen, setIsNewInvoiceOpen] = useState(false);
   const [isSavingInvoice, setIsSavingInvoice] = useState(false);
+  const [isNewLoanOpen, setIsNewLoanOpen] = useState(false);
+  const [isSavingLoan, setIsSavingLoan] = useState(false);
   const [editingInvoice, setEditingInvoice] = useState<PurchaseInvoice | null>(null);
   const [savingTreasury, setSavingTreasury] = useState(false);
   const [newProvData, setNewProvData] = useState({
@@ -89,6 +155,19 @@ export default function Proveedores() {
     preferred_bank_account_id: "none",
     planned_cash_date: "",
     blocked_reason: "",
+  });
+  const [newLoanData, setNewLoanData] = useState({
+    lender_name: "",
+    loan_name: "",
+    principal_amount: "",
+    installment_amount: "",
+    total_installments: "",
+    first_due_date: new Date().toISOString().split("T")[0],
+    frequency: "monthly" as LoanFrequency,
+    treasury_category_id: "",
+    priority: "high" as LoanPriority,
+    bank_account_id: "none",
+    notes: "",
   });
   const [editForm, setEditForm] = useState({
     treasury_category_id: "",
@@ -111,30 +190,52 @@ export default function Proveedores() {
     if (!selectedEmpresaId) return;
     setLoading(true);
     try {
-      const [{ data: supplierData, error: supplierError }, { data: invoiceData, error: invoiceError }] =
-        await Promise.all([
-          supabase
-            .from("terceros")
-            .select("id, rut, razon_social, email, telefono, direccion")
-            .eq("empresa_id", selectedEmpresaId)
-            .eq("tipo", "proveedor")
-            .eq("estado", "activo")
-            .order("razon_social", { ascending: true }),
-          supabase
-            .from("facturas")
-            .select("id, tercero_id, tercero_nombre, numero_documento, monto, estado, fecha_emision, fecha_vencimiento, planned_cash_date, treasury_priority, preferred_bank_account_id, blocked_reason, treasury_category_id")
-            .eq("empresa_id", selectedEmpresaId)
-            .eq("tipo", "compra")
-            .in("estado", ["pendiente", "morosa"])
-            .order("planned_cash_date", { ascending: true }),
-        ]);
+      const [
+        { data: supplierData, error: supplierError },
+        { data: invoiceData, error: invoiceError },
+        { data: loanData, error: loanError },
+        { data: loanCommitmentData, error: loanCommitmentError },
+      ] = await Promise.all([
+        supabase
+          .from("terceros")
+          .select("id, rut, razon_social, email, telefono, direccion")
+          .eq("empresa_id", selectedEmpresaId)
+          .eq("tipo", "proveedor")
+          .eq("estado", "activo")
+          .order("razon_social", { ascending: true }),
+        supabase
+          .from("facturas")
+          .select("id, tercero_id, tercero_nombre, numero_documento, monto, estado, fecha_emision, fecha_vencimiento, planned_cash_date, treasury_priority, preferred_bank_account_id, blocked_reason, treasury_category_id")
+          .eq("empresa_id", selectedEmpresaId)
+          .eq("tipo", "compra")
+          .in("estado", ["pendiente", "morosa"])
+          .order("planned_cash_date", { ascending: true }),
+        supabase
+          .from("bank_loans")
+          .select("id, lender_name, loan_name, principal_amount, installment_amount, total_installments, first_due_date, frequency, priority, status, notes, bank_account_id, treasury_category_id")
+          .eq("empresa_id", selectedEmpresaId)
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("cash_commitments")
+          .select("id, source_reference, status, amount, due_date, expected_date")
+          .eq("empresa_id", selectedEmpresaId)
+          .eq("direction", "outflow")
+          .eq("source_type", "debt")
+          .is("archived_at", null)
+          .order("expected_date", { ascending: true }),
+      ]);
 
       if (supplierError) throw supplierError;
       if (invoiceError) throw invoiceError;
+      if (loanError) throw loanError;
+      if (loanCommitmentError) throw loanCommitmentError;
+
       setProveedores((supplierData || []) as Proveedor[]);
       setInvoices((invoiceData || []) as PurchaseInvoice[]);
+      setBankLoans((loanData || []) as BankLoan[]);
+      setLoanCommitments((loanCommitmentData || []) as LoanCommitment[]);
     } catch (error) {
-      console.error("Error fetching proveedores:", error);
+      console.error("Error fetching cuentas por pagar:", error);
     } finally {
       setLoading(false);
     }
@@ -186,6 +287,51 @@ export default function Proveedores() {
   }, [groupedSuppliers]);
 
   const suppliersCategoryId = treasuryCategories.find((category) => category.code === "suppliers")?.id ?? "";
+  const debtCategoryId = treasuryCategories.find((category) => category.code === "debt_service")?.id ?? "";
+
+  const loansWithStatus = useMemo(() => {
+    return bankLoans.map((loan) => {
+      const commitments = loanCommitments.filter((commitment) => commitment.source_reference === loan.id);
+      const paidInstallments = commitments.filter((commitment) => commitment.status === "paid").length;
+      const remainingInstallments = commitments.filter((commitment) => openCommitmentStatuses.has(commitment.status)).length;
+      const nextInstallment = commitments
+        .filter((commitment) => openCommitmentStatuses.has(commitment.status))
+        .sort((a, b) => (a.expected_date || a.due_date).localeCompare(b.expected_date || b.due_date))[0];
+      const outstandingAmount = commitments
+        .filter((commitment) => openCommitmentStatuses.has(commitment.status))
+        .reduce((sum, commitment) => sum + Number(commitment.amount || 0), 0);
+      const paidAmount = commitments
+        .filter((commitment) => commitment.status === "paid")
+        .reduce((sum, commitment) => sum + Number(commitment.amount || 0), 0);
+
+      return {
+        ...loan,
+        paidInstallments,
+        remainingInstallments,
+        nextInstallmentDate: nextInstallment?.expected_date || nextInstallment?.due_date || null,
+        outstandingAmount,
+        paidAmount,
+        derivedStatus:
+          loan.status === "cancelled" ? "cancelled" : remainingInstallments === 0 ? "completed" : "active",
+      };
+    });
+  }, [bankLoans, loanCommitments]);
+
+  const loanTotals = useMemo(
+    () =>
+      loansWithStatus.reduce(
+        (acc, loan) => {
+          if (loan.derivedStatus === "active") {
+            acc.activeLoans += 1;
+            acc.remainingInstallments += loan.remainingInstallments;
+            acc.outstandingAmount += loan.outstandingAmount;
+          }
+          return acc;
+        },
+        { activeLoans: 0, remainingInstallments: 0, outstandingAmount: 0 }
+      ),
+    [loansWithStatus]
+  );
 
   const handleCreateProvManual = async () => {
     if (!selectedEmpresaId) return;
@@ -273,6 +419,104 @@ export default function Proveedores() {
     }
   };
 
+  const handleCreateBankLoan = async () => {
+    if (!selectedEmpresaId || !canEdit) return;
+    if (
+      !newLoanData.lender_name ||
+      !newLoanData.loan_name ||
+      !newLoanData.installment_amount ||
+      !newLoanData.total_installments ||
+      !newLoanData.first_due_date
+    ) {
+      alert("Entidad, nombre del crédito, monto cuota, total de cuotas y primera cuota son obligatorios.");
+      return;
+    }
+
+    const installmentAmount = Number(newLoanData.installment_amount);
+    const totalInstallments = Number(newLoanData.total_installments);
+    const principalAmount = Number(newLoanData.principal_amount || 0);
+
+    if (!Number.isFinite(installmentAmount) || installmentAmount <= 0 || !Number.isInteger(totalInstallments) || totalInstallments <= 0) {
+      alert("Revisa el monto de la cuota y la cantidad total de cuotas.");
+      return;
+    }
+
+    const categoryId = newLoanData.treasury_category_id || debtCategoryId;
+    if (!categoryId) {
+      alert("No existe la categoría de créditos bancarios. Revisa la configuración de tesorería.");
+      return;
+    }
+
+    const loanId = crypto.randomUUID();
+    const bankAccountId = newLoanData.bank_account_id === "none" ? null : newLoanData.bank_account_id;
+    const installmentDates = buildInstallmentDates(newLoanData.first_due_date, newLoanData.frequency, totalInstallments);
+
+    setIsSavingLoan(true);
+    try {
+      const { error: loanError } = await supabase.from("bank_loans").insert({
+        id: loanId,
+        empresa_id: selectedEmpresaId,
+        bank_account_id: bankAccountId,
+        treasury_category_id: categoryId,
+        lender_name: newLoanData.lender_name.trim(),
+        loan_name: newLoanData.loan_name.trim(),
+        principal_amount: principalAmount,
+        installment_amount: installmentAmount,
+        total_installments: totalInstallments,
+        first_due_date: newLoanData.first_due_date,
+        frequency: newLoanData.frequency,
+        priority: newLoanData.priority,
+        status: "active",
+        notes: newLoanData.notes.trim() || null,
+        created_by: user?.id ?? null,
+      });
+      if (loanError) throw loanError;
+
+      const commitmentPayload = installmentDates.map((dueDate, index) => ({
+        empresa_id: selectedEmpresaId,
+        template_id: null,
+        bank_account_id: bankAccountId,
+        category_id: categoryId,
+        source_type: "debt",
+        source_reference: loanId,
+        direction: "outflow",
+        counterparty: newLoanData.lender_name.trim(),
+        description: `${newLoanData.loan_name.trim()} - Cuota ${index + 1}/${totalInstallments}`,
+        amount: installmentAmount,
+        is_estimated: false,
+        due_date: dueDate,
+        expected_date: dueDate,
+        priority: newLoanData.priority,
+        status: "planned",
+        notes: newLoanData.notes.trim() || null,
+      }));
+
+      const { error: commitmentsError } = await supabase.from("cash_commitments").insert(commitmentPayload);
+      if (commitmentsError) throw commitmentsError;
+
+      setIsNewLoanOpen(false);
+      setNewLoanData({
+        lender_name: "",
+        loan_name: "",
+        principal_amount: "",
+        installment_amount: "",
+        total_installments: "",
+        first_due_date: new Date().toISOString().split("T")[0],
+        frequency: "monthly",
+        treasury_category_id: debtCategoryId,
+        priority: "high",
+        bank_account_id: "none",
+        notes: "",
+      });
+      await fetchData();
+    } catch (error: any) {
+      console.error("Error creando credito bancario:", error);
+      alert(`No se pudo guardar el crédito: ${error.message}`);
+    } finally {
+      setIsSavingLoan(false);
+    }
+  };
+
   const openEditDialog = (invoice: PurchaseInvoice) => {
     setEditingInvoice(invoice);
     setEditForm({
@@ -329,13 +573,17 @@ export default function Proveedores() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Cuentas por pagar</h1>
           <p className="mt-1 text-muted-foreground">
-            Registra deudas por pagar a proveedores y configura la salida de caja de facturas de compra abiertas.
+            Registra deudas por pagar a proveedores y controla créditos bancarios activos con sus cuotas pendientes.
           </p>
         </div>
         <div className="flex items-center gap-2">
           <Button onClick={() => setIsNewInvoiceOpen(true)} disabled={!canEdit}>
             <Plus className="mr-2 h-4 w-4" />
             Nueva factura compra
+          </Button>
+          <Button variant="outline" onClick={() => setIsNewLoanOpen(true)} disabled={!canEdit}>
+            <Landmark className="mr-2 h-4 w-4" />
+            Nuevo crédito
           </Button>
           <Button variant="outline" onClick={() => setIsNewProvOpen(true)} disabled={!canEdit}>
             Nuevo proveedor
@@ -346,7 +594,7 @@ export default function Proveedores() {
       {!canEdit && (
         <Card className="border-amber-200">
           <CardContent className="pt-6 text-sm text-amber-700">
-            Tu rol actual es solo lectura. Puedes revisar la cola de pagos, pero no modificar proveedores ni facturas.
+            Tu rol actual es solo lectura. Puedes revisar la cola de pagos y los créditos, pero no modificar datos.
           </CardContent>
         </Card>
       )}
@@ -357,11 +605,107 @@ export default function Proveedores() {
         <SummaryCard title="Pagar en 7 días" value={formatTreasuryCurrency(totals.dueSoon)} description="Según planned cash date" tone="warning" />
       </div>
 
+      <div className="grid gap-4 md:grid-cols-3">
+        <SummaryCard title="Créditos activos" value={String(loanTotals.activeLoans)} description="Entidades financieras registradas" />
+        <SummaryCard title="Cuotas pendientes" value={String(loanTotals.remainingInstallments)} description="Compromisos de deuda por conciliar" />
+        <SummaryCard title="Deuda bancaria abierta" value={formatTreasuryCurrency(loanTotals.outstandingAmount)} description="Saldo futuro aún no pagado" tone="warning" />
+      </div>
+
+      <Card>
+        <CardHeader>
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <CardTitle>Créditos bancarios</CardTitle>
+              <CardDescription>
+                Cada crédito genera sus cuotas como egresos de deuda para que aparezcan automáticamente en Banco y Flujo de Caja.
+              </CardDescription>
+            </div>
+            <div className="rounded-lg border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
+              Cuotas restantes y próxima fecha se calculan desde las conciliaciones reales.
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Crédito</TableHead>
+                <TableHead>Entidad</TableHead>
+                <TableHead>Cuota</TableHead>
+                <TableHead>Cuotas</TableHead>
+                <TableHead>Próxima cuota</TableHead>
+                <TableHead>Cuenta / categoría</TableHead>
+                <TableHead>Estado</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {loansWithStatus.map((loan) => (
+                <TableRow key={loan.id}>
+                  <TableCell>
+                    <div className="font-medium">{loan.loan_name}</div>
+                    <div className="text-sm text-muted-foreground">
+                      Principal {formatTreasuryCurrency(loan.principal_amount)}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <div>{loan.lender_name}</div>
+                    <div className="text-sm text-muted-foreground">{frequencyLabels[loan.frequency]}</div>
+                  </TableCell>
+                  <TableCell>
+                    <div className="font-medium">{formatTreasuryCurrency(loan.installment_amount)}</div>
+                    <div className="text-sm text-muted-foreground">
+                      Pagado {formatTreasuryCurrency(loan.paidAmount)}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <div className="font-medium">
+                      {loan.remainingInstallments} pendientes de {loan.total_installments}
+                    </div>
+                    <div className="text-sm text-muted-foreground">{loan.paidInstallments} pagadas</div>
+                  </TableCell>
+                  <TableCell>
+                    <div>{formatTreasuryDate(loan.nextInstallmentDate)}</div>
+                    <div className="text-sm text-muted-foreground">
+                      Saldo abierto {formatTreasuryCurrency(loan.outstandingAmount)}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <div>{accountsById.get(loan.bank_account_id || "") || "Sin cuenta sugerida"}</div>
+                    <div className="text-sm text-muted-foreground">
+                      {categoriesById.get(loan.treasury_category_id || "") || "Sin categoría"}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        loan.derivedStatus === "active" && "border-blue-200 bg-blue-50 text-blue-700",
+                        loan.derivedStatus === "completed" && "border-emerald-200 bg-emerald-50 text-emerald-700",
+                        loan.derivedStatus === "cancelled" && "border-slate-200 bg-slate-50 text-slate-700"
+                      )}
+                    >
+                      {loan.derivedStatus === "active" ? "Activo" : loan.derivedStatus === "completed" ? "Completado" : "Cancelado"}
+                    </Badge>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {!loading && loansWithStatus.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
+                    No hay créditos bancarios registrados todavía.
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
-            <CardTitle>Deudas con proveedores</CardTitle>
+              <CardTitle>Deudas con proveedores</CardTitle>
               <CardDescription>Facturas abiertas y metadata de pago por proveedor.</CardDescription>
             </div>
             <div className="relative w-full max-w-sm">
@@ -570,6 +914,109 @@ export default function Proveedores() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={isNewLoanOpen} onOpenChange={setIsNewLoanOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Nuevo crédito bancario</DialogTitle>
+            <DialogDescription>
+              El sistema generará todas las cuotas como egresos de deuda para conciliarlas desde Banco a medida que se paguen.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <Field label="Entidad financiera">
+              <Input value={newLoanData.lender_name} onChange={(event) => setNewLoanData((current) => ({ ...current, lender_name: event.target.value }))} />
+            </Field>
+            <Field label="Nombre / referencia del crédito">
+              <Input value={newLoanData.loan_name} onChange={(event) => setNewLoanData((current) => ({ ...current, loan_name: event.target.value }))} />
+            </Field>
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field label="Monto crédito">
+                <Input type="number" min="0" value={newLoanData.principal_amount} onChange={(event) => setNewLoanData((current) => ({ ...current, principal_amount: event.target.value }))} />
+              </Field>
+              <Field label="Monto cuota">
+                <Input type="number" min="0" value={newLoanData.installment_amount} onChange={(event) => setNewLoanData((current) => ({ ...current, installment_amount: event.target.value }))} />
+              </Field>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field label="Total cuotas">
+                <Input type="number" min="1" value={newLoanData.total_installments} onChange={(event) => setNewLoanData((current) => ({ ...current, total_installments: event.target.value }))} />
+              </Field>
+              <Field label="Primera cuota">
+                <Input type="date" value={newLoanData.first_due_date} onChange={(event) => setNewLoanData((current) => ({ ...current, first_due_date: event.target.value }))} />
+              </Field>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field label="Frecuencia">
+                <Select value={newLoanData.frequency} onValueChange={(value) => setNewLoanData((current) => ({ ...current, frequency: value as LoanFrequency }))}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="weekly">Semanal</SelectItem>
+                    <SelectItem value="biweekly">Quincenal</SelectItem>
+                    <SelectItem value="monthly">Mensual</SelectItem>
+                    <SelectItem value="quarterly">Trimestral</SelectItem>
+                    <SelectItem value="annual">Anual</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Prioridad">
+                <Select value={newLoanData.priority} onValueChange={(value) => setNewLoanData((current) => ({ ...current, priority: value as LoanPriority }))}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="critical">Critica</SelectItem>
+                    <SelectItem value="high">Alta</SelectItem>
+                    <SelectItem value="normal">Normal</SelectItem>
+                    <SelectItem value="deferrable">Postergable</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+            </div>
+            <Field label="Cuenta bancaria sugerida">
+              <Select value={newLoanData.bank_account_id} onValueChange={(value) => setNewLoanData((current) => ({ ...current, bank_account_id: value }))}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">Sin cuenta</SelectItem>
+                  {bankAccounts.map((account) => (
+                    <SelectItem key={account.id} value={account.id}>
+                      {account.nombre}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="Categoría tesorería">
+              <Select value={newLoanData.treasury_category_id || debtCategoryId || ""} onValueChange={(value) => setNewLoanData((current) => ({ ...current, treasury_category_id: value }))}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecciona categoría" />
+                </SelectTrigger>
+                <SelectContent>
+                  {treasuryCategories.filter((category) => category.directionScope !== "inflow").map((category) => (
+                    <SelectItem key={category.id} value={category.id}>
+                      {category.nombre}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="Notas">
+              <Textarea value={newLoanData.notes} onChange={(event) => setNewLoanData((current) => ({ ...current, notes: event.target.value }))} />
+            </Field>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsNewLoanOpen(false)}>Cancelar</Button>
+            <Button onClick={handleCreateBankLoan} disabled={isSavingLoan}>
+              {isSavingLoan ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Crear crédito
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={Boolean(editingInvoice)} onOpenChange={(open) => !open && setEditingInvoice(null)}>
         <DialogContent>
           <DialogHeader>
@@ -670,7 +1117,7 @@ function Field({
   children,
 }: {
   label: string;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <div className="space-y-2">
