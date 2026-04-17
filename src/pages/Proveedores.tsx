@@ -297,17 +297,18 @@ export default function Proveedores() {
   const loansWithStatus = useMemo(() => {
     return bankLoans.map((loan) => {
       const commitments = loanCommitments.filter((commitment) => commitment.source_reference === loan.id);
-      const paidInstallments = commitments.filter((commitment) => commitment.status === "paid").length;
-      const remainingInstallments = commitments.filter((commitment) => openCommitmentStatuses.has(commitment.status)).length;
+      const paidCommitments = commitments.filter((commitment) => commitment.status === "paid");
+      const pendingCommitments = commitments.filter((commitment) => openCommitmentStatuses.has(commitment.status));
+      const paidInstallments = paidCommitments.length;
+      const remainingInstallments = pendingCommitments.length;
       const nextInstallment = commitments
         .filter((commitment) => openCommitmentStatuses.has(commitment.status))
         .sort((a, b) => (a.expected_date || a.due_date).localeCompare(b.expected_date || b.due_date))[0];
-      const outstandingAmount = commitments
-        .filter((commitment) => openCommitmentStatuses.has(commitment.status))
-        .reduce((sum, commitment) => sum + Number(commitment.amount || 0), 0);
-      const paidAmount = commitments
-        .filter((commitment) => commitment.status === "paid")
-        .reduce((sum, commitment) => sum + Number(commitment.amount || 0), 0);
+      const outstandingAmount = pendingCommitments.reduce(
+        (sum, commitment) => sum + Number(commitment.amount || loan.installment_amount || 0),
+        0
+      );
+      const paidAmount = paidCommitments.reduce((sum, commitment) => sum + Number(commitment.amount || 0), 0);
 
       return {
         ...loan,
