@@ -89,18 +89,30 @@ type BankMovement = {
     archived_at: string | null;
     estado_previo_conciliacion: string | null;
   }>;
+  customer_advances?: Array<{
+    id: string;
+    tercero_id: string | null;
+    tercero_nombre: string;
+    rut: string | null;
+    amount: number;
+    remaining_amount: number;
+    status: string;
+    notes: string | null;
+  }>;
 };
 
 type MatchCandidate = {
   id: string;
-  type: "factura" | "rendicion" | "cheque" | "webpay" | "commitment";
+  type: "factura" | "rendicion" | "cheque" | "webpay" | "commitment" | "customer";
   label: string;
   subtitle: string;
   amount: number;
   dueDate: string | null;
   status?: string | null;
   invoiceNumber?: string | null;
+  customerId?: string | null;
   customerName?: string | null;
+  customerRut?: string | null;
 };
 
 type ImportSummary = {
@@ -114,7 +126,7 @@ type ImportSummary = {
 
 const HASH_QUERY_CHUNK = 20;
 const INSERT_CHUNK_SIZE = 200;
-type InflowMatchSource = "factura" | "cheque" | "webpay";
+type InflowMatchSource = "factura" | "cheque" | "webpay" | "anticipo";
 
 type QuickExpenseForm = {
   description: string;
@@ -124,6 +136,11 @@ type QuickExpenseForm = {
   notes: string;
   isRecurring: boolean;
   frequency: "weekly" | "biweekly" | "monthly" | "quarterly" | "annual";
+};
+
+type AdvanceForm = {
+  customerId: string;
+  notes: string;
 };
 
 const addFrequencyStep = (baseDate: string, frequency: QuickExpenseForm["frequency"]) => {
@@ -166,6 +183,11 @@ export default function BankReconciliation() {
   const [selectedInflowSource, setSelectedInflowSource] = useState<InflowMatchSource>("factura");
   const [candidateSearchTerm, setCandidateSearchTerm] = useState("");
   const [selectedInvoiceMatches, setSelectedInvoiceMatches] = useState<Record<string, { mode: "full" | "partial"; amount: string }>>({});
+  const [advanceForm, setAdvanceForm] = useState<AdvanceForm>({
+    customerId: "none",
+    notes: "",
+  });
+  const [allocateDifferenceAsAdvance, setAllocateDifferenceAsAdvance] = useState(false);
   const [invoiceMismatchDialog, setInvoiceMismatchDialog] = useState<InvoiceMismatchDialogState | null>(null);
   const [loadingCandidates, setLoadingCandidates] = useState(false);
   const [matchingId, setMatchingId] = useState<string | null>(null);
@@ -224,6 +246,8 @@ export default function BankReconciliation() {
     if (!selectedTxn || selectedTxn.monto < 0 || selectedInflowSource !== "factura") {
       setCandidateSearchTerm("");
       setSelectedInvoiceMatches({});
+      setAllocateDifferenceAsAdvance(false);
+      setAdvanceForm({ customerId: "none", notes: "" });
     }
   }, [selectedInflowSource, selectedTxn]);
 
@@ -327,6 +351,16 @@ export default function BankReconciliation() {
             source_type,
             archived_at,
             estado_previo_conciliacion
+          ),
+          customer_advances (
+            id,
+            tercero_id,
+            tercero_nombre,
+            rut,
+            amount,
+            remaining_amount,
+            status,
+            notes
           )
         `)
         .eq("empresa_id", selectedEmpresaId)
@@ -390,6 +424,7 @@ export default function BankReconciliation() {
         { data: cheques, error: chequesError },
         { data: webpayRows, error: webpayError },
         { data: commitments, error: commitmentsError },
+        { data: customers, error: customersError },
       ] =
         await Promise.all([
           invoiceQuery.order("fecha_vencimiento", { ascending: true }),
@@ -428,6 +463,15 @@ export default function BankReconciliation() {
                 .or(`bank_account_id.eq.${selectedAccountId},bank_account_id.is.null`)
                 .order("expected_date", { ascending: true })
             : Promise.resolve({ data: [], error: null }),
+          txn.monto >= 0
+            ? supabase
+                .from("terceros")
+                .select("id, razon_social, rut")
+                .eq("empresa_id", selectedEmpresaId)
+                .eq("tipo", "cliente")
+                .eq("estado", "activo")
+                .order("razon_social", { ascending: true })
+            : Promise.resolve({ data: [], error: null }),
         ]);
 
       if (invoiceError) throw invoiceError;
@@ -435,6 +479,7 @@ export default function BankReconciliation() {
       if (chequesError) throw chequesError;
       if (webpayError) throw webpayError;
       if (commitmentsError) throw commitmentsError;
+      if (customersError) throw customersError;
 
       const nextCandidates: MatchCandidate[] = [
         ...(invoices || []).map((invoice: any) => ({
@@ -491,6 +536,17 @@ export default function BankReconciliation() {
           dueDate: commitment.expected_date || null,
           status: commitment.status || null,
         })),
+        ...((customers || []) as any[]).map((customer) => ({
+          id: customer.id,
+          type: "customer" as const,
+          label: customer.razon_social || "Cliente sin nombre",
+          subtitle: customer.rut || "Anticipo de cliente",
+          amount: absAmount,
+          dueDate: null,
+          customerId: customer.id,
+          customerName: customer.razon_social || "Cliente sin nombre",
+          customerRut: customer.rut || null,
+        })),
       ].sort((a, b) => Math.abs(absAmount - a.amount) - Math.abs(absAmount - b.amount));
 
       setCandidates(
@@ -535,6 +591,24 @@ export default function BankReconciliation() {
 
     setMatchingId(candidate.id);
     try {
+      if (candidate.type === "customer") {
+        const { error: advanceError } = await supabase.from("customer_advances").insert({
+          empresa_id: selectedEmpresaId,
+          tercero_id: candidate.customerId || candidate.id,
+          movimiento_banco_id: selectedTxn.id,
+          tercero_nombre: candidate.customerName || candidate.label,
+          rut: candidate.customerRut || null,
+          amount: Math.abs(selectedTxn.monto),
+          remaining_amount: Math.abs(selectedTxn.monto),
+          currency: selectedAccount?.moneda || "CLP",
+          received_at: selectedTxn.fecha_movimiento,
+          status: "open",
+          notes: advanceForm.notes.trim() || null,
+          created_by: user?.id || null,
+        });
+        if (advanceError) throw advanceError;
+      }
+
       if (candidate.type === "factura" || candidate.type === "rendicion") {
         const payload = {
           empresa_id: selectedEmpresaId,
@@ -561,9 +635,11 @@ export default function BankReconciliation() {
                   ? "webpay"
                   : candidate.type === "commitment"
                     ? "commitment"
+                    : candidate.type === "customer"
+                      ? "advance"
                   : "factura",
           numero_documento:
-            candidate.type === "cheque" || candidate.type === "webpay" || candidate.type === "commitment"
+            candidate.type === "cheque" || candidate.type === "webpay" || candidate.type === "commitment" || candidate.type === "customer"
               ? candidate.label
               : candidate.type === "factura"
                 ? candidate.label
@@ -615,6 +691,8 @@ export default function BankReconciliation() {
           .eq("id", candidate.id)
           .eq("empresa_id", selectedEmpresaId);
         if (error) throw error;
+      } else if (candidate.type === "customer") {
+        setAdvanceForm({ customerId: "none", notes: "" });
       }
 
       setSelectedTxn(null);
@@ -710,7 +788,8 @@ export default function BankReconciliation() {
     const linkedCheque = txn.cheques_cartera?.[0];
     const linkedWebpay = txn.webpay_liquidaciones?.[0];
     const linkedCommitment = txn.cash_commitments?.[0];
-    if (payments.length === 0 && !linkedCheque && !linkedWebpay && !linkedCommitment) return;
+    const linkedAdvance = txn.customer_advances?.[0];
+    if (payments.length === 0 && !linkedCheque && !linkedWebpay && !linkedCommitment && !linkedAdvance) return;
 
     try {
       const facturaIds = payments.map((payment) => payment.factura_id).filter(Boolean) as string[];
@@ -773,6 +852,17 @@ export default function BankReconciliation() {
             movimiento_banco_id: null,
           })
           .eq("id", linkedCommitment.id)
+          .eq("empresa_id", selectedEmpresaId);
+        if (error) throw error;
+      }
+
+      if (linkedAdvance) {
+        const { error } = await supabase
+          .from("customer_advances")
+          .update({
+            status: "cancelled",
+          })
+          .eq("id", linkedAdvance.id)
           .eq("empresa_id", selectedEmpresaId);
         if (error) throw error;
       }
@@ -1155,6 +1245,7 @@ export default function BankReconciliation() {
       const webpayInfo = txn.webpay_liquidaciones?.[0];
       const webpayClient = Array.isArray(webpayInfo?.terceros) ? webpayInfo?.terceros[0] : webpayInfo?.terceros;
       const commitmentInfo = txn.cash_commitments?.[0];
+      const advanceInfo = txn.customer_advances?.[0];
       const haystack = [
         txn.descripcion,
         txn.numero_documento,
@@ -1166,6 +1257,8 @@ export default function BankReconciliation() {
         webpayInfo?.orden_compra,
         commitmentInfo?.counterparty,
         commitmentInfo?.description,
+        advanceInfo?.tercero_nombre,
+        advanceInfo?.rut,
       ]
         .filter(Boolean)
         .join(" ")
@@ -1220,10 +1313,33 @@ export default function BankReconciliation() {
     return Math.abs(selectedTxn.monto) - selectedInvoiceTotal;
   }, [selectedInvoiceTotal, selectedTxn]);
 
+  const customerAdvanceCandidates = useMemo(
+    () => candidates.filter((candidate) => candidate.type === "customer"),
+    [candidates]
+  );
+
   const canApplySimpleInvoiceAdjustment = useMemo(() => {
     if (!selectedTxn || selectedTxn.monto < 0 || selectedInvoiceCandidates.length === 0) return false;
     return Math.abs(selectedInvoiceDifference) > 0.01 && Math.abs(selectedInvoiceDifference) <= 10;
   }, [selectedInvoiceCandidates.length, selectedInvoiceDifference, selectedTxn]);
+
+  useEffect(() => {
+    if (!allocateDifferenceAsAdvance || customerAdvanceCandidates.length === 0 || selectedInvoiceCandidates.length === 0) return;
+    if (advanceForm.customerId !== "none") return;
+
+    const [firstCandidate] = selectedInvoiceCandidates;
+    if (!firstCandidate?.customerName) return;
+
+    const matchingCustomer = customerAdvanceCandidates.find(
+      (candidate) => candidate.customerName?.trim().toLowerCase() === firstCandidate.customerName?.trim().toLowerCase()
+    );
+    if (!matchingCustomer) return;
+
+    setAdvanceForm((current) => ({
+      ...current,
+      customerId: matchingCustomer.id,
+    }));
+  }, [advanceForm.customerId, allocateDifferenceAsAdvance, customerAdvanceCandidates, selectedInvoiceCandidates]);
 
   const toggleInvoiceCandidate = (candidate: MatchCandidate) => {
     setSelectedInvoiceMatches((current) => {
@@ -1292,7 +1408,13 @@ export default function BankReconciliation() {
     const bankAmount = Math.abs(selectedTxn.monto);
     const difference = bankAmount - totalApplied;
     const canSimpleAdjust = Math.abs(difference) <= 10;
-    if (Math.abs(difference) > 0.01 && !(allowSimpleAdjustment && canSimpleAdjust)) {
+    const canAllocateAdvance = difference > 0.01 && allocateDifferenceAsAdvance;
+    if (canAllocateAdvance && advanceForm.customerId === "none") {
+      alert("Selecciona el cliente para dejar la diferencia como anticipo.");
+      return;
+    }
+
+    if (Math.abs(difference) > 0.01 && !(allowSimpleAdjustment && canSimpleAdjust) && !canAllocateAdvance) {
       alert(`El total aplicado (${formatTreasuryCurrency(totalApplied, selectedAccount?.moneda || "CLP")}) debe coincidir con el movimiento bancario (${formatTreasuryCurrency(bankAmount, selectedAccount?.moneda || "CLP")}).`);
       return;
     }
@@ -1310,6 +1432,25 @@ export default function BankReconciliation() {
       const { error: paymentsError } = await supabase.from("facturas_pagos").insert(rows);
       if (paymentsError) throw paymentsError;
 
+      if (canAllocateAdvance) {
+        const advanceCustomer = customerAdvanceCandidates.find((candidate) => candidate.id === advanceForm.customerId);
+        const { error: advanceError } = await supabase.from("customer_advances").insert({
+          empresa_id: selectedEmpresaId,
+          tercero_id: advanceForm.customerId,
+          movimiento_banco_id: selectedTxn.id,
+          tercero_nombre: advanceCustomer?.customerName || advanceCustomer?.label || "Cliente anticipo",
+          rut: advanceCustomer?.customerRut || null,
+          amount: difference,
+          remaining_amount: difference,
+          currency: selectedAccount?.moneda || "CLP",
+          received_at: selectedTxn.fecha_movimiento,
+          status: "open",
+          notes: advanceForm.notes.trim() || null,
+          created_by: user?.id || null,
+        });
+        if (advanceError) throw advanceError;
+      }
+
       const summary = payloads
         .map((item) => item.candidate.invoiceNumber || item.candidate.id)
         .slice(0, 3)
@@ -1318,7 +1459,9 @@ export default function BankReconciliation() {
       const adjustmentSuffix =
         allowSimpleAdjustment && Math.abs(difference) > 0.01
           ? ` • ajuste ${difference > 0 ? "+" : ""}${difference.toFixed(2)}`
-          : "";
+          : canAllocateAdvance
+            ? ` • anticipo ${difference.toFixed(2)}`
+            : "";
 
       const { error: movementError } = await supabase
         .from("movimientos_banco")
@@ -1335,6 +1478,8 @@ export default function BankReconciliation() {
       setSelectedTxn(null);
       setCandidates([]);
       setSelectedInvoiceMatches({});
+      setAllocateDifferenceAsAdvance(false);
+      setAdvanceForm({ customerId: "none", notes: "" });
       await fetchTransactions();
       await refreshPositions();
     } catch (error: any) {
@@ -1528,6 +1673,7 @@ export default function BankReconciliation() {
                 const chequeInfo = txn.cheques_cartera?.[0];
                 const webpayInfo = txn.webpay_liquidaciones?.[0];
                 const commitmentInfo = txn.cash_commitments?.[0];
+                const advanceInfo = txn.customer_advances?.[0];
                 const canArchiveLinkedManual =
                   Boolean(commitmentInfo) && commitmentInfo?.source_type === "manual" && !commitmentInfo?.archived_at;
                 const webpayClient = Array.isArray(webpayInfo?.terceros) ? webpayInfo?.terceros[0] : webpayInfo?.terceros;
@@ -1579,6 +1725,11 @@ export default function BankReconciliation() {
                               {activePayments.length > 5 && (
                                 <div>+ {activePayments.length - 5} factura(s) más</div>
                               )}
+                              {advanceInfo && (
+                                <div>
+                                  Anticipo restante • {advanceInfo.tercero_nombre || "Sin cliente"} • {formatTreasuryCurrency(Number(advanceInfo.amount || 0), selectedAccount?.moneda || "CLP")}
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
@@ -1599,6 +1750,13 @@ export default function BankReconciliation() {
                         <div>
                           <div className="font-medium">{commitmentInfo.counterparty || "Compromiso conciliado"}</div>
                           <div className="text-xs text-muted-foreground">{commitmentInfo.description || "Sin detalle"}</div>
+                        </div>
+                      ) : advanceInfo ? (
+                        <div>
+                          <div className="font-medium">{advanceInfo.tercero_nombre || "Anticipo de cliente"}</div>
+                          <div className="text-xs text-muted-foreground">
+                            Anticipo disponible {formatTreasuryCurrency(Number(advanceInfo.remaining_amount || 0), selectedAccount?.moneda || "CLP")}
+                          </div>
                         </div>
                       ) : (
                         <span className="text-muted-foreground">Pendiente</span>
@@ -1660,6 +1818,8 @@ export default function BankReconciliation() {
             setSelectedTxn(null);
             setSelectedInflowSource("factura");
             setInvoiceMismatchDialog(null);
+            setAllocateDifferenceAsAdvance(false);
+            setAdvanceForm({ customerId: "none", notes: "" });
           }
         }}
       >
@@ -1691,27 +1851,34 @@ export default function BankReconciliation() {
                     <SelectTrigger>
                       <SelectValue placeholder="Selecciona el origen del ingreso" />
                     </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="factura">Transferencia / Factura</SelectItem>
-                      <SelectItem value="cheque">Cheque</SelectItem>
-                      <SelectItem value="webpay">WebPay</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <div className="text-xs text-muted-foreground">
-                    {selectedInflowSource === "factura"
-                      ? "Se mostrarán facturas abiertas con razón social y número de documento."
-                      : selectedInflowSource === "cheque"
+                  <SelectContent>
+                    <SelectItem value="factura">Transferencia / Factura</SelectItem>
+                    <SelectItem value="cheque">Cheque</SelectItem>
+                    <SelectItem value="webpay">WebPay</SelectItem>
+                    <SelectItem value="anticipo">Anticipo cliente</SelectItem>
+                  </SelectContent>
+                </Select>
+                <div className="text-xs text-muted-foreground">
+                  {selectedInflowSource === "factura"
+                    ? "Se mostrarán facturas abiertas con razón social y número de documento."
+                    : selectedInflowSource === "cheque"
                         ? "Se mostrarán solo los cheques disponibles para conciliar. Al aceptar pasarán a cobrados."
-                      : "Se mostrarán solo pagos WebPay pendientes de abono."}
-                  </div>
+                      : selectedInflowSource === "webpay"
+                        ? "Se mostrarán solo pagos WebPay pendientes de abono."
+                        : "Selecciona el cliente para dejar el ingreso completo como anticipo."}
                 </div>
-                {selectedInflowSource === "factura" && (
+              </div>
+                {(selectedInflowSource === "factura" || selectedInflowSource === "anticipo") && (
                   <div className="mt-4 space-y-2">
-                    <Label>Buscar factura</Label>
+                    <Label>{selectedInflowSource === "factura" ? "Buscar factura" : "Buscar cliente"}</Label>
                     <Input
                       value={candidateSearchTerm}
                       onChange={(event) => setCandidateSearchTerm(event.target.value)}
-                      placeholder="Filtra por razón social o número de factura"
+                      placeholder={
+                        selectedInflowSource === "factura"
+                          ? "Filtra por razón social o número de factura"
+                          : "Filtra por razón social o RUT"
+                      }
                     />
                   </div>
                 )}
@@ -1851,6 +2018,11 @@ export default function BankReconciliation() {
                         Diferencia menor a $10 detectada: {formatTreasuryCurrency(selectedInvoiceDifference, selectedAccount?.moneda || "CLP")}.
                       </div>
                     )}
+                    {!canApplySimpleInvoiceAdjustment && selectedInvoiceDifference > 0.01 && (
+                      <div className="mt-1 text-xs text-sky-700">
+                        Puedes dejar la diferencia como anticipo del cliente: {formatTreasuryCurrency(selectedInvoiceDifference, selectedAccount?.moneda || "CLP")}.
+                      </div>
+                    )}
                   </div>
                   <div className="flex flex-col gap-2 sm:flex-row">
                     {canApplySimpleInvoiceAdjustment && (
@@ -1869,6 +2041,61 @@ export default function BankReconciliation() {
                     </Button>
                   </div>
                 </div>
+                {!canApplySimpleInvoiceAdjustment && selectedInvoiceDifference > 0.01 && (
+                  <div className="mt-4 grid gap-3 rounded-lg border bg-background p-3 md:grid-cols-2">
+                    <Label className="flex items-center gap-2 md:col-span-2">
+                      <input
+                        type="checkbox"
+                        checked={allocateDifferenceAsAdvance}
+                        onChange={(event) => {
+                          setAllocateDifferenceAsAdvance(event.target.checked);
+                          if (!event.target.checked) {
+                            setAdvanceForm((current) => ({ ...current, customerId: "none", notes: "" }));
+                          }
+                        }}
+                      />
+                      Dejar diferencia como anticipo del cliente
+                    </Label>
+                    {allocateDifferenceAsAdvance && (
+                      <>
+                        <div className="space-y-2">
+                          <Label>Cliente del anticipo</Label>
+                          <Select
+                            value={advanceForm.customerId}
+                            onValueChange={(value) => setAdvanceForm((current) => ({ ...current, customerId: value }))}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Selecciona cliente" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="none">Selecciona cliente</SelectItem>
+                              {customerAdvanceCandidates.map((candidate) => (
+                                <SelectItem key={candidate.id} value={candidate.id}>
+                                  {candidate.customerName || candidate.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Monto anticipo</Label>
+                          <Input
+                            value={formatTreasuryCurrency(selectedInvoiceDifference, selectedAccount?.moneda || "CLP")}
+                            disabled
+                          />
+                        </div>
+                        <div className="space-y-2 md:col-span-2">
+                          <Label>Nota</Label>
+                          <Textarea
+                            value={advanceForm.notes}
+                            onChange={(event) => setAdvanceForm((current) => ({ ...current, notes: event.target.value }))}
+                            placeholder="Contexto del anticipo o pago excedente"
+                          />
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             )}
             {!loadingCandidates && searchableCandidates.length === 0 && (
@@ -1878,7 +2105,9 @@ export default function BankReconciliation() {
                     ? "No hay facturas abiertas para este ingreso."
                     : selectedInflowSource === "cheque"
                       ? "No hay cheques disponibles para este ingreso."
-                      : "No hay liquidaciones WebPay pendientes para este ingreso."
+                      : selectedInflowSource === "webpay"
+                        ? "No hay liquidaciones WebPay pendientes para este ingreso."
+                        : "No hay clientes disponibles para dejar el anticipo."
                   : "No se encontraron candidatos para este movimiento."}
               </div>
             )}
@@ -1903,7 +2132,9 @@ export default function BankReconciliation() {
                               ? "Cheque"
                               : candidate.type === "webpay"
                                 ? "WebPay"
-                                : "Compromiso"}
+                                : candidate.type === "customer"
+                                  ? "Anticipo"
+                                  : "Compromiso"}
                       </div>
                     </div>
                   </div>
