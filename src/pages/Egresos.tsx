@@ -692,6 +692,109 @@ export default function Egresos() {
       </div>
 
       <Card>
+        <CardHeader>
+          <CardTitle>Resumen de pagos ejecutados</CardTitle>
+          <CardDescription>
+            Revisa lo ya pagado por clasificación para entender cuánto salió en nómina, rendiciones, oficina, impuestos y otros rubros.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="grid gap-4 md:grid-cols-3">
+            <MetricCard
+              title="Pagado en el mes"
+              value={formatTreasuryCurrency(paidExpenseSummary.totalPaid, policy.monedaBase)}
+              description={`${paidExpenseSummary.monthlyRows.length} pago(s) registrados`}
+              icon={<Wallet className="h-4 w-4" />}
+            />
+            <MetricCard
+              title="Mayor clasificación pagada"
+              value={paidExpenseSummary.rows[0]?.classificationName || "Sin datos"}
+              description={
+                paidExpenseSummary.rows[0]
+                  ? formatTreasuryCurrency(paidExpenseSummary.rows[0].totalAmount, policy.monedaBase)
+                  : "No hay pagos en el mes"
+              }
+              icon={<TrendingUp className="h-4 w-4" />}
+            />
+            <MetricCard
+              title="Rubros pagados"
+              value={String(paidExpenseSummary.rows.length)}
+              description="Clasificaciones con pagos efectivos"
+              icon={<Landmark className="h-4 w-4" />}
+            />
+          </div>
+
+          <div className="rounded-xl border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Clasificación</TableHead>
+                  <TableHead className="text-right">Monto pagado</TableHead>
+                  <TableHead className="text-right">Pagos</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {paidExpenseSummary.rows.map((row) => (
+                  <TableRow key={row.classificationCode || row.classificationName}>
+                    <TableCell className="font-medium">{row.classificationName}</TableCell>
+                    <TableCell className="text-right font-semibold">
+                      {formatTreasuryCurrency(row.totalAmount, policy.monedaBase)}
+                    </TableCell>
+                    <TableCell className="text-right">{row.itemCount}</TableCell>
+                  </TableRow>
+                ))}
+                {paidExpenseSummary.rows.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={3} className="py-8 text-center text-muted-foreground">
+                      {loadingPaidSummary ? "Cargando resumen de pagos..." : "No hay pagos registrados para el mes seleccionado."}
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+
+          <div className="rounded-xl border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Fecha pago</TableHead>
+                  <TableHead>Origen</TableHead>
+                  <TableHead>Clasificación</TableHead>
+                  <TableHead>Contraparte</TableHead>
+                  <TableHead>Detalle</TableHead>
+                  <TableHead>Cuenta</TableHead>
+                  <TableHead className="text-right">Monto</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {paidExpenseSummary.monthlyRows.map((row) => (
+                  <TableRow key={row.id}>
+                    <TableCell>{formatTreasuryDate(row.paidAt)}</TableCell>
+                    <TableCell>{sourceLabels[row.sourceType] || row.sourceType}</TableCell>
+                    <TableCell>{row.classificationName}</TableCell>
+                    <TableCell>{row.counterparty}</TableCell>
+                    <TableCell>{row.description}</TableCell>
+                    <TableCell>{row.bankAccountId ? bankAccountMap.get(row.bankAccountId)?.nombre || "Cuenta" : "Sin cuenta"}</TableCell>
+                    <TableCell className="text-right font-semibold">
+                      {formatTreasuryCurrency(row.amount, policy.monedaBase)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {paidExpenseSummary.monthlyRows.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
+                      {loadingPaidSummary ? "Cargando pagos ejecutados..." : "No hay pagos ejecutados para el mes seleccionado."}
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
         <CardHeader className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <CardTitle>Resumen por clasificación</CardTitle>
@@ -1232,109 +1335,6 @@ export default function Egresos() {
               )}
             </TableBody>
           </Table>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Resumen de pagos ejecutados</CardTitle>
-          <CardDescription>
-            Revisa lo ya pagado por clasificación para entender cuánto salió en nómina, rendiciones, oficina, impuestos y otros rubros.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="grid gap-4 md:grid-cols-3">
-            <MetricCard
-              title="Pagado en el mes"
-              value={formatTreasuryCurrency(paidExpenseSummary.totalPaid, policy.monedaBase)}
-              description={`${paidExpenseSummary.monthlyRows.length} pago(s) registrados`}
-              icon={<Wallet className="h-4 w-4" />}
-            />
-            <MetricCard
-              title="Mayor clasificación pagada"
-              value={paidExpenseSummary.rows[0]?.classificationName || "Sin datos"}
-              description={
-                paidExpenseSummary.rows[0]
-                  ? formatTreasuryCurrency(paidExpenseSummary.rows[0].totalAmount, policy.monedaBase)
-                  : "No hay pagos en el mes"
-              }
-              icon={<TrendingUp className="h-4 w-4" />}
-            />
-            <MetricCard
-              title="Rubros pagados"
-              value={String(paidExpenseSummary.rows.length)}
-              description="Clasificaciones con pagos efectivos"
-              icon={<Landmark className="h-4 w-4" />}
-            />
-          </div>
-
-          <div className="rounded-xl border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Clasificación</TableHead>
-                  <TableHead className="text-right">Monto pagado</TableHead>
-                  <TableHead className="text-right">Pagos</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {paidExpenseSummary.rows.map((row) => (
-                  <TableRow key={row.classificationCode || row.classificationName}>
-                    <TableCell className="font-medium">{row.classificationName}</TableCell>
-                    <TableCell className="text-right font-semibold">
-                      {formatTreasuryCurrency(row.totalAmount, policy.monedaBase)}
-                    </TableCell>
-                    <TableCell className="text-right">{row.itemCount}</TableCell>
-                  </TableRow>
-                ))}
-                {paidExpenseSummary.rows.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={3} className="py-8 text-center text-muted-foreground">
-                      {loadingPaidSummary ? "Cargando resumen de pagos..." : "No hay pagos registrados para el mes seleccionado."}
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </div>
-
-          <div className="rounded-xl border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Fecha pago</TableHead>
-                  <TableHead>Origen</TableHead>
-                  <TableHead>Clasificación</TableHead>
-                  <TableHead>Contraparte</TableHead>
-                  <TableHead>Detalle</TableHead>
-                  <TableHead>Cuenta</TableHead>
-                  <TableHead className="text-right">Monto</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {paidExpenseSummary.monthlyRows.map((row) => (
-                  <TableRow key={row.id}>
-                    <TableCell>{formatTreasuryDate(row.paidAt)}</TableCell>
-                    <TableCell>{sourceLabels[row.sourceType] || row.sourceType}</TableCell>
-                    <TableCell>{row.classificationName}</TableCell>
-                    <TableCell>{row.counterparty}</TableCell>
-                    <TableCell>{row.description}</TableCell>
-                    <TableCell>{row.bankAccountId ? bankAccountMap.get(row.bankAccountId)?.nombre || "Cuenta" : "Sin cuenta"}</TableCell>
-                    <TableCell className="text-right font-semibold">
-                      {formatTreasuryCurrency(row.amount, policy.monedaBase)}
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {paidExpenseSummary.monthlyRows.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
-                      {loadingPaidSummary ? "Cargando pagos ejecutados..." : "No hay pagos ejecutados para el mes seleccionado."}
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </div>
         </CardContent>
       </Card>
 
