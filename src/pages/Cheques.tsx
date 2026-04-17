@@ -453,7 +453,9 @@ export default function Cheques() {
       facturaId: invoiceId,
       terceroId: invoice?.tercero_id || current.terceroId,
       librador: invoice?.tercero_nombre || current.librador,
-      montoAplicadoFactura: invoice ? String(invoice.monto) : current.montoAplicadoFactura,
+      montoAplicadoFactura: invoice
+        ? String(Math.min(Number(current.monto || invoice.monto || 0), Number(invoice.monto || 0)))
+        : "0",
       fechaVencimiento: invoice?.fecha_vencimiento || current.fechaVencimiento,
       fechaCobroEsperada: invoice?.fecha_vencimiento || current.fechaCobroEsperada,
     }));
@@ -469,6 +471,29 @@ export default function Cheques() {
 
     setSaving(true);
     try {
+      const montoCheque = Number(form.monto || 0);
+      const montoAplicado = Number(form.montoAplicadoFactura || 0);
+
+      if (!Number.isFinite(montoCheque) || montoCheque <= 0) {
+        alert("El monto del cheque debe ser mayor a cero.");
+        return;
+      }
+
+      if (!Number.isFinite(montoAplicado) || montoAplicado < 0) {
+        alert("El monto aplicado a factura no puede ser negativo.");
+        return;
+      }
+
+      if (form.facturaId === "none" && montoAplicado > 0) {
+        alert("No puedes aplicar monto a factura si el cheque no tiene factura asociada.");
+        return;
+      }
+
+      if (montoAplicado - montoCheque > 0.01) {
+        alert("El monto aplicado a factura no puede ser mayor al monto del cheque.");
+        return;
+      }
+
       const { error } = await supabase.from("cheques_cartera").insert({
         empresa_id: selectedEmpresaId,
         bank_account_id: form.bankAccountId === "none" ? null : form.bankAccountId,
@@ -479,8 +504,8 @@ export default function Cheques() {
         librador: form.librador,
         rut_librador: form.rutLibrador || null,
         moneda: "CLP",
-        monto: Number(form.monto || 0),
-        monto_aplicado_factura: Number(form.montoAplicadoFactura || 0),
+        monto: montoCheque,
+        monto_aplicado_factura: montoAplicado,
         fecha_emision: form.fechaEmision || null,
         fecha_vencimiento: form.fechaVencimiento,
         fecha_cobro_esperada: form.fechaCobroEsperada,
@@ -727,11 +752,54 @@ export default function Cheques() {
                 </div>
                 <div className="space-y-2">
                   <Label>Monto</Label>
-                  <Input type="number" min="0" value={form.monto} onChange={(event) => setForm((current) => ({ ...current, monto: event.target.value }))} disabled={!canEdit} />
+                  <Input
+                    type="number"
+                    min="0"
+                    value={form.monto}
+                    onChange={(event) =>
+                      setForm((current) => {
+                        const nextAmount = event.target.value;
+                        const numericAmount = Number(nextAmount || 0);
+                        const currentApplied = Number(current.montoAplicadoFactura || 0);
+                        return {
+                          ...current,
+                          monto: nextAmount,
+                          montoAplicadoFactura:
+                            currentApplied > numericAmount && Number.isFinite(numericAmount)
+                              ? String(Math.max(numericAmount, 0))
+                              : current.montoAplicadoFactura,
+                        };
+                      })
+                    }
+                    disabled={!canEdit}
+                  />
                 </div>
                 <div className="space-y-2">
                   <Label>Monto aplicado a factura</Label>
-                  <Input type="number" min="0" value={form.montoAplicadoFactura} onChange={(event) => setForm((current) => ({ ...current, montoAplicadoFactura: event.target.value }))} disabled={!canEdit} />
+                  <Input
+                    type="number"
+                    min="0"
+                    max={form.monto || undefined}
+                    value={form.montoAplicadoFactura}
+                    onChange={(event) =>
+                      setForm((current) => {
+                        const nextApplied = event.target.value;
+                        const numericApplied = Number(nextApplied || 0);
+                        const numericAmount = Number(current.monto || 0);
+                        return {
+                          ...current,
+                          montoAplicadoFactura:
+                            Number.isFinite(numericAmount) && numericApplied > numericAmount
+                              ? String(numericAmount)
+                              : nextApplied,
+                        };
+                      })
+                    }
+                    disabled={!canEdit}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Lo aplicado a factura no puede superar el monto del cheque.
+                  </p>
                 </div>
                 <div className="space-y-2">
                   <Label>Fecha emisión</Label>
