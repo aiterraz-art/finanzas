@@ -1215,6 +1215,16 @@ export default function BankReconciliation() {
     [selectedInvoiceCandidates, selectedInvoiceMatches]
   );
 
+  const selectedInvoiceDifference = useMemo(() => {
+    if (!selectedTxn || selectedTxn.monto < 0) return 0;
+    return Math.abs(selectedTxn.monto) - selectedInvoiceTotal;
+  }, [selectedInvoiceTotal, selectedTxn]);
+
+  const canApplySimpleInvoiceAdjustment = useMemo(() => {
+    if (!selectedTxn || selectedTxn.monto < 0 || selectedInvoiceCandidates.length === 0) return false;
+    return Math.abs(selectedInvoiceDifference) > 0.01 && Math.abs(selectedInvoiceDifference) <= 10;
+  }, [selectedInvoiceCandidates.length, selectedInvoiceDifference, selectedTxn]);
+
   const toggleInvoiceCandidate = (candidate: MatchCandidate) => {
     setSelectedInvoiceMatches((current) => {
       if (current[candidate.id]) {
@@ -1252,7 +1262,7 @@ export default function BankReconciliation() {
     }));
   };
 
-  const handleMatchSelectedInvoices = async () => {
+  const handleMatchSelectedInvoices = async (allowSimpleAdjustment = false) => {
     if (!selectedEmpresaId || !selectedTxn || selectedTxn.monto < 0) return;
     const selectedInvoices = candidates.filter(
       (candidate) => candidate.type === "factura" && selectedInvoiceMatches[candidate.id]
@@ -1280,7 +1290,9 @@ export default function BankReconciliation() {
 
     const totalApplied = payloads.reduce((sum, item) => sum + item.amount, 0);
     const bankAmount = Math.abs(selectedTxn.monto);
-    if (Math.abs(totalApplied - bankAmount) > 0.01) {
+    const difference = bankAmount - totalApplied;
+    const canSimpleAdjust = Math.abs(difference) <= 10;
+    if (Math.abs(difference) > 0.01 && !(allowSimpleAdjustment && canSimpleAdjust)) {
       alert(`El total aplicado (${formatTreasuryCurrency(totalApplied, selectedAccount?.moneda || "CLP")}) debe coincidir con el movimiento bancario (${formatTreasuryCurrency(bankAmount, selectedAccount?.moneda || "CLP")}).`);
       return;
     }
@@ -1303,13 +1315,17 @@ export default function BankReconciliation() {
         .slice(0, 3)
         .join(", ");
       const suffix = payloads.length > 3 ? ` +${payloads.length - 3} más` : "";
+      const adjustmentSuffix =
+        allowSimpleAdjustment && Math.abs(difference) > 0.01
+          ? ` • ajuste ${difference > 0 ? "+" : ""}${difference.toFixed(2)}`
+          : "";
 
       const { error: movementError } = await supabase
         .from("movimientos_banco")
         .update({
           estado: "conciliado",
           tipo_conciliacion: "factura",
-          numero_documento: `Facturas ${summary}${suffix}`,
+          numero_documento: `Facturas ${summary}${suffix}${adjustmentSuffix}`,
         })
         .eq("id", selectedTxn.id)
         .eq("empresa_id", selectedEmpresaId);
@@ -1830,11 +1846,28 @@ export default function BankReconciliation() {
                     <div className="text-sm text-muted-foreground">
                       Total aplicado: {formatTreasuryCurrency(selectedInvoiceTotal, selectedAccount?.moneda || "CLP")} de {formatTreasuryCurrency(Math.abs(selectedTxn.monto), selectedAccount?.moneda || "CLP")}
                     </div>
+                    {canApplySimpleInvoiceAdjustment && (
+                      <div className="mt-1 text-xs text-amber-700">
+                        Diferencia menor a $10 detectada: {formatTreasuryCurrency(selectedInvoiceDifference, selectedAccount?.moneda || "CLP")}.
+                      </div>
+                    )}
                   </div>
-                  <Button onClick={() => void handleMatchSelectedInvoices()} disabled={!canEdit || matchingId === "multi-factura" || selectedInvoiceCandidates.length === 0}>
-                    {matchingId === "multi-factura" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
-                    Conciliar facturas seleccionadas
-                  </Button>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    {canApplySimpleInvoiceAdjustment && (
+                      <Button
+                        variant="outline"
+                        onClick={() => void handleMatchSelectedInvoices(true)}
+                        disabled={!canEdit || matchingId === "multi-factura" || selectedInvoiceCandidates.length === 0}
+                      >
+                        {matchingId === "multi-factura" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                        Ajuste sencillo
+                      </Button>
+                    )}
+                    <Button onClick={() => void handleMatchSelectedInvoices()} disabled={!canEdit || matchingId === "multi-factura" || selectedInvoiceCandidates.length === 0}>
+                      {matchingId === "multi-factura" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
+                      Conciliar facturas seleccionadas
+                    </Button>
+                  </div>
                 </div>
               </div>
             )}
