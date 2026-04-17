@@ -156,6 +156,9 @@ export default function BankReconciliation() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<"all" | "unmatched" | "matched">("all");
   const [searchTerm, setSearchTerm] = useState("");
+  const [amountFilter, setAmountFilter] = useState("");
+  const [dateFromFilter, setDateFromFilter] = useState("");
+  const [dateToFilter, setDateToFilter] = useState("");
   const [isImporting, setIsImporting] = useState(false);
   const [importSummary, setImportSummary] = useState<ImportSummary | null>(null);
   const [selectedTxn, setSelectedTxn] = useState<BankMovement | null>(null);
@@ -1129,11 +1132,47 @@ export default function BankReconciliation() {
     return transactions.filter((txn) => {
       if (filter === "matched" && txn.estado !== "conciliado") return false;
       if (filter === "unmatched" && txn.estado === "conciliado") return false;
+      if (dateFromFilter && txn.fecha_movimiento < dateFromFilter) return false;
+      if (dateToFilter && txn.fecha_movimiento > dateToFilter) return false;
+      if (amountFilter.trim()) {
+        const normalizedAmount = Number(amountFilter.replace(/\./g, "").replace(",", "."));
+        if (Number.isFinite(normalizedAmount) && Math.abs(Number(txn.monto)) !== normalizedAmount) return false;
+      }
+
       if (!searchTerm.trim()) return true;
-      const haystack = [txn.descripcion, txn.numero_documento, txn.comentario_tesoreria].join(" ").toLowerCase();
+
+      const activePayments = (txn.facturas_pagos || []).filter((row) => row.estado !== "revertido");
+      const paymentText = activePayments
+        .map((row) => {
+          const factura = Array.isArray(row.facturas) ? row.facturas[0] : row.facturas;
+          const rendicion = Array.isArray(row.rendiciones) ? row.rendiciones[0] : row.rendiciones;
+          return [factura?.tercero_nombre, factura?.numero_documento, rendicion?.tercero_nombre, rendicion?.descripcion]
+            .filter(Boolean)
+            .join(" ");
+        })
+        .join(" ");
+      const chequeInfo = txn.cheques_cartera?.[0];
+      const webpayInfo = txn.webpay_liquidaciones?.[0];
+      const webpayClient = Array.isArray(webpayInfo?.terceros) ? webpayInfo?.terceros[0] : webpayInfo?.terceros;
+      const commitmentInfo = txn.cash_commitments?.[0];
+      const haystack = [
+        txn.descripcion,
+        txn.numero_documento,
+        txn.comentario_tesoreria,
+        paymentText,
+        chequeInfo?.librador,
+        chequeInfo?.numero_cheque,
+        webpayClient?.razon_social,
+        webpayInfo?.orden_compra,
+        commitmentInfo?.counterparty,
+        commitmentInfo?.description,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
       return haystack.includes(searchTerm.toLowerCase());
     });
-  }, [transactions, filter, searchTerm]);
+  }, [transactions, filter, searchTerm, amountFilter, dateFromFilter, dateToFilter]);
 
   const stats = useMemo(() => {
     return {
@@ -1416,10 +1455,28 @@ export default function BankReconciliation() {
                 <Input
                   value={searchTerm}
                   onChange={(event) => setSearchTerm(event.target.value)}
-                  placeholder="Buscar descripción o documento..."
+                  placeholder="Buscar glosa, razón social o documento..."
                   className="pl-10"
                 />
               </div>
+              <Input
+                value={amountFilter}
+                onChange={(event) => setAmountFilter(event.target.value)}
+                placeholder="Monto exacto"
+                className="w-full sm:w-40"
+              />
+              <Input
+                type="date"
+                value={dateFromFilter}
+                onChange={(event) => setDateFromFilter(event.target.value)}
+                className="w-full sm:w-44"
+              />
+              <Input
+                type="date"
+                value={dateToFilter}
+                onChange={(event) => setDateToFilter(event.target.value)}
+                className="w-full sm:w-44"
+              />
               <Select value={filter} onValueChange={(value: "all" | "unmatched" | "matched") => setFilter(value)}>
                 <SelectTrigger className="w-full sm:w-48">
                   <SelectValue />
