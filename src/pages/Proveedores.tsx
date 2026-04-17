@@ -83,6 +83,7 @@ type LoanCommitment = {
   amount: number;
   due_date: string;
   expected_date: string;
+  movimiento_banco_id?: string | null;
 };
 
 type LoanFrequency = BankLoan["frequency"];
@@ -135,6 +136,9 @@ export default function Proveedores() {
   const [isSavingInvoice, setIsSavingInvoice] = useState(false);
   const [isNewLoanOpen, setIsNewLoanOpen] = useState(false);
   const [isSavingLoan, setIsSavingLoan] = useState(false);
+  const [editingLoan, setEditingLoan] = useState<(BankLoan & { paidInstallments: number; remainingInstallments: number; derivedStatus: string }) | null>(null);
+  const [loanProgressPaid, setLoanProgressPaid] = useState("0");
+  const [savingLoanProgress, setSavingLoanProgress] = useState(false);
   const [editingInvoice, setEditingInvoice] = useState<PurchaseInvoice | null>(null);
   const [savingTreasury, setSavingTreasury] = useState(false);
   const [newProvData, setNewProvData] = useState({
@@ -162,6 +166,7 @@ export default function Proveedores() {
     principal_amount: "",
     installment_amount: "",
     total_installments: "",
+    paid_installments: "0",
     first_due_date: new Date().toISOString().split("T")[0],
     frequency: "monthly" as LoanFrequency,
     treasury_category_id: "",
@@ -217,7 +222,7 @@ export default function Proveedores() {
           .order("created_at", { ascending: false }),
         supabase
           .from("cash_commitments")
-          .select("id, source_reference, status, amount, due_date, expected_date")
+          .select("id, source_reference, status, amount, due_date, expected_date, movimiento_banco_id")
           .eq("empresa_id", selectedEmpresaId)
           .eq("direction", "outflow")
           .eq("source_type", "debt")
@@ -435,9 +440,18 @@ export default function Proveedores() {
     const installmentAmount = Number(newLoanData.installment_amount);
     const totalInstallments = Number(newLoanData.total_installments);
     const principalAmount = Number(newLoanData.principal_amount || 0);
+    const paidInstallments = Number(newLoanData.paid_installments || 0);
 
-    if (!Number.isFinite(installmentAmount) || installmentAmount <= 0 || !Number.isInteger(totalInstallments) || totalInstallments <= 0) {
-      alert("Revisa el monto de la cuota y la cantidad total de cuotas.");
+    if (
+      !Number.isFinite(installmentAmount) ||
+      installmentAmount <= 0 ||
+      !Number.isInteger(totalInstallments) ||
+      totalInstallments <= 0 ||
+      !Number.isInteger(paidInstallments) ||
+      paidInstallments < 0 ||
+      paidInstallments > totalInstallments
+    ) {
+      alert("Revisa el monto, la cantidad total de cuotas y cuántas ya van pagadas.");
       return;
     }
 
@@ -487,7 +501,7 @@ export default function Proveedores() {
         due_date: dueDate,
         expected_date: dueDate,
         priority: newLoanData.priority,
-        status: "planned",
+        status: index < paidInstallments ? "paid" : "planned",
         notes: newLoanData.notes.trim() || null,
       }));
 
@@ -501,6 +515,7 @@ export default function Proveedores() {
         principal_amount: "",
         installment_amount: "",
         total_installments: "",
+        paid_installments: "0",
         first_due_date: new Date().toISOString().split("T")[0],
         frequency: "monthly",
         treasury_category_id: debtCategoryId,
@@ -514,6 +529,92 @@ export default function Proveedores() {
       alert(`No se pudo guardar el crédito: ${error.message}`);
     } finally {
       setIsSavingLoan(false);
+    }
+  };
+
+  const openLoanProgressDialog = (loan: (typeof loansWithStatus)[number]) => {
+    setEditingLoan(loan);
+    setLoanProgressPaid(String(loan.paidInstallments));
+  };
+
+  const handleSaveLoanProgress = async () => {
+    if (!selectedEmpresaId || !editingLoan) return;
+
+    const requestedPaidInstallments = Number(loanProgressPaid || 0);
+    if (
+      !Number.isInteger(requestedPaidInstallments) ||
+      requestedPaidInstallments < 0 ||
+      requestedPaidInstallments > editingLoan.total_installments
+    ) {
+      alert("Ingresa una cantidad válida de cuotas pagadas.");
+      return;
+    }
+
+    const loanRelatedCommitments = loanCommitments
+      .filter((commitment) => commitment.source_reference === editingLoan.id)
+      .sort((a, b) => (a.expected_date || a.due_date).localeCompare(b.expected_date || b.due_date));
+
+    const lockedPaidCommitments = loanRelatedCommitments.filter(
+      (commitment) => commitment.status === "paid" && commitment.movimiento_banco_id
+    );
+    if (requestedPaidInstallments < lockedPaidCommitments.length) {
+      alert(`Este crédito ya tiene ${lockedPaidCommitments.length} cuota(s) conciliada(s) en banco. No puedes dejar menos que eso.`);
+      return;
+    }
+
+    const targetPaidIds = new Set(
+      loanRelatedCommitments.slice(0, requestedPaidInstallments).map((commitment) => commitment.id)
+    );
+    const toMarkPaid = loanRelatedCommitments.filter(
+      (commitment) => targetPaidIds.has(commitment.id) && commitment.status !== "paid"
+    );
+    const toReopen = loanRelatedCommitments.filter(
+      (commitment) =>
+        !targetPaidIds.has(commitment.id) &&
+        commitment.status === "paid" &&
+        !commitment.movimiento_banco_id
+    );
+
+    setSavingLoanProgress(true);
+    try {
+      if (toMarkPaid.length > 0) {
+        const { error } = await supabase
+          .from("cash_commitments")
+          .update({ status: "paid" })
+          .in("id", toMarkPaid.map((commitment) => commitment.id))
+          .eq("empresa_id", selectedEmpresaId);
+        if (error) throw error;
+      }
+
+      if (toReopen.length > 0) {
+        const { error } = await supabase
+          .from("cash_commitments")
+          .update({ status: "planned" })
+          .in("id", toReopen.map((commitment) => commitment.id))
+          .eq("empresa_id", selectedEmpresaId);
+        if (error) throw error;
+      }
+
+      const nextStatus =
+        requestedPaidInstallments >= editingLoan.total_installments
+          ? "completed"
+          : editingLoan.status === "cancelled"
+            ? "cancelled"
+            : "active";
+      const { error: loanError } = await supabase
+        .from("bank_loans")
+        .update({ status: nextStatus })
+        .eq("id", editingLoan.id)
+        .eq("empresa_id", selectedEmpresaId);
+      if (loanError) throw loanError;
+
+      setEditingLoan(null);
+      await fetchData();
+    } catch (error: any) {
+      console.error("Error actualizando avance del credito:", error);
+      alert(`No se pudo actualizar el avance del crédito: ${error.message}`);
+    } finally {
+      setSavingLoanProgress(false);
     }
   };
 
@@ -686,6 +787,11 @@ export default function Proveedores() {
                     >
                       {loan.derivedStatus === "active" ? "Activo" : loan.derivedStatus === "completed" ? "Completado" : "Cancelado"}
                     </Badge>
+                    <div className="mt-2">
+                      <Button size="sm" variant="outline" disabled={!canEdit || loan.status === "cancelled"} onClick={() => openLoanProgressDialog(loan)}>
+                        Editar avance
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
@@ -941,6 +1047,11 @@ export default function Proveedores() {
               <Field label="Total cuotas">
                 <Input type="number" min="1" value={newLoanData.total_installments} onChange={(event) => setNewLoanData((current) => ({ ...current, total_installments: event.target.value }))} />
               </Field>
+              <Field label="Cuotas ya pagadas">
+                <Input type="number" min="0" value={newLoanData.paid_installments} onChange={(event) => setNewLoanData((current) => ({ ...current, paid_installments: event.target.value }))} />
+              </Field>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
               <Field label="Primera cuota">
                 <Input type="date" value={newLoanData.first_due_date} onChange={(event) => setNewLoanData((current) => ({ ...current, first_due_date: event.target.value }))} />
               </Field>
@@ -1012,6 +1123,41 @@ export default function Proveedores() {
             <Button onClick={handleCreateBankLoan} disabled={isSavingLoan}>
               {isSavingLoan ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
               Crear crédito
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(editingLoan)} onOpenChange={(open) => !open && setEditingLoan(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Editar avance del crédito</DialogTitle>
+            <DialogDescription>
+              {editingLoan
+                ? `${editingLoan.loan_name} • ${editingLoan.lender_name}. Ajusta en qué cuota va realmente el crédito.`
+                : "Actualiza cuotas pagadas."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            {editingLoan && (
+              <div className="rounded-lg border bg-muted/20 p-4 text-sm">
+                <div>Cuotas totales: <span className="font-medium">{editingLoan.total_installments}</span></div>
+                <div>Pagadas hoy: <span className="font-medium">{editingLoan.paidInstallments}</span></div>
+                <div>Pendientes: <span className="font-medium">{editingLoan.remainingInstallments}</span></div>
+              </div>
+            )}
+            <Field label="Cuotas pagadas">
+              <Input type="number" min="0" value={loanProgressPaid} onChange={(event) => setLoanProgressPaid(event.target.value)} />
+            </Field>
+            <p className="text-xs text-muted-foreground">
+              Esto marca cuotas históricas como pagadas para dejar el crédito en el punto real. Las cuotas ya conciliadas en banco no se modificarán.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingLoan(null)}>Cancelar</Button>
+            <Button onClick={handleSaveLoanProgress} disabled={savingLoanProgress}>
+              {savingLoanProgress ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Guardar avance
             </Button>
           </DialogFooter>
         </DialogContent>
