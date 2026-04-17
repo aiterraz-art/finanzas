@@ -1,4 +1,4 @@
-import { type FormEvent, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { Archive, ArrowRightLeft, Landmark, Loader2, Plus, RefreshCcw, TrendingUp, Wallet } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -104,6 +104,18 @@ type QueueEditForm = {
   status: CashCommitment["status"];
 };
 
+type PaidExpenseRecord = {
+  id: string;
+  sourceType: "invoice_payable" | "rendicion" | "commitment";
+  classificationCode: string;
+  classificationName: string;
+  counterparty: string;
+  description: string;
+  amount: number;
+  paidAt: string;
+  bankAccountId: string | null;
+};
+
 const createManualExpenseForm = (): ManualExpenseForm => ({
   description: "",
   counterparty: "",
@@ -129,6 +141,8 @@ export default function Egresos() {
   const [assignmentFilter, setAssignmentFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [analysisMonth, setAnalysisMonth] = useState(currentMonth);
+  const [paidExpenseRows, setPaidExpenseRows] = useState<PaidExpenseRecord[]>([]);
+  const [loadingPaidSummary, setLoadingPaidSummary] = useState(false);
   const [manualForm, setManualForm] = useState<ManualExpenseForm>(createManualExpenseForm());
   const [generateUntil, setGenerateUntil] = useState(addDaysIso(90));
   const [savingManual, setSavingManual] = useState(false);
@@ -248,10 +262,158 @@ export default function Egresos() {
     return monthlyCategorySummary.slice(0, 3).reduce((sum, item) => sum + item.totalAmount, 0) / total;
   }, [monthlyCategorySummary]);
 
+  useEffect(() => {
+    if (!selectedEmpresaId) {
+      setPaidExpenseRows([]);
+      return;
+    }
+
+    const fetchPaidExpenseRows = async () => {
+      setLoadingPaidSummary(true);
+      try {
+        const [{ data: paymentRows, error: paymentError }, { data: commitmentRows, error: commitmentError }] =
+          await Promise.all([
+            supabase
+              .from("facturas_pagos")
+              .select(`
+                id,
+                monto_aplicado,
+                movimientos_banco (
+                  fecha_movimiento,
+                  bank_account_id
+                ),
+                facturas (
+                  tipo,
+                  tercero_nombre,
+                  numero_documento,
+                  treasury_category_id
+                ),
+                rendiciones (
+                  tercero_nombre,
+                  descripcion,
+                  treasury_category_id
+                )
+              `)
+              .eq("empresa_id", selectedEmpresaId)
+              .eq("estado", "aplicado"),
+            supabase
+              .from("cash_commitments")
+              .select("id, source_type, counterparty, description, amount, expected_date, updated_at, category_id, bank_account_id")
+              .eq("empresa_id", selectedEmpresaId)
+              .eq("direction", "outflow")
+              .eq("status", "paid")
+              .is("archived_at", null),
+          ]);
+
+        if (paymentError) throw paymentError;
+        if (commitmentError) throw commitmentError;
+
+        const paidFromPayments: PaidExpenseRecord[] = ((paymentRows || []) as any[]).reduce<PaidExpenseRecord[]>(
+          (acc, row) => {
+            const movement = Array.isArray(row.movimientos_banco) ? row.movimientos_banco[0] : row.movimientos_banco;
+            const factura = Array.isArray(row.facturas) ? row.facturas[0] : row.facturas;
+            const rendicion = Array.isArray(row.rendiciones) ? row.rendiciones[0] : row.rendiciones;
+
+            if (factura?.tipo === "compra") {
+              const category = categories.find((item) => item.id === factura.treasury_category_id);
+              acc.push({
+                id: `factura-${row.id}`,
+                sourceType: "invoice_payable",
+                classificationCode: category?.code || "suppliers",
+                classificationName: category?.nombre || "Facturas proveedor",
+                counterparty: factura.tercero_nombre || "Sin contraparte",
+                description: factura.numero_documento || "Factura proveedor",
+                amount: Number(row.monto_aplicado || 0),
+                paidAt: movement?.fecha_movimiento || today,
+                bankAccountId: movement?.bank_account_id || null,
+              });
+            } else if (rendicion) {
+              const category = categories.find((item) => item.id === rendicion.treasury_category_id);
+              acc.push({
+                id: `rendicion-${row.id}`,
+                sourceType: "rendicion",
+                classificationCode: category?.code || "other_outflow",
+                classificationName: category?.nombre || "Rendiciones",
+                counterparty: rendicion.tercero_nombre || "Sin contraparte",
+                description: rendicion.descripcion || "Rendición",
+                amount: Number(row.monto_aplicado || 0),
+                paidAt: movement?.fecha_movimiento || today,
+                bankAccountId: movement?.bank_account_id || null,
+              });
+            }
+
+            return acc;
+          },
+          []
+        );
+
+        const paidFromCommitments: PaidExpenseRecord[] = ((commitmentRows || []) as any[]).map((row) => {
+          const category = categories.find((item) => item.id === row.category_id);
+          return {
+            id: `commitment-${row.id}`,
+            sourceType: "commitment" as const,
+            classificationCode: category?.code || "other_outflow",
+            classificationName: category?.nombre || "Compromiso",
+            counterparty: row.counterparty || "Sin contraparte",
+            description: row.description || "Compromiso",
+            amount: Number(row.amount || 0),
+            paidAt: row.expected_date || (row.updated_at ? String(row.updated_at).slice(0, 10) : today),
+            bankAccountId: row.bank_account_id || null,
+          };
+        });
+
+        setPaidExpenseRows(
+          [...paidFromPayments, ...paidFromCommitments].sort((a, b) => b.paidAt.localeCompare(a.paidAt))
+        );
+      } catch (error) {
+        console.error("Error loading paid expense summary:", error);
+        setPaidExpenseRows([]);
+      } finally {
+        setLoadingPaidSummary(false);
+      }
+    };
+
+    void fetchPaidExpenseRows();
+  }, [categories, selectedEmpresaId]);
+
   const openCommitments = useMemo(
     () => commitments.filter((item) => openStatuses.has(item.status)),
     [commitments]
   );
+
+  const paidExpenseSummary = useMemo(() => {
+    const monthlyRows = paidExpenseRows.filter((item) =>
+      analysisMonth ? item.paidAt?.slice(0, 7) === analysisMonth : true
+    );
+    const summaryMap = new Map<
+      string,
+      {
+        classificationCode: string;
+        classificationName: string;
+        totalAmount: number;
+        itemCount: number;
+      }
+    >();
+
+    for (const item of monthlyRows) {
+      const key = item.classificationCode || item.classificationName || "other_outflow";
+      const current = summaryMap.get(key) || {
+        classificationCode: item.classificationCode,
+        classificationName: item.classificationName,
+        totalAmount: 0,
+        itemCount: 0,
+      };
+      current.totalAmount += item.amount;
+      current.itemCount += 1;
+      summaryMap.set(key, current);
+    }
+
+    return {
+      rows: Array.from(summaryMap.values()).sort((a, b) => b.totalAmount - a.totalAmount),
+      monthlyRows,
+      totalPaid: monthlyRows.reduce((sum, item) => sum + item.amount, 0),
+    };
+  }, [analysisMonth, paidExpenseRows]);
 
   const nextSevenDaysTotal = useMemo(() => {
     const limit = addDaysIso(7);
@@ -1070,6 +1232,109 @@ export default function Egresos() {
               )}
             </TableBody>
           </Table>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Resumen de pagos ejecutados</CardTitle>
+          <CardDescription>
+            Revisa lo ya pagado por clasificación para entender cuánto salió en nómina, rendiciones, oficina, impuestos y otros rubros.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="grid gap-4 md:grid-cols-3">
+            <MetricCard
+              title="Pagado en el mes"
+              value={formatTreasuryCurrency(paidExpenseSummary.totalPaid, policy.monedaBase)}
+              description={`${paidExpenseSummary.monthlyRows.length} pago(s) registrados`}
+              icon={<Wallet className="h-4 w-4" />}
+            />
+            <MetricCard
+              title="Mayor clasificación pagada"
+              value={paidExpenseSummary.rows[0]?.classificationName || "Sin datos"}
+              description={
+                paidExpenseSummary.rows[0]
+                  ? formatTreasuryCurrency(paidExpenseSummary.rows[0].totalAmount, policy.monedaBase)
+                  : "No hay pagos en el mes"
+              }
+              icon={<TrendingUp className="h-4 w-4" />}
+            />
+            <MetricCard
+              title="Rubros pagados"
+              value={String(paidExpenseSummary.rows.length)}
+              description="Clasificaciones con pagos efectivos"
+              icon={<Landmark className="h-4 w-4" />}
+            />
+          </div>
+
+          <div className="rounded-xl border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Clasificación</TableHead>
+                  <TableHead className="text-right">Monto pagado</TableHead>
+                  <TableHead className="text-right">Pagos</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {paidExpenseSummary.rows.map((row) => (
+                  <TableRow key={row.classificationCode || row.classificationName}>
+                    <TableCell className="font-medium">{row.classificationName}</TableCell>
+                    <TableCell className="text-right font-semibold">
+                      {formatTreasuryCurrency(row.totalAmount, policy.monedaBase)}
+                    </TableCell>
+                    <TableCell className="text-right">{row.itemCount}</TableCell>
+                  </TableRow>
+                ))}
+                {paidExpenseSummary.rows.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={3} className="py-8 text-center text-muted-foreground">
+                      {loadingPaidSummary ? "Cargando resumen de pagos..." : "No hay pagos registrados para el mes seleccionado."}
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+
+          <div className="rounded-xl border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Fecha pago</TableHead>
+                  <TableHead>Origen</TableHead>
+                  <TableHead>Clasificación</TableHead>
+                  <TableHead>Contraparte</TableHead>
+                  <TableHead>Detalle</TableHead>
+                  <TableHead>Cuenta</TableHead>
+                  <TableHead className="text-right">Monto</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {paidExpenseSummary.monthlyRows.map((row) => (
+                  <TableRow key={row.id}>
+                    <TableCell>{formatTreasuryDate(row.paidAt)}</TableCell>
+                    <TableCell>{sourceLabels[row.sourceType] || row.sourceType}</TableCell>
+                    <TableCell>{row.classificationName}</TableCell>
+                    <TableCell>{row.counterparty}</TableCell>
+                    <TableCell>{row.description}</TableCell>
+                    <TableCell>{row.bankAccountId ? bankAccountMap.get(row.bankAccountId)?.nombre || "Cuenta" : "Sin cuenta"}</TableCell>
+                    <TableCell className="text-right font-semibold">
+                      {formatTreasuryCurrency(row.amount, policy.monedaBase)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {paidExpenseSummary.monthlyRows.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
+                      {loadingPaidSummary ? "Cargando pagos ejecutados..." : "No hay pagos ejecutados para el mes seleccionado."}
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
         </CardContent>
       </Card>
 
