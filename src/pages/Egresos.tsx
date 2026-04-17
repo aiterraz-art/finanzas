@@ -47,6 +47,7 @@ import type { CashCommitment, PaymentQueueItem, TreasuryPriority } from "@/lib/t
 import { cn } from "@/lib/utils";
 
 const today = new Date().toISOString().split("T")[0];
+const currentMonth = today.slice(0, 7);
 
 const addDaysIso = (days: number) => {
   const next = new Date();
@@ -126,6 +127,8 @@ export default function Egresos() {
   const [sourceFilter, setSourceFilter] = useState("all");
   const [priorityFilter, setPriorityFilter] = useState("all");
   const [assignmentFilter, setAssignmentFilter] = useState("all");
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [analysisMonth, setAnalysisMonth] = useState(currentMonth);
   const [manualForm, setManualForm] = useState<ManualExpenseForm>(createManualExpenseForm());
   const [generateUntil, setGenerateUntil] = useState(addDaysIso(90));
   const [savingManual, setSavingManual] = useState(false);
@@ -166,6 +169,10 @@ export default function Egresos() {
     [openItems]
   );
   const commitmentMap = useMemo(() => new Map(commitments.map((item) => [item.id, item])), [commitments]);
+  const outflowOpenItems = useMemo(
+    () => openItems.filter((item) => item.direction === "outflow"),
+    [openItems]
+  );
 
   const filteredQueue = useMemo(() => {
     const searchTerm = search.trim().toLowerCase();
@@ -174,6 +181,7 @@ export default function Egresos() {
       if (priorityFilter !== "all" && item.priority !== priorityFilter) return false;
       if (assignmentFilter === "assigned" && !item.bankAccountId) return false;
       if (assignmentFilter === "unassigned" && item.bankAccountId) return false;
+      if (categoryFilter !== "all" && item.categoryCode !== categoryFilter) return false;
       if (!searchTerm) return true;
       return [
         item.counterparty,
@@ -185,7 +193,60 @@ export default function Egresos() {
         .toLowerCase()
         .includes(searchTerm);
     });
-  }, [assignmentFilter, paymentQueue, priorityFilter, search, sourceFilter]);
+  }, [assignmentFilter, categoryFilter, paymentQueue, priorityFilter, search, sourceFilter]);
+
+  const monthlyCategorySummary = useMemo(() => {
+    const baseItems = outflowOpenItems.filter((item) =>
+      analysisMonth ? item.expectedDate?.slice(0, 7) === analysisMonth : true
+    );
+    const summaryMap = new Map<
+      string,
+      {
+        categoryCode: string;
+        categoryName: string;
+        totalAmount: number;
+        itemCount: number;
+        criticalAmount: number;
+        next7dAmount: number;
+        next7dCount: number;
+      }
+    >();
+    const limit = addDaysIso(7);
+
+    for (const item of baseItems) {
+      const key = item.categoryCode || item.categoryName || "other_outflow";
+      const current = summaryMap.get(key) || {
+        categoryCode: item.categoryCode,
+        categoryName: item.categoryName || "Sin categoría",
+        totalAmount: 0,
+        itemCount: 0,
+        criticalAmount: 0,
+        next7dAmount: 0,
+        next7dCount: 0,
+      };
+
+      current.totalAmount += item.amount;
+      current.itemCount += 1;
+      if (item.priority === "critical") {
+        current.criticalAmount += item.amount;
+      }
+      if (item.expectedDate && item.expectedDate <= limit) {
+        current.next7dAmount += item.amount;
+        current.next7dCount += 1;
+      }
+
+      summaryMap.set(key, current);
+    }
+
+    return Array.from(summaryMap.values()).sort((a, b) => b.totalAmount - a.totalAmount);
+  }, [analysisMonth, outflowOpenItems]);
+
+  const topCategory = monthlyCategorySummary[0] || null;
+  const topThreeCategoryShare = useMemo(() => {
+    const total = monthlyCategorySummary.reduce((sum, item) => sum + item.totalAmount, 0);
+    if (total <= 0) return 0;
+    return monthlyCategorySummary.slice(0, 3).reduce((sum, item) => sum + item.totalAmount, 0) / total;
+  }, [monthlyCategorySummary]);
 
   const openCommitments = useMemo(
     () => commitments.filter((item) => openStatuses.has(item.status)),
@@ -468,6 +529,91 @@ export default function Egresos() {
         />
       </div>
 
+      <Card>
+        <CardHeader className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <CardTitle>Resumen por clasificación</CardTitle>
+            <CardDescription>
+              Lectura rápida de los egresos abiertos del mes para decidir sobre nómina, oficina, impuestos y otros rubros.
+            </CardDescription>
+          </div>
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="space-y-2">
+              <Label>Mes de análisis</Label>
+              <Input type="month" value={analysisMonth} onChange={(event) => setAnalysisMonth(event.target.value)} />
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <div className="grid gap-4 md:grid-cols-3">
+            <MetricCard
+              title="Mayor rubro del mes"
+              value={topCategory ? topCategory.categoryName : "Sin datos"}
+              description={
+                topCategory
+                  ? formatTreasuryCurrency(topCategory.totalAmount, policy.monedaBase)
+                  : "No hay egresos abiertos en el mes"
+              }
+              icon={<Wallet className="h-4 w-4" />}
+            />
+            <MetricCard
+              title="Próximos 7 días"
+              value={formatTreasuryCurrency(
+                monthlyCategorySummary.reduce((sum, item) => sum + item.next7dAmount, 0),
+                policy.monedaBase
+              )}
+              description={`${monthlyCategorySummary.reduce((sum, item) => sum + item.next7dCount, 0)} pago(s) del período`}
+              tone="warning"
+              icon={<TrendingUp className="h-4 w-4" />}
+            />
+            <MetricCard
+              title="Concentración top 3"
+              value={`${Math.round(topThreeCategoryShare * 100)}%`}
+              description="Participación de las 3 clasificaciones más pesadas"
+              icon={<Landmark className="h-4 w-4" />}
+            />
+          </div>
+
+          <div className="rounded-xl border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Clasificación</TableHead>
+                  <TableHead className="text-right">Monto abierto</TableHead>
+                  <TableHead className="text-right">Items</TableHead>
+                  <TableHead className="text-right">Crítico</TableHead>
+                  <TableHead className="text-right">Próx. 7 días</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {monthlyCategorySummary.map((item) => (
+                  <TableRow key={item.categoryCode || item.categoryName}>
+                    <TableCell className="font-medium">{item.categoryName}</TableCell>
+                    <TableCell className="text-right font-semibold">
+                      {formatTreasuryCurrency(item.totalAmount, policy.monedaBase)}
+                    </TableCell>
+                    <TableCell className="text-right">{item.itemCount}</TableCell>
+                    <TableCell className="text-right">
+                      {item.criticalAmount > 0 ? formatTreasuryCurrency(item.criticalAmount, policy.monedaBase) : "—"}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {item.next7dAmount > 0 ? formatTreasuryCurrency(item.next7dAmount, policy.monedaBase) : "—"}
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {monthlyCategorySummary.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
+                      No hay egresos abiertos para el mes seleccionado.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+
       <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
         <Card>
           <CardHeader>
@@ -733,8 +879,8 @@ export default function Egresos() {
               Facturas proveedor, rendiciones y compromisos manuales en una sola vista operativa.
             </CardDescription>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar contraparte, categoría o acción..." />
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+            <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar contraparte, clasificación o acción..." />
             <Select value={sourceFilter} onValueChange={setSourceFilter}>
               <SelectTrigger>
                 <SelectValue />
@@ -768,16 +914,29 @@ export default function Egresos() {
                 <SelectItem value="unassigned">Sin cuenta asignada</SelectItem>
               </SelectContent>
             </Select>
+            <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todas las clasificaciones</SelectItem>
+                {outflowCategories.map((category) => (
+                  <SelectItem key={category.id} value={category.code}>
+                    {category.nombre}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </CardHeader>
         <CardContent>
           <Table>
             <TableHeader>
-              <TableRow>
-                <TableHead>Contraparte</TableHead>
-                <TableHead>Origen</TableHead>
-                <TableHead>Categoría</TableHead>
-                <TableHead className="text-right">Monto</TableHead>
+                <TableRow>
+                  <TableHead>Contraparte</TableHead>
+                  <TableHead>Origen</TableHead>
+                  <TableHead>Clasificación</TableHead>
+                  <TableHead className="text-right">Monto</TableHead>
                 <TableHead>Vence</TableHead>
                 <TableHead>Pago esperado</TableHead>
                 <TableHead>Cuenta</TableHead>
@@ -791,7 +950,10 @@ export default function Egresos() {
                 <TableRow key={`${item.sourceType}-${item.sourceId}`}>
                   <TableCell className="font-medium">{item.counterparty}</TableCell>
                   <TableCell>{sourceLabels[item.sourceType] || item.sourceType}</TableCell>
-                  <TableCell>{item.categoryName}</TableCell>
+                  <TableCell>
+                    <div className="font-medium">{item.categoryName}</div>
+                    <div className="text-xs text-muted-foreground">{item.categoryCode}</div>
+                  </TableCell>
                   <TableCell className="text-right font-semibold">{formatTreasuryCurrency(item.amount, policy.monedaBase)}</TableCell>
                   <TableCell>{formatTreasuryDate(item.dueDate)}</TableCell>
                   <TableCell>{formatTreasuryDate(item.expectedDate)}</TableCell>
@@ -845,6 +1007,7 @@ export default function Egresos() {
               <TableRow>
                 <TableHead>Descripción</TableHead>
                 <TableHead>Tipo</TableHead>
+                <TableHead>Clasificación</TableHead>
                 <TableHead>Contraparte</TableHead>
                 <TableHead className="text-right">Monto</TableHead>
                 <TableHead>Pago esperado</TableHead>
@@ -862,6 +1025,7 @@ export default function Egresos() {
                     {item.notes && <div className="mt-1 text-xs text-muted-foreground">{item.notes}</div>}
                   </TableCell>
                   <TableCell>{commitmentTypeLabels[item.sourceType]}</TableCell>
+                  <TableCell>{item.categoryName || "Sin clasificación"}</TableCell>
                   <TableCell>{item.counterparty || "Sin contraparte"}</TableCell>
                   <TableCell className="text-right font-semibold">{formatTreasuryCurrency(item.amount, policy.monedaBase)}</TableCell>
                   <TableCell>{formatTreasuryDate(item.expectedDate)}</TableCell>
@@ -899,7 +1063,7 @@ export default function Egresos() {
               ))}
               {commitments.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={9} className="py-10 text-center text-muted-foreground">
+                  <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
                     {loadingCommitments ? "Cargando compromisos..." : "Aún no hay compromisos registrados."}
                   </TableCell>
                 </TableRow>
