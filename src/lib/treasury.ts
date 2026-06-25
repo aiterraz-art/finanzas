@@ -389,11 +389,6 @@ export const normalizeDateInput = (value: unknown) => {
     return text;
   }
 
-  const direct = new Date(text);
-  if (!Number.isNaN(direct.getTime())) {
-    return format(direct, "yyyy-MM-dd");
-  }
-
   const slashMatch = text.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/);
   if (slashMatch) {
     const [, dd, mm, yyyy] = slashMatch;
@@ -402,6 +397,11 @@ export const normalizeDateInput = (value: unknown) => {
     if (!Number.isNaN(parsed.getTime())) {
       return format(parsed, "yyyy-MM-dd");
     }
+  }
+
+  const direct = new Date(text);
+  if (!Number.isNaN(direct.getTime())) {
+    return format(direct, "yyyy-MM-dd");
   }
 
   return null;

@@ -20,6 +20,7 @@ describe("treasury helpers", () => {
 
   it("normalizes dates from strings and Excel serial numbers", () => {
     expect(normalizeDateInput("15/04/2026")).toBe("2026-04-15");
+    expect(normalizeDateInput("08-05-2026")).toBe("2026-05-08");
     expect(normalizeDateInput("2026-04-15")).toBe("2026-04-15");
     expect(normalizeDateInput(46023)).toBe("2026-01-01");
   });
