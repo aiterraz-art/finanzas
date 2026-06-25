@@ -411,9 +411,30 @@ export const normalizeMoneyInput = (value: unknown) => {
   if (typeof value === "number") return Number.isFinite(value) ? value : 0;
   const text = normalizeText(value);
   if (!text) return 0;
-  const cleaned = text.replace(/\s/g, "").replace(/\./g, "").replace(",", ".");
+  const isNegative = text.includes("(") && text.includes(")");
+  const sanitized = text.replace(/[^\d,.-]/g, "");
+  if (!sanitized) return 0;
+
+  let cleaned = sanitized;
+  const dotMatches = cleaned.match(/\./g) || [];
+  const commaMatches = cleaned.match(/,/g) || [];
+
+  if (dotMatches.length > 0 && commaMatches.length > 0) {
+    cleaned = cleaned.replace(/\./g, "").replace(",", ".");
+  } else if (commaMatches.length > 0) {
+    cleaned = cleaned.replace(/\./g, "").replace(",", ".");
+  } else if (dotMatches.length > 1) {
+    cleaned = cleaned.replace(/\./g, "");
+  } else if (dotMatches.length === 1) {
+    const [, decimals = ""] = cleaned.split(".");
+    if (decimals.length === 3) {
+      cleaned = cleaned.replace(".", "");
+    }
+  }
+
   const parsed = Number(cleaned);
-  return Number.isFinite(parsed) ? parsed : 0;
+  if (!Number.isFinite(parsed)) return 0;
+  return isNegative ? -Math.abs(parsed) : parsed;
 };
 
 export const buildBankSourceHash = (params: {
@@ -585,19 +606,59 @@ export const normalizeBankImportRow = (
   );
   if (!fechaMovimiento) return null;
 
-  const descripcion = normalizeText(
+  const hora = normalizeText(getValue("hora", "time")) || null;
+  const tipoMovimiento = normalizeText(
+    getValue("tipo movimiento", "tipo de movimiento", "tipo", "movement type")
+  );
+  const beneficiario = normalizeText(
+    getValue("beneficiario", "destinatario", "nombre beneficiario", "recipient", "payee")
+  );
+  const productoOrigen = normalizeText(
+    getValue("producto origen", "producto", "cuenta origen", "origen", "source product")
+  );
+  const canal = normalizeText(getValue("canal", "channel"));
+
+  const descripcionDirecta = normalizeText(
     getValue("descripcion", "descripción", "glosa", "detalle", "description", "concepto", "movimiento")
   );
+  const descripcionBase =
+    descripcionDirecta && descripcionDirecta !== tipoMovimiento ? descripcionDirecta : "";
+  const descripcion =
+    descripcionBase ||
+    [tipoMovimiento, beneficiario].filter(Boolean).join(" • ") ||
+    [tipoMovimiento, productoOrigen, canal].filter(Boolean).join(" • ");
   if (!descripcion) return null;
 
-  const abono = normalizeMoneyInput(
-    getValue("abono", "deposito", "credito", "entrada", "ingreso", "ingreso (+)")
-  );
-  const cargo = normalizeMoneyInput(
-    getValue("cargo", "debito", "salida", "egreso", "egreso (-)")
-  );
+  const abonoRaw = getValue("abono", "deposito", "credito", "entrada", "ingreso", "ingreso (+)");
+  const cargoRaw = getValue("cargo", "debito", "salida", "egreso", "egreso (-)");
+  const hasAbonoColumn = abonoRaw !== null && abonoRaw !== undefined && normalizeText(abonoRaw) !== "";
+  const hasCargoColumn = cargoRaw !== null && cargoRaw !== undefined && normalizeText(cargoRaw) !== "";
+  const abono = normalizeMoneyInput(abonoRaw);
+  const cargo = normalizeMoneyInput(cargoRaw);
   const montoRaw = normalizeMoneyInput(getValue("monto", "amount", "importe"));
-  const monto = abono || cargo ? abono - cargo : montoRaw;
+  const singleAmountLooksLikeOutflow = (() => {
+    const normalizedSignature = [tipoMovimiento, beneficiario, descripcionDirecta]
+      .filter(Boolean)
+      .join(" ")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase();
+
+    const inflowPatterns = ["abono", "deposito", "credito", "ingreso", "recib", "recaud", "liquidacion"];
+    const outflowPatterns = ["transferencia", "pago", "cargo", "debito", "egreso", "giro", "compra", "impto", "tgr"];
+    const hasInflowPattern = inflowPatterns.some((pattern) => normalizedSignature.includes(pattern));
+    const hasOutflowPattern = outflowPatterns.some((pattern) => normalizedSignature.includes(pattern));
+
+    if (hasInflowPattern && !hasOutflowPattern) return false;
+    if (hasOutflowPattern) return true;
+    return Boolean(beneficiario || productoOrigen);
+  })();
+  const monto =
+    hasAbonoColumn || hasCargoColumn
+      ? abono - cargo
+      : singleAmountLooksLikeOutflow
+        ? -Math.abs(montoRaw)
+        : montoRaw;
   if (!monto) return null;
 
   const saldo = (() => {
@@ -606,9 +667,12 @@ export const normalizeBankImportRow = (
     return normalizeMoneyInput(value);
   })();
 
-  const numeroOperacion = normalizeText(
-    getValue("n_operacion", "n operacion", "operacion", "referencia", "nro operacion", "nro_operacion")
-  ) || null;
+  const numeroOperacion =
+    normalizeText(
+      getValue("n_operacion", "n operacion", "operacion", "referencia", "nro operacion", "nro_operacion")
+    ) ||
+    hora ||
+    null;
   const sucursal = normalizeText(getValue("sucursal", "branch")) || null;
   const postedAt = normalizeDateInput(getValue("fecha contable", "posted_at"));
   const knownKeys = new Set([

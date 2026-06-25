@@ -106,6 +106,44 @@ describe("treasury helpers", () => {
     expect(parsed?.saldo).toBe(27545807);
   });
 
+  it("parses the beneficiary-based bank layout with currency symbols and keeps repeated rows unique by hour", () => {
+    const first = normalizeBankImportRow(
+      {
+        Fecha: "29-05-2026",
+        Hora: "17:06:23",
+        "Tipo Movimiento": "TRANSFERENCIA",
+        Beneficiario: "FABIOLA TERRAZA",
+        "Producto Origen": "993918571",
+        Canal: "WEB",
+        Monto: "$ 470.000",
+      },
+      "acc-1"
+    );
+
+    const second = normalizeBankImportRow(
+      {
+        Fecha: "29-05-2026",
+        Hora: "16:40:52",
+        "Tipo Movimiento": "TRANSFERENCIA",
+        Beneficiario: "FABIOLA TERRAZA",
+        "Producto Origen": "993918571",
+        Canal: "WEB",
+        Monto: "$ 470.000",
+      },
+      "acc-1"
+    );
+
+    expect(first).not.toBeNull();
+    expect(first?.fechaMovimiento).toBe("2026-05-29");
+    expect(first?.descripcion).toBe("TRANSFERENCIA • FABIOLA TERRAZA");
+    expect(first?.monto).toBe(-470000);
+    expect(first?.salidaBanco).toBe(470000);
+    expect(first?.numeroOperacion).toBe("17:06:23");
+    expect(first?.columnasExtra.Hora).toBe("17:06:23");
+    expect(first?.columnasExtra.Beneficiario).toBe("FABIOLA TERRAZA");
+    expect(second?.sourceHash).not.toBe(first?.sourceHash);
+  });
+
   it("detects receivables aging reports and avoids importing them as bank statements", () => {
     const rows = [
       ["3DENTAL SPA"],
