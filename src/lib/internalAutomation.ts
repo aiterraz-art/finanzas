@@ -8,6 +8,11 @@ type CreateUserPayload = {
   job_title?: string;
 };
 
+type ResetUserPasswordPayload = {
+  user_id: string;
+  email?: string;
+};
+
 type CollectionReminderPayload = {
   empresa_id: string;
   tercero_id: string;
@@ -34,6 +39,16 @@ export const inviteUserInternal = async (email: string, role: InviteRole) => {
 
 export const createUserInternal = async (payload: CreateUserPayload) => {
   const { data, error } = await supabase.functions.invoke("create-user", {
+    body: payload,
+  });
+
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return data as { ok: true; user_id: string; email: string; password: string };
+};
+
+export const resetUserPasswordInternal = async (payload: ResetUserPasswordPayload) => {
+  const { data, error } = await supabase.functions.invoke("reset-user-password", {
     body: payload,
   });
 

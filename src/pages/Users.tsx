@@ -29,10 +29,10 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Building2, Copy, Loader2, Pencil, Plus, Save, ShieldPlus, Upload, UserX } from 'lucide-react';
+import { Building2, Copy, KeyRound, Loader2, Pencil, Plus, Save, ShieldPlus, Upload, UserX } from 'lucide-react';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
-import { createUserInternal } from '@/lib/internalAutomation';
+import { createUserInternal, resetUserPasswordInternal } from '@/lib/internalAutomation';
 import { useCompany } from '@/contexts/CompanyContext';
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -113,7 +113,8 @@ export default function Users() {
     const [isCreateUserOpen, setIsCreateUserOpen] = useState(false);
     const [isCreatingUser, setIsCreatingUser] = useState(false);
     const [newUserForm, setNewUserForm] = useState<NewUserForm>(EMPTY_NEW_USER_FORM);
-    const [createdCredentials, setCreatedCredentials] = useState<{ email: string; password: string } | null>(null);
+    const [createdCredentials, setCreatedCredentials] = useState<{ email: string; password: string; mode: 'created' | 'regenerated' } | null>(null);
+    const [resettingPasswordUserId, setResettingPasswordUserId] = useState<string | null>(null);
 
     const [isCompanyDialogOpen, setIsCompanyDialogOpen] = useState(false);
     const [isSavingCompany, setIsSavingCompany] = useState(false);
@@ -222,7 +223,7 @@ export default function Users() {
                 if (membershipError) throw membershipError;
             }
 
-            setCreatedCredentials({ email: created.email, password: created.password });
+            setCreatedCredentials({ email: created.email, password: created.password, mode: 'created' });
             setNewUserForm(EMPTY_NEW_USER_FORM);
             fetchUsers();
         } catch (error: any) {
@@ -247,6 +248,28 @@ export default function Users() {
             alert("Clave copiada al portapapeles.");
         } catch {
             alert("No se pudo copiar automáticamente. Copia manualmente la clave.");
+        }
+    };
+
+    const handleResetPassword = async (profile: any) => {
+        if (!confirm(`¿Regenerar la contraseña temporal de ${profile.email}? La clave actual dejará de funcionar.`)) return;
+
+        setResettingPasswordUserId(profile.id);
+        try {
+            const reset = await resetUserPasswordInternal({
+                user_id: profile.id,
+                email: profile.email,
+            });
+
+            setCreatedCredentials({
+                email: reset.email || profile.email,
+                password: reset.password,
+                mode: 'regenerated',
+            });
+        } catch (error: any) {
+            alert(`No se pudo regenerar la contraseña: ${error.message}`);
+        } finally {
+            setResettingPasswordUserId(null);
         }
     };
 
@@ -735,6 +758,32 @@ export default function Users() {
                     </Dialog>
                 </CardHeader>
                 <CardContent>
+                    {createdCredentials && (
+                        <div className="mb-4 rounded-md border bg-muted/30 p-3 space-y-3">
+                            <p className="text-sm font-medium">
+                                {createdCredentials.mode === 'created'
+                                    ? 'Usuario creado. Entrega estas credenciales:'
+                                    : 'Contraseña regenerada. Entrega estas credenciales:'}
+                            </p>
+                            <div className="grid gap-2 md:grid-cols-[1fr_1fr_auto] md:items-end">
+                                <div className="grid gap-2">
+                                    <Label>Correo</Label>
+                                    <Input value={createdCredentials.email} readOnly />
+                                </div>
+                                <div className="grid gap-2">
+                                    <Label>Clave temporal</Label>
+                                    <Input value={createdCredentials.password} readOnly />
+                                </div>
+                                <Button type="button" variant="outline" onClick={copyPassword} className="gap-2">
+                                    <Copy className="h-4 w-4" />
+                                    Copiar
+                                </Button>
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                                El usuario deberá cambiar la clave al iniciar sesión.
+                            </p>
+                        </div>
+                    )}
                     {!selectedEmpresaId ? (
                         <div className="rounded-md border p-4 text-sm text-muted-foreground">
                             Selecciona una empresa en la tabla superior para asignar permisos.
@@ -831,6 +880,20 @@ export default function Users() {
                                                 <TableCell>{formatProfileCreatedAt(profile.created_at)}</TableCell>
                                                 <TableCell className="text-right">
                                                     <div className="flex items-center justify-end gap-2">
+                                                        <Button
+                                                            variant="ghost"
+                                                            size="icon"
+                                                            className="h-8 w-8 text-muted-foreground hover:text-primary"
+                                                            onClick={() => handleResetPassword(profile)}
+                                                            title="Regenerar contraseña temporal"
+                                                            disabled={!isActiveProfile || resettingPasswordUserId === profile.id}
+                                                        >
+                                                            {resettingPasswordUserId === profile.id ? (
+                                                                <Loader2 className="h-4 w-4 animate-spin" />
+                                                            ) : (
+                                                                <KeyRound className="h-4 w-4" />
+                                                            )}
+                                                        </Button>
                                                         {companyRole && !isGlobalAdminRow && (
                                                             <Button
                                                                 variant="ghost"
