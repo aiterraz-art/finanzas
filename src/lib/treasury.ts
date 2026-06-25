@@ -633,8 +633,8 @@ export const normalizeBankImportRow = (
   const cargoRaw = getValue("cargo", "debito", "salida", "egreso", "egreso (-)");
   const hasAbonoColumn = abonoRaw !== null && abonoRaw !== undefined && normalizeText(abonoRaw) !== "";
   const hasCargoColumn = cargoRaw !== null && cargoRaw !== undefined && normalizeText(cargoRaw) !== "";
-  const abono = normalizeMoneyInput(abonoRaw);
-  const cargo = normalizeMoneyInput(cargoRaw);
+  const abono = Math.abs(normalizeMoneyInput(abonoRaw));
+  const cargo = Math.abs(normalizeMoneyInput(cargoRaw));
   const montoRaw = normalizeMoneyInput(getValue("monto", "amount", "importe"));
   const singleAmountLooksLikeOutflow = (() => {
     const normalizedSignature = [tipoMovimiento, beneficiario, descripcionDirecta]
@@ -669,7 +669,18 @@ export const normalizeBankImportRow = (
 
   const numeroOperacion =
     normalizeText(
-      getValue("n_operacion", "n operacion", "operacion", "referencia", "nro operacion", "nro_operacion")
+      getValue(
+        "n_operacion",
+        "n operacion",
+        "operacion",
+        "referencia",
+        "nro operacion",
+        "nro_operacion",
+        "n doc",
+        "n° doc",
+        "numero doc",
+        "numero documento"
+      )
     ) ||
     hora ||
     null;

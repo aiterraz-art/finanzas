@@ -144,6 +144,45 @@ describe("treasury helpers", () => {
     expect(second?.sourceHash).not.toBe(first?.sourceHash);
   });
 
+  it("parses bank statements with N° Doc, Abonos and negative Cargos", () => {
+    const inflow = normalizeBankImportRow(
+      {
+        Fecha: "14-05-2026",
+        Descripción: "TEF 77794233-6 COMERCIALIZAD",
+        "N° Doc.": 5640873540,
+        Cargos: "",
+        Abonos: "200000",
+        Saldo: "200010",
+      },
+      "acc-1"
+    );
+
+    const outflow = normalizeBankImportRow(
+      {
+        Fecha: "14-05-2026",
+        Descripción: "TEF 13674566-2 CRISTIAN ZUNIGA",
+        "N° Doc.": 5641071602,
+        Cargos: "-10000",
+        Abonos: "",
+        Saldo: "190010",
+      },
+      "acc-1"
+    );
+
+    expect(inflow).not.toBeNull();
+    expect(inflow?.monto).toBe(200000);
+    expect(inflow?.entradaBanco).toBe(200000);
+    expect(inflow?.salidaBanco).toBe(0);
+    expect(inflow?.numeroOperacion).toBe("5640873540");
+
+    expect(outflow).not.toBeNull();
+    expect(outflow?.monto).toBe(-10000);
+    expect(outflow?.entradaBanco).toBe(0);
+    expect(outflow?.salidaBanco).toBe(10000);
+    expect(outflow?.numeroOperacion).toBe("5641071602");
+    expect(outflow?.saldo).toBe(190010);
+  });
+
   it("detects receivables aging reports and avoids importing them as bank statements", () => {
     const rows = [
       ["3DENTAL SPA"],
