@@ -207,6 +207,7 @@ export default function Proveedores() {
           .eq("empresa_id", selectedEmpresaId)
           .eq("tipo", "proveedor")
           .eq("estado", "activo")
+          .or("es_trabajador.is.null,es_trabajador.eq.false")
           .order("razon_social", { ascending: true }),
         supabase
           .from("facturas")
@@ -355,6 +356,7 @@ export default function Proveedores() {
         rut: cleanRut,
         tipo: "proveedor",
         estado: "activo",
+        es_trabajador: false,
       });
       if (error) throw error;
 

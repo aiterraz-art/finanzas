@@ -74,10 +74,20 @@ export default function ManualInvoiceEntry({ embedded = false }: ManualInvoiceEn
         if (!selectedEmpresaId) return;
         const fetchTerceros = async () => {
             try {
-                const { data, error } = await supabase.from('terceros').select('id, razon_social, plazo_pago_dias, tipo').eq('empresa_id', selectedEmpresaId).eq('estado', 'activo');
+                const { data, error } = await supabase
+                    .from('terceros')
+                    .select('id, razon_social, plazo_pago_dias, tipo')
+                    .eq('empresa_id', selectedEmpresaId)
+                    .eq('estado', 'activo')
+                    .or('es_trabajador.is.null,es_trabajador.eq.false');
                 if (error) {
                     if (error.code === 'PGRST204' || error.message.includes('plazo_pago_dias')) {
-                        const { data: data2 } = await supabase.from('terceros').select('id, razon_social, tipo').eq('empresa_id', selectedEmpresaId).eq('estado', 'activo');
+                        const { data: data2 } = await supabase
+                            .from('terceros')
+                            .select('id, razon_social, tipo')
+                            .eq('empresa_id', selectedEmpresaId)
+                            .eq('estado', 'activo')
+                            .or('es_trabajador.is.null,es_trabajador.eq.false');
                         setTerceros(data2 || []);
                     } else throw error;
                 } else {

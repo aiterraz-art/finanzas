@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
-import { Archive, ArrowRightLeft, Landmark, Loader2, Plus, RefreshCcw, TrendingUp, Wallet } from "lucide-react";
+import { Archive, ArrowRightLeft, ClipboardList, Landmark, Loader2, Plus, RefreshCcw, TrendingUp, Truck, UserRound, Wallet } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -81,18 +81,42 @@ const statusLabels: Record<CashCommitment["status"], string> = {
 };
 
 type ManualExpenseForm = {
+  expenseKind: ExpenseFlowKind;
+  selectedCounterpartyId: string;
   description: string;
   counterparty: string;
-  categoryId: string;
-  sourceType: CashCommitment["sourceType"];
   amount: string;
   dueDate: string;
-  expectedDate: string;
-  priority: TreasuryPriority;
   bankAccountId: string;
   notes: string;
-  status: CashCommitment["status"];
-  isEstimated: string;
+};
+
+type ExpenseFlowKind = "services" | "suppliers" | "payroll" | "renditions";
+
+type CounterpartyRecord = {
+  id: string;
+  rut: string | null;
+  razon_social: string;
+  email: string | null;
+  telefono: string | null;
+  direccion: string | null;
+  cargo: string | null;
+};
+
+type ProviderForm = {
+  rut: string;
+  razonSocial: string;
+  email: string;
+  telefono: string;
+  direccion: string;
+};
+
+type WorkerForm = {
+  rut: string;
+  razonSocial: string;
+  cargo: string;
+  email: string;
+  telefono: string;
 };
 
 type QueueEditForm = {
@@ -117,19 +141,81 @@ type PaidExpenseRecord = {
 };
 
 const createManualExpenseForm = (): ManualExpenseForm => ({
+  expenseKind: "services",
+  selectedCounterpartyId: "",
   description: "",
   counterparty: "",
-  categoryId: "",
-  sourceType: "manual",
   amount: "",
   dueDate: today,
-  expectedDate: today,
-  priority: "normal",
   bankAccountId: "none",
   notes: "",
-  status: "planned",
-  isEstimated: "false",
 });
+
+const createProviderForm = (): ProviderForm => ({
+  rut: "",
+  razonSocial: "",
+  email: "",
+  telefono: "",
+  direccion: "",
+});
+
+const createWorkerForm = (): WorkerForm => ({
+  rut: "",
+  razonSocial: "",
+  cargo: "",
+  email: "",
+  telefono: "",
+});
+
+const expenseTypeConfig: Record<
+  ExpenseFlowKind,
+  {
+    label: string;
+    categoryCode: string;
+    counterpartyMode: "freeText" | "provider" | "worker";
+    counterpartyLabel: string;
+    counterpartyPlaceholder: string;
+    defaultPriority: TreasuryPriority;
+    helperText: string;
+  }
+> = {
+  services: {
+    label: "Pago servicios",
+    categoryCode: "services",
+    counterpartyMode: "freeText",
+    counterpartyLabel: "Prestador o servicio",
+    counterpartyPlaceholder: "Ej: Internet oficina, software, arriendo, SII",
+    defaultPriority: "normal",
+    helperText: "Ideal para servicios recurrentes o egresos operativos que no pasan por factura proveedor.",
+  },
+  suppliers: {
+    label: "Pago proveedores",
+    categoryCode: "suppliers",
+    counterpartyMode: "provider",
+    counterpartyLabel: "Proveedor",
+    counterpartyPlaceholder: "Selecciona proveedor",
+    defaultPriority: "high",
+    helperText: "Usa el registro de proveedores para mantener la contraparte limpia y evitar duplicados manuales.",
+  },
+  payroll: {
+    label: "Pago remuneraciones",
+    categoryCode: "payroll",
+    counterpartyMode: "worker",
+    counterpartyLabel: "Trabajador",
+    counterpartyPlaceholder: "Selecciona trabajador",
+    defaultPriority: "critical",
+    helperText: "El egreso queda clasificado automáticamente como remuneración dentro de tesorería.",
+  },
+  renditions: {
+    label: "Pago rendiciones",
+    categoryCode: "other_outflow",
+    counterpartyMode: "worker",
+    counterpartyLabel: "Trabajador que rinde",
+    counterpartyPlaceholder: "Selecciona trabajador",
+    defaultPriority: "high",
+    helperText: "Mientras no exista una clasificación específica, este pago se registra en Otros Egresos.",
+  },
+};
 
 export default function Egresos() {
   const { selectedEmpresa, selectedEmpresaId, selectedRole } = useCompany();
@@ -144,6 +230,15 @@ export default function Egresos() {
   const [paidExpenseRows, setPaidExpenseRows] = useState<PaidExpenseRecord[]>([]);
   const [loadingPaidSummary, setLoadingPaidSummary] = useState(false);
   const [manualForm, setManualForm] = useState<ManualExpenseForm>(createManualExpenseForm());
+  const [providers, setProviders] = useState<CounterpartyRecord[]>([]);
+  const [workers, setWorkers] = useState<CounterpartyRecord[]>([]);
+  const [loadingCounterparties, setLoadingCounterparties] = useState(false);
+  const [isProviderDialogOpen, setIsProviderDialogOpen] = useState(false);
+  const [isWorkerDialogOpen, setIsWorkerDialogOpen] = useState(false);
+  const [providerForm, setProviderForm] = useState<ProviderForm>(createProviderForm());
+  const [workerForm, setWorkerForm] = useState<WorkerForm>(createWorkerForm());
+  const [savingProvider, setSavingProvider] = useState(false);
+  const [savingWorker, setSavingWorker] = useState(false);
   const [generateUntil, setGenerateUntil] = useState(addDaysIso(90));
   const [savingManual, setSavingManual] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -170,6 +265,20 @@ export default function Egresos() {
   const outflowCategories = useMemo(
     () => categories.filter((category) => category.active && category.directionScope !== "inflow"),
     [categories]
+  );
+  const categoriesByCode = useMemo(() => new Map(categories.map((category) => [category.code, category])), [categories]);
+  const selectedExpenseConfig = expenseTypeConfig[manualForm.expenseKind];
+  const selectedExpenseCategory = categoriesByCode.get(selectedExpenseConfig.categoryCode)
+    || categoriesByCode.get("other_outflow")
+    || null;
+  const selectedCounterpartyOptions = useMemo(() => {
+    if (selectedExpenseConfig.counterpartyMode === "provider") return providers;
+    if (selectedExpenseConfig.counterpartyMode === "worker") return workers;
+    return [];
+  }, [providers, selectedExpenseConfig.counterpartyMode, workers]);
+  const selectedCounterpartyName = useMemo(
+    () => selectedCounterpartyOptions.find((item) => item.id === manualForm.selectedCounterpartyId)?.razon_social || "",
+    [manualForm.selectedCounterpartyId, selectedCounterpartyOptions]
   );
 
   const bankAccountMap = useMemo(() => new Map(bankAccounts.map((account) => [account.id, account])), [bankAccounts]);
@@ -435,6 +544,54 @@ export default function Egresos() {
     [paymentQueue]
   );
 
+  useEffect(() => {
+    if (!selectedEmpresaId) {
+      setProviders([]);
+      setWorkers([]);
+      return;
+    }
+
+    const fetchCounterparties = async () => {
+      setLoadingCounterparties(true);
+      try {
+        const [
+          { data: providerRows, error: providerError },
+          { data: workerRows, error: workerError },
+        ] = await Promise.all([
+          supabase
+            .from("terceros")
+            .select("id, rut, razon_social, email, telefono, direccion, cargo")
+            .eq("empresa_id", selectedEmpresaId)
+            .eq("tipo", "proveedor")
+            .eq("estado", "activo")
+            .or("es_trabajador.is.null,es_trabajador.eq.false")
+            .order("razon_social", { ascending: true }),
+          supabase
+            .from("terceros")
+            .select("id, rut, razon_social, email, telefono, direccion, cargo")
+            .eq("empresa_id", selectedEmpresaId)
+            .eq("estado", "activo")
+            .eq("es_trabajador", true)
+            .order("razon_social", { ascending: true }),
+        ]);
+
+        if (providerError) throw providerError;
+        if (workerError) throw workerError;
+
+        setProviders((providerRows || []) as CounterpartyRecord[]);
+        setWorkers((workerRows || []) as CounterpartyRecord[]);
+      } catch (error) {
+        console.error("Error loading expense counterparties:", error);
+        setProviders([]);
+        setWorkers([]);
+      } finally {
+        setLoadingCounterparties(false);
+      }
+    };
+
+    void fetchCounterparties();
+  }, [selectedEmpresaId]);
+
   const refreshAll = async () => {
     await Promise.all([
       refreshQueue(),
@@ -445,11 +602,67 @@ export default function Egresos() {
     ]);
   };
 
+  const refreshCounterparties = async () => {
+    if (!selectedEmpresaId) return;
+    setLoadingCounterparties(true);
+    try {
+      const [
+        { data: providerRows, error: providerError },
+        { data: workerRows, error: workerError },
+      ] = await Promise.all([
+        supabase
+          .from("terceros")
+          .select("id, rut, razon_social, email, telefono, direccion, cargo")
+          .eq("empresa_id", selectedEmpresaId)
+          .eq("tipo", "proveedor")
+          .eq("estado", "activo")
+          .or("es_trabajador.is.null,es_trabajador.eq.false")
+          .order("razon_social", { ascending: true }),
+        supabase
+          .from("terceros")
+          .select("id, rut, razon_social, email, telefono, direccion, cargo")
+          .eq("empresa_id", selectedEmpresaId)
+          .eq("estado", "activo")
+          .eq("es_trabajador", true)
+          .order("razon_social", { ascending: true }),
+      ]);
+      if (providerError) throw providerError;
+      if (workerError) throw workerError;
+      setProviders((providerRows || []) as CounterpartyRecord[]);
+      setWorkers((workerRows || []) as CounterpartyRecord[]);
+    } catch (error) {
+      console.error("Error refreshing expense counterparties:", error);
+    } finally {
+      setLoadingCounterparties(false);
+    }
+  };
+
+  const handleExpenseKindChange = (value: ExpenseFlowKind) => {
+    setManualForm((current) => ({
+      ...current,
+      expenseKind: value,
+      selectedCounterpartyId: "",
+      counterparty: "",
+    }));
+  };
+
   const handleCreateManualExpense = async (event: FormEvent) => {
     event.preventDefault();
     if (!selectedEmpresaId || !canEdit) return;
-    if (!manualForm.description || !manualForm.categoryId || !manualForm.amount) {
-      alert("Descripción, categoría y monto son obligatorios.");
+    const config = expenseTypeConfig[manualForm.expenseKind];
+    const category = categoriesByCode.get(config.categoryCode) || categoriesByCode.get("other_outflow");
+    const counterparty =
+      config.counterpartyMode === "freeText"
+        ? manualForm.counterparty.trim()
+        : selectedCounterpartyOptions.find((item) => item.id === manualForm.selectedCounterpartyId)?.razon_social || "";
+
+    if (!manualForm.description.trim() || !manualForm.amount || !category) {
+      alert("Completa descripción, monto y asegúrate de tener la clasificación disponible.");
+      return;
+    }
+
+    if (!counterparty) {
+      alert(`Debes indicar ${config.counterpartyLabel.toLowerCase()}.`);
       return;
     }
 
@@ -459,19 +672,19 @@ export default function Egresos() {
         empresa_id: selectedEmpresaId,
         template_id: null,
         bank_account_id: manualForm.bankAccountId === "none" ? null : manualForm.bankAccountId,
-        category_id: manualForm.categoryId,
-        source_type: manualForm.sourceType,
+        category_id: category.id,
+        source_type: "manual",
         source_reference: null,
         direction: "outflow",
-        counterparty: manualForm.counterparty || null,
-        description: manualForm.description,
+        counterparty,
+        description: manualForm.description.trim(),
         amount: Number(manualForm.amount || 0),
-        is_estimated: manualForm.isEstimated === "true",
+        is_estimated: false,
         due_date: manualForm.dueDate,
-        expected_date: manualForm.expectedDate || manualForm.dueDate,
-        priority: manualForm.priority,
-        status: manualForm.status,
-        notes: manualForm.notes || null,
+        expected_date: manualForm.dueDate,
+        priority: config.defaultPriority,
+        status: "planned",
+        notes: manualForm.notes.trim() || null,
       });
       if (error) throw error;
 
@@ -482,6 +695,92 @@ export default function Egresos() {
       alert(err.message || "No se pudo crear el egreso manual.");
     } finally {
       setSavingManual(false);
+    }
+  };
+
+  const handleCreateProvider = async () => {
+    if (!selectedEmpresaId || !canEdit) return;
+    if (!providerForm.rut.trim() || !providerForm.razonSocial.trim()) {
+      alert("RUT y razón social del proveedor son obligatorios.");
+      return;
+    }
+
+    setSavingProvider(true);
+    try {
+      const { data, error } = await supabase
+        .from("terceros")
+        .insert({
+          empresa_id: selectedEmpresaId,
+          rut: providerForm.rut.trim(),
+          razon_social: providerForm.razonSocial.trim(),
+          email: providerForm.email.trim() || null,
+          telefono: providerForm.telefono.trim() || null,
+          direccion: providerForm.direccion.trim() || null,
+          tipo: "proveedor",
+          estado: "activo",
+          es_trabajador: false,
+        })
+        .select("id, razon_social")
+        .single();
+      if (error) throw error;
+
+      await refreshCounterparties();
+      setManualForm((current) => ({
+        ...current,
+        expenseKind: "suppliers",
+        selectedCounterpartyId: data.id,
+        counterparty: "",
+      }));
+      setProviderForm(createProviderForm());
+      setIsProviderDialogOpen(false);
+    } catch (error: any) {
+      console.error("Error creating provider:", error);
+      alert(error.message || "No se pudo crear el proveedor.");
+    } finally {
+      setSavingProvider(false);
+    }
+  };
+
+  const handleCreateWorker = async () => {
+    if (!selectedEmpresaId || !canEdit) return;
+    if (!workerForm.rut.trim() || !workerForm.razonSocial.trim()) {
+      alert("RUT y nombre del trabajador son obligatorios.");
+      return;
+    }
+
+    setSavingWorker(true);
+    try {
+      const { data, error } = await supabase
+        .from("terceros")
+        .insert({
+          empresa_id: selectedEmpresaId,
+          rut: workerForm.rut.trim(),
+          razon_social: workerForm.razonSocial.trim(),
+          cargo: workerForm.cargo.trim() || null,
+          email: workerForm.email.trim() || null,
+          telefono: workerForm.telefono.trim() || null,
+          tipo: "proveedor",
+          estado: "activo",
+          es_trabajador: true,
+        })
+        .select("id, razon_social")
+        .single();
+      if (error) throw error;
+
+      await refreshCounterparties();
+      setManualForm((current) => ({
+        ...current,
+        expenseKind: current.expenseKind === "renditions" ? "renditions" : "payroll",
+        selectedCounterpartyId: data.id,
+        counterparty: "",
+      }));
+      setWorkerForm(createWorkerForm());
+      setIsWorkerDialogOpen(false);
+    } catch (error: any) {
+      console.error("Error creating worker:", error);
+      alert(error.message || "No se pudo crear el trabajador.");
+    } finally {
+      setSavingWorker(false);
     }
   };
 
@@ -661,6 +960,252 @@ export default function Egresos() {
           </CardContent>
         </Card>
       )}
+
+      <div className="grid gap-6 xl:grid-cols-[1.25fr_0.75fr]">
+        <Card>
+          <CardHeader>
+            <CardTitle>Crear egreso</CardTitle>
+            <CardDescription>
+              Registra el egreso desde aquí. La clasificación en tesorería se asigna automáticamente según el tipo elegido.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form className="space-y-5" onSubmit={handleCreateManualExpense}>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>Tipo de egreso</Label>
+                  <Select value={manualForm.expenseKind} onValueChange={(value) => handleExpenseKindChange(value as ExpenseFlowKind)} disabled={!canEdit}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(expenseTypeConfig).map(([value, config]) => (
+                        <SelectItem key={value} value={value}>
+                          {config.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <Label>{selectedExpenseConfig.counterpartyLabel}</Label>
+                    {selectedExpenseConfig.counterpartyMode === "provider" && (
+                      <Button type="button" variant="outline" size="sm" onClick={() => setIsProviderDialogOpen(true)} disabled={!canEdit}>
+                        <Truck className="mr-2 h-4 w-4" />
+                        Nuevo proveedor
+                      </Button>
+                    )}
+                    {selectedExpenseConfig.counterpartyMode === "worker" && (
+                      <Button type="button" variant="outline" size="sm" onClick={() => setIsWorkerDialogOpen(true)} disabled={!canEdit}>
+                        <UserRound className="mr-2 h-4 w-4" />
+                        Nuevo trabajador
+                      </Button>
+                    )}
+                  </div>
+
+                  {selectedExpenseConfig.counterpartyMode === "freeText" ? (
+                    <Input
+                      value={manualForm.counterparty}
+                      onChange={(event) => setManualForm((current) => ({ ...current, counterparty: event.target.value }))}
+                      placeholder={selectedExpenseConfig.counterpartyPlaceholder}
+                      disabled={!canEdit}
+                    />
+                  ) : (
+                    <Select
+                      value={manualForm.selectedCounterpartyId}
+                      onValueChange={(value) => setManualForm((current) => ({ ...current, selectedCounterpartyId: value }))}
+                      disabled={!canEdit}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder={selectedExpenseConfig.counterpartyPlaceholder} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {selectedCounterpartyOptions.map((item) => (
+                          <SelectItem key={item.id} value={item.id}>
+                            {item.razon_social}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                </div>
+
+                <div className="space-y-2 md:col-span-2">
+                  <Label>Descripción del egreso</Label>
+                  <Input
+                    value={manualForm.description}
+                    onChange={(event) => setManualForm((current) => ({ ...current, description: event.target.value }))}
+                    placeholder="Ej: sueldo mayo, pago hosting, transferencia proveedor, reembolso caja chica"
+                    disabled={!canEdit}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Monto</Label>
+                  <Input
+                    type="number"
+                    min="0"
+                    value={manualForm.amount}
+                    onChange={(event) => setManualForm((current) => ({ ...current, amount: event.target.value }))}
+                    disabled={!canEdit}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Fecha esperada de pago</Label>
+                  <Input
+                    type="date"
+                    value={manualForm.dueDate}
+                    onChange={(event) => setManualForm((current) => ({ ...current, dueDate: event.target.value }))}
+                    disabled={!canEdit}
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Cuenta sugerida</Label>
+                  <Select
+                    value={manualForm.bankAccountId}
+                    onValueChange={(value) => setManualForm((current) => ({ ...current, bankAccountId: value }))}
+                    disabled={!canEdit}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Sin cuenta asignada</SelectItem>
+                      {bankAccounts.map((account) => (
+                        <SelectItem key={account.id} value={account.id}>
+                          {account.nombre}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Clasificación aplicada</Label>
+                  <div className="rounded-lg border bg-muted/20 px-3 py-2 text-sm">
+                    <div className="font-medium">{selectedExpenseCategory?.nombre || "Sin clasificación"}</div>
+                    <div className="text-xs text-muted-foreground">
+                      Prioridad por defecto: {PRIORITY_LABELS[selectedExpenseConfig.defaultPriority]}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-2 md:col-span-2">
+                  <Label>Notas</Label>
+                  <Textarea
+                    value={manualForm.notes}
+                    onChange={(event) => setManualForm((current) => ({ ...current, notes: event.target.value }))}
+                    placeholder="Referencia interna, detalle del pago, contexto operativo..."
+                    disabled={!canEdit}
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-xl border bg-muted/20 p-4 text-sm text-muted-foreground">
+                <div className="font-medium text-foreground">
+                  {selectedCounterpartyName || manualForm.counterparty || "Sin contraparte seleccionada"}
+                </div>
+                <div>{selectedExpenseConfig.helperText}</div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
+                <div className="text-sm text-muted-foreground">
+                  Este egreso entra de inmediato a la cola operativa y luego se concilia desde Banco.
+                </div>
+                <Button type="submit" disabled={!canEdit || savingManual}>
+                  {savingManual ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
+                  Guardar egreso
+                </Button>
+              </div>
+            </form>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Registros para egresos</CardTitle>
+            <CardDescription>
+              Mantén proveedores y trabajadores listos para que el selector del egreso no dependa de texto libre.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="rounded-xl border p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2 font-medium">
+                    <Truck className="h-4 w-4 text-primary" />
+                    Proveedores
+                  </div>
+                  <div className="text-sm text-muted-foreground">{providers.length} registro(s) activos</div>
+                </div>
+                <Button type="button" variant="outline" size="sm" onClick={() => setIsProviderDialogOpen(true)} disabled={!canEdit}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  Agregar
+                </Button>
+              </div>
+              <div className="mt-3 space-y-2 text-sm">
+                {providers.slice(0, 4).map((provider) => (
+                  <div key={provider.id} className="rounded-lg bg-muted/20 px-3 py-2">
+                    <div className="font-medium">{provider.razon_social}</div>
+                    <div className="text-xs text-muted-foreground">{provider.rut || "Sin RUT"}</div>
+                  </div>
+                ))}
+                {providers.length === 0 && !loadingCounterparties && (
+                  <div className="rounded-lg border border-dashed px-3 py-4 text-center text-muted-foreground">
+                    Aún no hay proveedores activos.
+                  </div>
+                )}
+              </div>
+              <Button variant="link" asChild className="mt-2 h-auto px-0">
+                <Link to="/proveedores">Abrir registro de proveedores</Link>
+              </Button>
+            </div>
+
+            <div className="rounded-xl border p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2 font-medium">
+                    <UserRound className="h-4 w-4 text-primary" />
+                    Trabajadores
+                  </div>
+                  <div className="text-sm text-muted-foreground">{workers.length} registro(s) activos</div>
+                </div>
+                <Button type="button" variant="outline" size="sm" onClick={() => setIsWorkerDialogOpen(true)} disabled={!canEdit}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  Agregar
+                </Button>
+              </div>
+              <div className="mt-3 space-y-2 text-sm">
+                {workers.slice(0, 4).map((worker) => (
+                  <div key={worker.id} className="rounded-lg bg-muted/20 px-3 py-2">
+                    <div className="font-medium">{worker.razon_social}</div>
+                    <div className="text-xs text-muted-foreground">{worker.cargo || worker.rut || "Sin cargo informado"}</div>
+                  </div>
+                ))}
+                {workers.length === 0 && !loadingCounterparties && (
+                  <div className="rounded-lg border border-dashed px-3 py-4 text-center text-muted-foreground">
+                    Aún no hay trabajadores activos.
+                  </div>
+                )}
+              </div>
+              <Button variant="link" asChild className="mt-2 h-auto px-0">
+                <Link to="/rendiciones">Ir a rendiciones</Link>
+              </Button>
+            </div>
+
+            {loadingCounterparties && (
+              <div className="flex items-center gap-2 rounded-xl border bg-muted/20 px-3 py-3 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Cargando registros de apoyo...
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard
@@ -879,202 +1424,7 @@ export default function Egresos() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
-        <Card>
-          <CardHeader>
-            <CardTitle>Registrar egreso manual</CardTitle>
-            <CardDescription>
-              Usa esta alta para impuestos, nómina, arriendos, servicios o cualquier salida sin factura proveedor.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <form className="space-y-4" onSubmit={handleCreateManualExpense}>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2 md:col-span-2">
-                  <Label>Descripción</Label>
-                  <Input
-                    value={manualForm.description}
-                    onChange={(event) => setManualForm((current) => ({ ...current, description: event.target.value }))}
-                    placeholder="IVA abril, arriendo oficina, software, remuneraciones..."
-                    disabled={!canEdit}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Contraparte</Label>
-                  <Input
-                    value={manualForm.counterparty}
-                    onChange={(event) => setManualForm((current) => ({ ...current, counterparty: event.target.value }))}
-                    placeholder="SII, Previred, arrendador, proveedor"
-                    disabled={!canEdit}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Tipo de egreso</Label>
-                  <Select
-                    value={manualForm.sourceType}
-                    onValueChange={(value) =>
-                      setManualForm((current) => ({ ...current, sourceType: value as CashCommitment["sourceType"] }))
-                    }
-                    disabled={!canEdit}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="manual">Manual</SelectItem>
-                      <SelectItem value="tax">Impuesto</SelectItem>
-                      <SelectItem value="payroll">Nómina</SelectItem>
-                      <SelectItem value="debt">Deuda</SelectItem>
-                      <SelectItem value="capex">Capex</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label>Categoría</Label>
-                  <Select
-                    value={manualForm.categoryId}
-                    onValueChange={(value) => setManualForm((current) => ({ ...current, categoryId: value }))}
-                    disabled={!canEdit}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Selecciona categoría" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {outflowCategories.map((category) => (
-                        <SelectItem key={category.id} value={category.id}>
-                          {category.nombre}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label>Monto</Label>
-                  <Input
-                    type="number"
-                    min="0"
-                    value={manualForm.amount}
-                    onChange={(event) => setManualForm((current) => ({ ...current, amount: event.target.value }))}
-                    disabled={!canEdit}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Cuenta sugerida</Label>
-                  <Select
-                    value={manualForm.bankAccountId}
-                    onValueChange={(value) => setManualForm((current) => ({ ...current, bankAccountId: value }))}
-                    disabled={!canEdit}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">Sin cuenta asignada</SelectItem>
-                      {bankAccounts.map((account) => (
-                        <SelectItem key={account.id} value={account.id}>
-                          {account.nombre}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label>Fecha vencimiento</Label>
-                  <Input
-                    type="date"
-                    value={manualForm.dueDate}
-                    onChange={(event) => setManualForm((current) => ({ ...current, dueDate: event.target.value }))}
-                    disabled={!canEdit}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Fecha esperada de pago</Label>
-                  <Input
-                    type="date"
-                    value={manualForm.expectedDate}
-                    onChange={(event) => setManualForm((current) => ({ ...current, expectedDate: event.target.value }))}
-                    disabled={!canEdit}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Prioridad</Label>
-                  <Select
-                    value={manualForm.priority}
-                    onValueChange={(value) =>
-                      setManualForm((current) => ({ ...current, priority: value as TreasuryPriority }))
-                    }
-                    disabled={!canEdit}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="critical">Crítica</SelectItem>
-                      <SelectItem value="high">Alta</SelectItem>
-                      <SelectItem value="normal">Normal</SelectItem>
-                      <SelectItem value="deferrable">Postergable</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label>Estado inicial</Label>
-                  <Select
-                    value={manualForm.status}
-                    onValueChange={(value) =>
-                      setManualForm((current) => ({ ...current, status: value as CashCommitment["status"] }))
-                    }
-                    disabled={!canEdit}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="planned">Planificado</SelectItem>
-                      <SelectItem value="confirmed">Confirmado</SelectItem>
-                      <SelectItem value="deferred">Diferido</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label>¿Es estimado?</Label>
-                  <Select
-                    value={manualForm.isEstimated}
-                    onValueChange={(value) => setManualForm((current) => ({ ...current, isEstimated: value }))}
-                    disabled={!canEdit}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="false">No, es definitivo</SelectItem>
-                      <SelectItem value="true">Sí, aún estimado</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2 md:col-span-2">
-                  <Label>Nota de tesorería</Label>
-                  <Textarea
-                    value={manualForm.notes}
-                    onChange={(event) => setManualForm((current) => ({ ...current, notes: event.target.value }))}
-                    placeholder="Condiciones de pago, restricción de caja, negociación, contexto..."
-                    disabled={!canEdit}
-                  />
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
-                <div className="text-sm text-muted-foreground">
-                  Este registro alimenta Tesorería de forma inmediata y luego se concilia desde Banco.
-                </div>
-                <Button type="submit" disabled={!canEdit || savingManual}>
-                  {savingManual ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
-                  Guardar egreso
-                </Button>
-              </div>
-            </form>
-          </CardContent>
-        </Card>
-
+      <div className="grid gap-6 xl:grid-cols-2">
         <div className="space-y-6">
           <Card>
             <CardHeader>
@@ -1131,6 +1481,37 @@ export default function Egresos() {
                   No hay cuentas bancarias activas para esta empresa.
                 </div>
               )}
+            </CardContent>
+          </Card>
+        </div>
+
+        <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Accesos rápidos</CardTitle>
+              <CardDescription>
+                Mantén a mano los módulos que complementan el registro diario de egresos.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-3">
+              <Button variant="outline" asChild className="justify-start">
+                <Link to="/proveedores">
+                  <Truck className="mr-2 h-4 w-4" />
+                  Administrar proveedores
+                </Link>
+              </Button>
+              <Button variant="outline" asChild className="justify-start">
+                <Link to="/rendiciones">
+                  <ClipboardList className="mr-2 h-4 w-4" />
+                  Revisar rendiciones
+                </Link>
+              </Button>
+              <Button variant="outline" asChild className="justify-start">
+                <Link to="/cashflow">
+                  <TrendingUp className="mr-2 h-4 w-4" />
+                  Ver flujo de caja
+                </Link>
+              </Button>
             </CardContent>
           </Card>
         </div>
@@ -1337,6 +1718,98 @@ export default function Egresos() {
           </Table>
         </CardContent>
       </Card>
+
+      <Dialog open={isProviderDialogOpen} onOpenChange={setIsProviderDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Nuevo proveedor</DialogTitle>
+            <DialogDescription>
+              Este registro quedará disponible de inmediato para crear egresos por pago a proveedores.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-4 py-2">
+            <div className="space-y-2">
+              <Label>RUT</Label>
+              <Input value={providerForm.rut} onChange={(event) => setProviderForm((current) => ({ ...current, rut: event.target.value }))} />
+            </div>
+            <div className="space-y-2">
+              <Label>Razón social</Label>
+              <Input value={providerForm.razonSocial} onChange={(event) => setProviderForm((current) => ({ ...current, razonSocial: event.target.value }))} />
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Email</Label>
+                <Input value={providerForm.email} onChange={(event) => setProviderForm((current) => ({ ...current, email: event.target.value }))} />
+              </div>
+              <div className="space-y-2">
+                <Label>Teléfono</Label>
+                <Input value={providerForm.telefono} onChange={(event) => setProviderForm((current) => ({ ...current, telefono: event.target.value }))} />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Dirección</Label>
+              <Input value={providerForm.direccion} onChange={(event) => setProviderForm((current) => ({ ...current, direccion: event.target.value }))} />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsProviderDialogOpen(false)} disabled={savingProvider}>
+              Cerrar
+            </Button>
+            <Button onClick={handleCreateProvider} disabled={savingProvider}>
+              {savingProvider ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Guardar proveedor
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isWorkerDialogOpen} onOpenChange={setIsWorkerDialogOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Nuevo trabajador</DialogTitle>
+            <DialogDescription>
+              Este registro se usará para remuneraciones y pagos de rendiciones dentro del módulo de egresos.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-4 py-2">
+            <div className="space-y-2">
+              <Label>RUT</Label>
+              <Input value={workerForm.rut} onChange={(event) => setWorkerForm((current) => ({ ...current, rut: event.target.value }))} />
+            </div>
+            <div className="space-y-2">
+              <Label>Nombre o razón social</Label>
+              <Input value={workerForm.razonSocial} onChange={(event) => setWorkerForm((current) => ({ ...current, razonSocial: event.target.value }))} />
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Cargo</Label>
+                <Input value={workerForm.cargo} onChange={(event) => setWorkerForm((current) => ({ ...current, cargo: event.target.value }))} />
+              </div>
+              <div className="space-y-2">
+                <Label>Teléfono</Label>
+                <Input value={workerForm.telefono} onChange={(event) => setWorkerForm((current) => ({ ...current, telefono: event.target.value }))} />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Email</Label>
+              <Input value={workerForm.email} onChange={(event) => setWorkerForm((current) => ({ ...current, email: event.target.value }))} />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsWorkerDialogOpen(false)} disabled={savingWorker}>
+              Cerrar
+            </Button>
+            <Button onClick={handleCreateWorker} disabled={savingWorker}>
+              {savingWorker ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Guardar trabajador
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={Boolean(editingItem)} onOpenChange={(open) => !open && setEditingItem(null)}>
         <DialogContent className="max-w-2xl">
