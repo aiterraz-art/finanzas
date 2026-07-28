@@ -208,12 +208,12 @@ const expenseTypeConfig: Record<
   },
   renditions: {
     label: "Pago rendiciones",
-    categoryCode: "other_outflow",
+    categoryCode: "reimbursements",
     counterpartyMode: "worker",
     counterpartyLabel: "Trabajador que rinde",
     counterpartyPlaceholder: "Selecciona trabajador",
     defaultPriority: "high",
-    helperText: "Mientras no exista una clasificación específica, este pago se registra en Otros Egresos.",
+    helperText: "Este pago se clasifica en Reembolsos y rendiciones para que no quede mezclado con otros egresos.",
   },
 };
 

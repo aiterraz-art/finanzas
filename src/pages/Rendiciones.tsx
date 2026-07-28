@@ -98,7 +98,9 @@ export default function Rendiciones() {
   }, [selectedEmpresaId]);
 
   useEffect(() => {
-    const defaultCategoryId = treasuryCategories.find((category) => category.code === "other_outflow")?.id ?? "";
+    const defaultCategoryId = treasuryCategories.find((category) => category.code === "reimbursements")?.id
+      ?? treasuryCategories.find((category) => category.code === "other_outflow")?.id
+      ?? "";
     setTreasuryForm((current) =>
       current.categoryId
         ? current
@@ -245,7 +247,9 @@ export default function Rendiciones() {
   };
 
   const resetForm = () => {
-    const defaultCategoryId = treasuryCategories.find((category) => category.code === "other_outflow")?.id ?? "";
+    const defaultCategoryId = treasuryCategories.find((category) => category.code === "reimbursements")?.id
+      ?? treasuryCategories.find((category) => category.code === "other_outflow")?.id
+      ?? "";
     setSelectedTercero("");
     setDescripcion("");
     setItems([{ descripcion: "", monto: 0 }]);
