@@ -140,6 +140,7 @@ type QuickExpenseForm = {
 
 type AdvanceForm = {
   customerId: string;
+  customerSearch: string;
   notes: string;
 };
 
@@ -161,6 +162,68 @@ type InvoiceMismatchDialogState = {
   difference: number;
   partialAmount: string;
 };
+
+type ReconciliationDialogMode = "match" | "review";
+
+const BANK_MOVEMENT_SELECT = `
+  id,
+  fecha_movimiento,
+  descripcion,
+  monto,
+  saldo,
+  estado,
+  numero_documento,
+  comentario_tesoreria,
+  tipo_conciliacion,
+  bank_account_id,
+  source_hash,
+  columnas_extra,
+  facturas_pagos (
+    id,
+    factura_id,
+    rendicion_id,
+    monto_aplicado,
+    estado,
+    facturas (numero_documento, tercero_nombre),
+    rendiciones (descripcion, tercero_nombre)
+  ),
+  cheques_cartera (
+    id,
+    numero_cheque,
+    librador,
+    monto
+  ),
+  webpay_liquidaciones (
+    id,
+    orden_compra,
+    monto_neto,
+    facturas (numero_documento),
+    terceros (razon_social)
+  ),
+  cash_commitments (
+    id,
+    description,
+    counterparty,
+    amount,
+    status,
+    source_type,
+    archived_at,
+    estado_previo_conciliacion
+  ),
+  customer_advances (
+    id,
+    tercero_id,
+    tercero_nombre,
+    rut,
+    amount,
+    remaining_amount,
+    status,
+    notes
+  )
+`;
+
+const readFirstLinkedRow = <T,>(value: T[] | T | null | undefined) => (Array.isArray(value) ? value[0] : value) ?? null;
+const getActivePayments = (txn: BankMovement) => (txn.facturas_pagos || []).filter((payment) => payment.estado !== "revertido");
 
 export default function BankReconciliation() {
   const { selectedEmpresaId, selectedRole } = useCompany();
@@ -185,12 +248,14 @@ export default function BankReconciliation() {
   const [selectedInvoiceMatches, setSelectedInvoiceMatches] = useState<Record<string, { mode: "full" | "partial"; amount: string }>>({});
   const [advanceForm, setAdvanceForm] = useState<AdvanceForm>({
     customerId: "none",
+    customerSearch: "",
     notes: "",
   });
   const [allocateDifferenceAsAdvance, setAllocateDifferenceAsAdvance] = useState(false);
   const [invoiceMismatchDialog, setInvoiceMismatchDialog] = useState<InvoiceMismatchDialogState | null>(null);
   const [loadingCandidates, setLoadingCandidates] = useState(false);
   const [matchingId, setMatchingId] = useState<string | null>(null);
+  const [dialogMode, setDialogMode] = useState<ReconciliationDialogMode>("match");
   const [quickExpenseForm, setQuickExpenseForm] = useState<QuickExpenseForm>({
     description: "",
     counterparty: "",
@@ -247,7 +312,7 @@ export default function BankReconciliation() {
       setCandidateSearchTerm("");
       setSelectedInvoiceMatches({});
       setAllocateDifferenceAsAdvance(false);
-      setAdvanceForm({ customerId: "none", notes: "" });
+      setAdvanceForm({ customerId: "none", customerSearch: "", notes: "" });
     }
   }, [selectedInflowSource, selectedTxn]);
 
@@ -307,62 +372,7 @@ export default function BankReconciliation() {
     try {
       const { data, error } = await supabase
         .from("movimientos_banco")
-        .select(`
-          id,
-          fecha_movimiento,
-          descripcion,
-          monto,
-          saldo,
-          estado,
-          numero_documento,
-          comentario_tesoreria,
-          tipo_conciliacion,
-          bank_account_id,
-          source_hash,
-          columnas_extra,
-          facturas_pagos (
-            id,
-            factura_id,
-            rendicion_id,
-            monto_aplicado,
-            estado,
-            facturas (numero_documento, tercero_nombre),
-            rendiciones (descripcion, tercero_nombre)
-          ),
-          cheques_cartera (
-            id,
-            numero_cheque,
-            librador,
-            monto
-          ),
-          webpay_liquidaciones (
-            id,
-            orden_compra,
-            monto_neto,
-            facturas (numero_documento),
-            terceros (razon_social)
-          ),
-          cash_commitments (
-            id,
-            description,
-            counterparty,
-            amount,
-            status,
-            source_type,
-            archived_at,
-            estado_previo_conciliacion
-          ),
-          customer_advances (
-            id,
-            tercero_id,
-            tercero_nombre,
-            rut,
-            amount,
-            remaining_amount,
-            status,
-            notes
-          )
-        `)
+        .select(BANK_MOVEMENT_SELECT)
         .eq("empresa_id", selectedEmpresaId)
         .eq("bank_account_id", selectedAccountId)
         .order("fecha_movimiento", { ascending: false })
@@ -374,6 +384,28 @@ export default function BankReconciliation() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const fetchTransactionById = async (movementId: string) => {
+    if (!selectedEmpresaId) return null;
+    const { data, error } = await supabase
+      .from("movimientos_banco")
+      .select(BANK_MOVEMENT_SELECT)
+      .eq("empresa_id", selectedEmpresaId)
+      .eq("id", movementId)
+      .maybeSingle();
+    if (error) throw error;
+    return (data || null) as BankMovement | null;
+  };
+
+  const openReviewDialog = (txn: BankMovement) => {
+    setDialogMode("review");
+    setSelectedTxn(txn);
+    setCandidates([]);
+    setSelectedInvoiceMatches({});
+    setInvoiceMismatchDialog(null);
+    setAllocateDifferenceAsAdvance(false);
+    setAdvanceForm({ customerId: "none", customerSearch: "", notes: "" });
   };
 
   const fetchLatestImport = async () => {
@@ -396,6 +428,7 @@ export default function BankReconciliation() {
 
   const fetchCandidates = async (txn: BankMovement) => {
     if (!selectedEmpresaId) return;
+    setDialogMode("match");
     setSelectedTxn(txn);
     setSelectedInflowSource("factura");
     setCandidateSearchTerm("");
@@ -592,9 +625,9 @@ export default function BankReconciliation() {
     setMatchingId(candidate.id);
     try {
       if (candidate.type === "customer") {
-        const { error: advanceError } = await supabase.from("customer_advances").insert({
-          empresa_id: selectedEmpresaId,
-          tercero_id: candidate.customerId || candidate.id,
+      const { error: advanceError } = await supabase.from("customer_advances").insert({
+        empresa_id: selectedEmpresaId,
+        tercero_id: candidate.customerId || candidate.id,
           movimiento_banco_id: selectedTxn.id,
           tercero_nombre: candidate.customerName || candidate.label,
           rut: candidate.customerRut || null,
@@ -692,7 +725,7 @@ export default function BankReconciliation() {
           .eq("empresa_id", selectedEmpresaId);
         if (error) throw error;
       } else if (candidate.type === "customer") {
-        setAdvanceForm({ customerId: "none", notes: "" });
+        setAdvanceForm({ customerId: "none", customerSearch: "", notes: "" });
       }
 
       setSelectedTxn(null);
@@ -782,14 +815,36 @@ export default function BankReconciliation() {
     }
   };
 
-  const handleUndoMatch = async (txn: BankMovement) => {
+  const beginEditingReconciliation = async (txn: BankMovement) => {
+    if (!canEdit) return;
+    const reverted = await handleUndoMatch(txn, { refreshAfter: false });
+    if (!reverted) return;
+
+    try {
+      const [refreshedTxn] = await Promise.all([
+        fetchTransactionById(txn.id),
+        fetchTransactions(),
+        refreshPositions(),
+      ]);
+      if (!refreshedTxn) {
+        setSelectedTxn(null);
+        return;
+      }
+      await fetchCandidates(refreshedTxn);
+    } catch (error: any) {
+      console.error("Error preparing reconciliation edit:", error);
+      alert(`No se pudo reabrir la conciliación: ${error.message}`);
+    }
+  };
+
+  const handleUndoMatch = async (txn: BankMovement, options?: { refreshAfter?: boolean }) => {
     if (!selectedEmpresaId) return;
-    const payments = (txn.facturas_pagos || []).filter((payment) => payment.estado !== "revertido");
-    const linkedCheque = txn.cheques_cartera?.[0];
-    const linkedWebpay = txn.webpay_liquidaciones?.[0];
-    const linkedCommitment = txn.cash_commitments?.[0];
-    const linkedAdvance = txn.customer_advances?.[0];
-    if (payments.length === 0 && !linkedCheque && !linkedWebpay && !linkedCommitment && !linkedAdvance) return;
+    const payments = getActivePayments(txn);
+    const linkedCheque = readFirstLinkedRow(txn.cheques_cartera);
+    const linkedWebpay = readFirstLinkedRow(txn.webpay_liquidaciones);
+    const linkedCommitment = readFirstLinkedRow(txn.cash_commitments);
+    const linkedAdvance = readFirstLinkedRow(txn.customer_advances);
+    if (payments.length === 0 && !linkedCheque && !linkedWebpay && !linkedCommitment && !linkedAdvance) return false;
 
     try {
       const facturaIds = payments.map((payment) => payment.factura_id).filter(Boolean) as string[];
@@ -883,11 +938,15 @@ export default function BankReconciliation() {
         }
       }
 
-      await fetchTransactions();
-      await refreshPositions();
+      if (options?.refreshAfter !== false) {
+        await fetchTransactions();
+        await refreshPositions();
+      }
+      return true;
     } catch (error: any) {
       console.error("Error undoing reconciliation:", error);
       alert(`No se pudo deshacer la conciliación: ${error.message}`);
+      return false;
     }
   };
 
@@ -1231,7 +1290,7 @@ export default function BankReconciliation() {
 
       if (!searchTerm.trim()) return true;
 
-      const activePayments = (txn.facturas_pagos || []).filter((row) => row.estado !== "revertido");
+      const activePayments = getActivePayments(txn);
       const paymentText = activePayments
         .map((row) => {
           const factura = Array.isArray(row.facturas) ? row.facturas[0] : row.facturas;
@@ -1313,10 +1372,111 @@ export default function BankReconciliation() {
     return Math.abs(selectedTxn.monto) - selectedInvoiceTotal;
   }, [selectedInvoiceTotal, selectedTxn]);
 
+  const selectedTxnReview = useMemo(() => {
+    if (!selectedTxn) return null;
+
+    const activePayments = getActivePayments(selectedTxn);
+    const chequeInfo = readFirstLinkedRow(selectedTxn.cheques_cartera);
+    const webpayInfo = readFirstLinkedRow(selectedTxn.webpay_liquidaciones);
+    const commitmentInfo = readFirstLinkedRow(selectedTxn.cash_commitments);
+    const advanceInfo = readFirstLinkedRow(selectedTxn.customer_advances);
+
+    const paymentLines = activePayments.map((payment) => {
+      const factura = readFirstLinkedRow(payment.facturas);
+      const rendicion = readFirstLinkedRow(payment.rendiciones);
+      return {
+        id: payment.id,
+        title:
+          factura
+            ? `${factura.tercero_nombre || "Sin tercero"} • ${factura.numero_documento || "Sin folio"}`
+            : `${rendicion?.tercero_nombre || "Sin responsable"} • ${rendicion?.descripcion || "Rendición"}`,
+        subtitle: factura ? "Factura conciliada" : "Rendición conciliada",
+        amount: Number(payment.monto_aplicado || 0),
+      };
+    });
+
+    if (chequeInfo) {
+      paymentLines.push({
+        id: chequeInfo.id,
+        title: `${chequeInfo.librador || "Sin librador"} • cheque ${chequeInfo.numero_cheque || "S/N"}`,
+        subtitle: "Cheque conciliado",
+        amount: Number(chequeInfo.monto || 0),
+      });
+    }
+
+    if (webpayInfo) {
+      const webpayClient = readFirstLinkedRow(webpayInfo.terceros);
+      const webpayInvoice = readFirstLinkedRow(webpayInfo.facturas);
+      paymentLines.push({
+        id: webpayInfo.id,
+        title: `${webpayClient?.razon_social || "WebPay"} • orden ${webpayInfo.orden_compra || "S/N"}`,
+        subtitle: webpayInvoice?.numero_documento ? `Factura ${webpayInvoice.numero_documento}` : "Liquidación WebPay",
+        amount: Number(webpayInfo.monto_neto || 0),
+      });
+    }
+
+    if (commitmentInfo) {
+      paymentLines.push({
+        id: commitmentInfo.id,
+        title: `${commitmentInfo.counterparty || "Sin contraparte"} • ${commitmentInfo.description || "Compromiso"}`,
+        subtitle: "Egreso / compromiso conciliado",
+        amount: Number(commitmentInfo.amount || 0),
+      });
+    }
+
+    if (advanceInfo) {
+      paymentLines.push({
+        id: advanceInfo.id,
+        title: `${advanceInfo.tercero_nombre || "Cliente"}${advanceInfo.rut ? ` • ${advanceInfo.rut}` : ""}`,
+        subtitle: "Anticipo registrado",
+        amount: Number(advanceInfo.amount || 0),
+      });
+    }
+
+    const reconciliationTypeLabel =
+      selectedTxn.tipo_conciliacion === "factura"
+        ? activePayments.length > 1
+          ? "Facturas múltiples"
+          : "Factura"
+        : selectedTxn.tipo_conciliacion === "rendicion"
+          ? "Rendición"
+          : selectedTxn.tipo_conciliacion === "cheque"
+            ? "Cheque"
+            : selectedTxn.tipo_conciliacion === "webpay"
+              ? "WebPay"
+              : selectedTxn.tipo_conciliacion === "commitment"
+                ? "Egreso / compromiso"
+                : selectedTxn.tipo_conciliacion === "advance"
+                  ? "Anticipo cliente"
+                  : "Conciliación";
+
+    return {
+      activePayments,
+      commitmentInfo,
+      paymentLines,
+      advanceInfo,
+      reconciliationTypeLabel,
+      canArchiveLinkedManual:
+        Boolean(commitmentInfo?.source_type === "manual" && !commitmentInfo?.archived_at),
+    };
+  }, [selectedTxn]);
+
   const customerAdvanceCandidates = useMemo(
     () => candidates.filter((candidate) => candidate.type === "customer"),
     [candidates]
   );
+
+  const filteredCustomerAdvanceCandidates = useMemo(() => {
+    const searchTerm = advanceForm.customerSearch.trim().toLowerCase();
+    if (!searchTerm) return customerAdvanceCandidates;
+    return customerAdvanceCandidates.filter((candidate) =>
+      [candidate.customerName, candidate.customerRut, candidate.label, candidate.subtitle]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(searchTerm)
+    );
+  }, [advanceForm.customerSearch, customerAdvanceCandidates]);
 
   const canApplySimpleInvoiceAdjustment = useMemo(() => {
     if (!selectedTxn || selectedTxn.monto < 0 || selectedInvoiceCandidates.length === 0) return false;
@@ -1479,7 +1639,7 @@ export default function BankReconciliation() {
       setCandidates([]);
       setSelectedInvoiceMatches({});
       setAllocateDifferenceAsAdvance(false);
-      setAdvanceForm({ customerId: "none", notes: "" });
+      setAdvanceForm({ customerId: "none", customerSearch: "", notes: "" });
       await fetchTransactions();
       await refreshPositions();
     } catch (error: any) {
@@ -1666,18 +1826,18 @@ export default function BankReconciliation() {
             </thead>
             <tbody>
               {filteredTransactions.map((txn) => {
-                const activePayments = (txn.facturas_pagos || []).filter((row) => row.estado !== "revertido");
+                const activePayments = getActivePayments(txn);
                 const payment = activePayments[0];
-                const invoiceInfo = Array.isArray(payment?.facturas) ? payment.facturas[0] : payment?.facturas;
-                const rendicionInfo = Array.isArray(payment?.rendiciones) ? payment.rendiciones[0] : payment?.rendiciones;
-                const chequeInfo = txn.cheques_cartera?.[0];
-                const webpayInfo = txn.webpay_liquidaciones?.[0];
-                const commitmentInfo = txn.cash_commitments?.[0];
-                const advanceInfo = txn.customer_advances?.[0];
+                const invoiceInfo = readFirstLinkedRow(payment?.facturas);
+                const rendicionInfo = readFirstLinkedRow(payment?.rendiciones);
+                const chequeInfo = readFirstLinkedRow(txn.cheques_cartera);
+                const webpayInfo = readFirstLinkedRow(txn.webpay_liquidaciones);
+                const commitmentInfo = readFirstLinkedRow(txn.cash_commitments);
+                const advanceInfo = readFirstLinkedRow(txn.customer_advances);
                 const canArchiveLinkedManual =
                   Boolean(commitmentInfo) && commitmentInfo?.source_type === "manual" && !commitmentInfo?.archived_at;
-                const webpayClient = Array.isArray(webpayInfo?.terceros) ? webpayInfo?.terceros[0] : webpayInfo?.terceros;
-                const webpayInvoice = Array.isArray(webpayInfo?.facturas) ? webpayInfo?.facturas[0] : webpayInfo?.facturas;
+                const webpayClient = readFirstLinkedRow(webpayInfo?.terceros);
+                const webpayInvoice = readFirstLinkedRow(webpayInfo?.facturas);
                 return (
                   <tr key={txn.id} className="border-t">
                     <td className="px-4 py-3">{formatTreasuryDate(txn.fecha_movimiento)}</td>
@@ -1778,6 +1938,9 @@ export default function BankReconciliation() {
                       <div className="flex justify-center gap-2">
                         {txn.estado === "conciliado" ? (
                           <>
+                            <Button size="sm" variant="outline" onClick={() => openReviewDialog(txn)}>
+                              Revisar
+                            </Button>
                             <Button size="sm" variant="outline" disabled={!canEdit} onClick={() => handleUndoMatch(txn)}>
                               <RotateCcw className="mr-2 h-4 w-4" />
                               Deshacer
@@ -1819,13 +1982,13 @@ export default function BankReconciliation() {
             setSelectedInflowSource("factura");
             setInvoiceMismatchDialog(null);
             setAllocateDifferenceAsAdvance(false);
-            setAdvanceForm({ customerId: "none", notes: "" });
+            setAdvanceForm({ customerId: "none", customerSearch: "", notes: "" });
           }
         }}
       >
         <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Conciliar movimiento</DialogTitle>
+            <DialogTitle>{dialogMode === "review" ? "Revisar conciliación" : "Conciliar movimiento"}</DialogTitle>
             <DialogDescription>
               {selectedTxn
                 ? `${selectedTxn.descripcion || "Sin descripción"} • ${formatTreasuryCurrency(selectedTxn.monto, selectedAccount?.moneda || "CLP")}`
@@ -1834,6 +1997,70 @@ export default function BankReconciliation() {
           </DialogHeader>
 
           <div className="space-y-4">
+            {dialogMode === "review" && selectedTxn && selectedTxnReview && (
+              <div className="space-y-4">
+                <div className="grid gap-3 md:grid-cols-3">
+                  <Card>
+                    <CardContent className="pt-6">
+                      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Tipo</div>
+                      <div className="mt-2 font-semibold">{selectedTxnReview.reconciliationTypeLabel}</div>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="pt-6">
+                      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Estado</div>
+                      <div className="mt-2 font-semibold">{selectedTxn.estado === "conciliado" ? "Conciliado" : "No conciliado"}</div>
+                    </CardContent>
+                  </Card>
+                  <Card>
+                    <CardContent className="pt-6">
+                      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Referencia</div>
+                      <div className="mt-2 font-semibold">{selectedTxn.numero_documento || "Sin referencia"}</div>
+                    </CardContent>
+                  </Card>
+                </div>
+
+                <div className="rounded-xl border p-4">
+                  <div className="font-medium">Detalle conciliado</div>
+                  <div className="mt-3 space-y-3">
+                    {selectedTxnReview.paymentLines.length > 0 ? (
+                      selectedTxnReview.paymentLines.map((line) => (
+                        <div key={line.id} className="flex flex-col gap-2 rounded-lg border bg-muted/20 p-3 md:flex-row md:items-center md:justify-between">
+                          <div>
+                            <div className="font-medium">{line.title}</div>
+                            <div className="text-sm text-muted-foreground">{line.subtitle}</div>
+                          </div>
+                          <div className="text-sm font-semibold">
+                            {formatTreasuryCurrency(line.amount, selectedAccount?.moneda || "CLP")}
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-sm text-muted-foreground">No hay documentos relacionados guardados para esta conciliación.</div>
+                    )}
+                  </div>
+                </div>
+
+                {(selectedTxn.comentario_tesoreria || selectedTxn.tipo_conciliacion) && (
+                  <div className="rounded-xl border p-4">
+                    <div className="font-medium">Observaciones</div>
+                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                      <div>
+                        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Conciliación</div>
+                        <div className="mt-1 text-sm">{selectedTxn.tipo_conciliacion || "Sin tipo"}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Comentario</div>
+                        <div className="mt-1 text-sm">{selectedTxn.comentario_tesoreria || "Sin comentario"}</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {dialogMode === "match" && (
+              <>
             {!loadingCandidates && selectedTxn && selectedTxn.monto >= 0 && (
               <div className="rounded-xl border border-dashed p-4">
                 <div className="mb-4">
@@ -2050,7 +2277,7 @@ export default function BankReconciliation() {
                         onChange={(event) => {
                           setAllocateDifferenceAsAdvance(event.target.checked);
                           if (!event.target.checked) {
-                            setAdvanceForm((current) => ({ ...current, customerId: "none", notes: "" }));
+                            setAdvanceForm((current) => ({ ...current, customerId: "none", customerSearch: "", notes: "" }));
                           }
                         }}
                       />
@@ -2060,6 +2287,13 @@ export default function BankReconciliation() {
                       <>
                         <div className="space-y-2">
                           <Label>Cliente del anticipo</Label>
+                          <Input
+                            value={advanceForm.customerSearch}
+                            onChange={(event) =>
+                              setAdvanceForm((current) => ({ ...current, customerSearch: event.target.value }))
+                            }
+                            placeholder="Buscar cliente por razón social o RUT"
+                          />
                           <Select
                             value={advanceForm.customerId}
                             onValueChange={(value) => setAdvanceForm((current) => ({ ...current, customerId: value }))}
@@ -2069,13 +2303,16 @@ export default function BankReconciliation() {
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value="none">Selecciona cliente</SelectItem>
-                              {customerAdvanceCandidates.map((candidate) => (
+                              {filteredCustomerAdvanceCandidates.map((candidate) => (
                                 <SelectItem key={candidate.id} value={candidate.id}>
-                                  {candidate.customerName || candidate.label}
+                                  {(candidate.customerName || candidate.label) + (candidate.customerRut ? ` • ${candidate.customerRut}` : "")}
                                 </SelectItem>
                               ))}
                             </SelectContent>
                           </Select>
+                          {advanceForm.customerSearch.trim() && filteredCustomerAdvanceCandidates.length === 0 && (
+                            <p className="text-xs text-muted-foreground">No hay clientes que coincidan con la búsqueda.</p>
+                          )}
                         </div>
                         <div className="space-y-2">
                           <Label>Monto anticipo</Label>
@@ -2193,12 +2430,41 @@ export default function BankReconciliation() {
                 )}
               </div>
             ))}
+              </>
+            )}
           </div>
 
           <DialogFooter>
             <Button variant="outline" onClick={() => setSelectedTxn(null)}>
               Cerrar
             </Button>
+            {dialogMode === "review" && selectedTxn && (
+              <>
+                <Button
+                  variant="outline"
+                  disabled={!canEdit}
+                  onClick={async () => {
+                    const reverted = await handleUndoMatch(selectedTxn);
+                    if (reverted) setSelectedTxn(null);
+                  }}
+                >
+                  <RotateCcw className="mr-2 h-4 w-4" />
+                  Deshacer conciliación
+                </Button>
+                <Button disabled={!canEdit} onClick={() => void beginEditingReconciliation(selectedTxn)}>
+                  Editar conciliación
+                </Button>
+                {selectedTxnReview?.canArchiveLinkedManual && (
+                  <Button
+                    variant="outline"
+                    disabled={!canEdit}
+                    onClick={() => void handleArchiveLinkedManualExpense(selectedTxn)}
+                  >
+                    Archivar egreso
+                  </Button>
+                )}
+              </>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
