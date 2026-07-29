@@ -251,6 +251,14 @@ export default function Proveedores() {
     () => new Map(treasuryCategories.map((category) => [category.id, category.nombre])),
     [treasuryCategories]
   );
+  const purchaseInvoiceCategories = useMemo(() => {
+    const outflowCategories = treasuryCategories.filter((category) => category.active && category.directionScope !== "inflow");
+    return [...outflowCategories].sort((a, b) => {
+      if (a.code === "suppliers") return -1;
+      if (b.code === "suppliers") return 1;
+      return a.sortOrder - b.sortOrder;
+    });
+  }, [treasuryCategories]);
   const accountsById = useMemo(
     () => new Map(bankAccounts.map((account) => [account.id, account.nombre])),
     [bankAccounts]
@@ -932,13 +940,13 @@ export default function Proveedores() {
       </Dialog>
 
       <Dialog open={isNewInvoiceOpen} onOpenChange={setIsNewInvoiceOpen}>
-        <DialogContent>
+        <DialogContent className="max-h-[88vh] max-w-2xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Nueva factura de compra</DialogTitle>
             <DialogDescription>Se crea con metadata base de tesorería.</DialogDescription>
           </DialogHeader>
-          <div className="grid gap-4">
-            <Field label="Proveedor">
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field className="md:col-span-2" label="Proveedor">
               <select
                 className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm"
                 value={newInvoiceData.tercero_id}
@@ -970,7 +978,7 @@ export default function Proveedores() {
                   <SelectValue placeholder="Selecciona categoría" />
                 </SelectTrigger>
                 <SelectContent>
-                  {treasuryCategories.map((category) => (
+                  {purchaseInvoiceCategories.map((category) => (
                     <SelectItem key={category.id} value={category.id}>
                       {category.nombre}
                     </SelectItem>
@@ -1009,7 +1017,7 @@ export default function Proveedores() {
             <Field label="Fecha esperada de pago">
               <Input type="date" value={newInvoiceData.planned_cash_date} onChange={(event) => setNewInvoiceData((current) => ({ ...current, planned_cash_date: event.target.value }))} />
             </Field>
-            <Field label="Nota / bloqueo">
+            <Field className="md:col-span-2" label="Nota / bloqueo">
               <Textarea value={newInvoiceData.blocked_reason} onChange={(event) => setNewInvoiceData((current) => ({ ...current, blocked_reason: event.target.value }))} />
             </Field>
           </div>
@@ -1264,12 +1272,14 @@ function SummaryCard({
 function Field({
   label,
   children,
+  className,
 }: {
   label: string;
   children: ReactNode;
+  className?: string;
 }) {
   return (
-    <div className="space-y-2">
+    <div className={cn("space-y-2", className)}>
       <Label>{label}</Label>
       {children}
     </div>
