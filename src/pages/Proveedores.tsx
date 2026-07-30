@@ -58,6 +58,10 @@ type PurchaseInvoice = {
   preferred_bank_account_id: string | null;
   blocked_reason: string | null;
   treasury_category_id: string | null;
+  facturas_pagos?: Array<{
+    monto_aplicado: number;
+    estado: string;
+  }> | null;
 };
 
 type BankLoan = {
@@ -98,6 +102,14 @@ const frequencyLabels: Record<LoanFrequency, string> = {
 };
 
 const openCommitmentStatuses = new Set(["planned", "confirmed", "deferred"]);
+
+const invoiceStatusLabels: Record<string, string> = {
+  pendiente: "Pendiente",
+  morosa: "Morosa",
+  abonada: "Abonada",
+  pagada: "Pagada",
+  conciliada: "Conciliada",
+};
 
 const addFrequencyStep = (baseDate: string, frequency: LoanFrequency) => {
   const next = new Date(`${baseDate}T12:00:00`);
@@ -211,11 +223,10 @@ export default function Proveedores() {
           .order("razon_social", { ascending: true }),
         supabase
           .from("facturas")
-          .select("id, tercero_id, tercero_nombre, numero_documento, monto, estado, fecha_emision, fecha_vencimiento, planned_cash_date, treasury_priority, preferred_bank_account_id, blocked_reason, treasury_category_id")
+          .select("id, tercero_id, tercero_nombre, numero_documento, monto, estado, fecha_emision, fecha_vencimiento, planned_cash_date, treasury_priority, preferred_bank_account_id, blocked_reason, treasury_category_id, facturas_pagos(monto_aplicado, estado)")
           .eq("empresa_id", selectedEmpresaId)
           .eq("tipo", "compra")
-          .in("estado", ["pendiente", "morosa"])
-          .order("planned_cash_date", { ascending: true }),
+          .order("fecha_emision", { ascending: false }),
         supabase
           .from("bank_loans")
           .select("id, lender_name, loan_name, principal_amount, installment_amount, total_installments, first_due_date, frequency, priority, status, notes, bank_account_id, treasury_category_id")
@@ -267,14 +278,34 @@ export default function Proveedores() {
   const groupedSuppliers = useMemo(() => {
     return proveedores
       .map((supplier) => {
-        const supplierInvoices = invoices.filter((invoice) => invoice.tercero_id === supplier.id);
-        const outstanding = supplierInvoices.reduce((sum, invoice) => sum + invoice.monto, 0);
-        const dueSoon = supplierInvoices.filter((invoice) => {
+        const supplierInvoices = invoices
+          .filter((invoice) => invoice.tercero_id === supplier.id)
+          .map((invoice) => {
+            const allocatedAmount = (invoice.facturas_pagos || [])
+              .filter((payment) => payment.estado === "aplicado")
+              .reduce((sum, payment) => sum + Number(payment.monto_aplicado || 0), 0);
+            const remainingAmount = Math.max(Number(invoice.monto || 0) - allocatedAmount, 0);
+            return {
+              ...invoice,
+              allocatedAmount,
+              remainingAmount,
+            };
+          })
+          .sort((a, b) => {
+            const aOpen = a.remainingAmount > 0 ? 1 : 0;
+            const bOpen = b.remainingAmount > 0 ? 1 : 0;
+            if (aOpen !== bOpen) return bOpen - aOpen;
+            return (b.fecha_emision || "").localeCompare(a.fecha_emision || "");
+          });
+
+        const openInvoices = supplierInvoices.filter((invoice) => invoice.remainingAmount > 0);
+        const outstanding = openInvoices.reduce((sum, invoice) => sum + invoice.remainingAmount, 0);
+        const dueSoon = openInvoices.filter((invoice) => {
           if (!invoice.planned_cash_date) return false;
           const diff = new Date(invoice.planned_cash_date).getTime() - Date.now();
           return diff <= 7 * 24 * 60 * 60 * 1000;
         }).length;
-        return { ...supplier, supplierInvoices, outstanding, dueSoon };
+        return { ...supplier, supplierInvoices, openInvoices, outstanding, dueSoon };
       })
       .filter((supplier) => {
         const normalized = searchQuery.toLowerCase().trim();
@@ -291,9 +322,9 @@ export default function Proveedores() {
     return groupedSuppliers.reduce(
       (acc, supplier) => {
         acc.outstanding += supplier.outstanding;
-        acc.dueSoon += supplier.supplierInvoices
+        acc.dueSoon += supplier.openInvoices
           .filter((invoice) => invoice.planned_cash_date && new Date(invoice.planned_cash_date).getTime() <= Date.now() + 7 * 24 * 60 * 60 * 1000)
-          .reduce((sum, invoice) => sum + invoice.monto, 0);
+          .reduce((sum, invoice) => sum + invoice.remainingAmount, 0);
         return acc;
       },
       { outstanding: 0, dueSoon: 0 }
@@ -855,7 +886,7 @@ export default function Proveedores() {
               <div className="mt-4 space-y-3">
                 {supplier.supplierInvoices.length === 0 && (
                   <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
-                    Sin facturas abiertas.
+                    Sin compras registradas.
                   </div>
                 )}
                 {supplier.supplierInvoices.map((invoice) => (
@@ -866,10 +897,26 @@ export default function Proveedores() {
                         <div className="text-sm text-muted-foreground">
                           Emisión {formatTreasuryDate(invoice.fecha_emision)} • vence {formatTreasuryDate(invoice.fecha_vencimiento)}
                         </div>
+                        <div className="mt-2">
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              invoice.estado === "pagada" && "border-emerald-200 bg-emerald-50 text-emerald-700",
+                              invoice.estado === "abonada" && "border-sky-200 bg-sky-50 text-sky-700",
+                              invoice.estado === "morosa" && "border-rose-200 bg-rose-50 text-rose-700",
+                              invoice.estado === "pendiente" && "border-amber-200 bg-amber-50 text-amber-700"
+                            )}
+                          >
+                            {invoiceStatusLabels[invoice.estado] || invoice.estado}
+                          </Badge>
+                        </div>
                       </div>
                       <div>
                         <div className="text-xs uppercase text-muted-foreground">Monto</div>
                         <div className="font-semibold">{formatTreasuryCurrency(invoice.monto)}</div>
+                        <div className="text-sm text-muted-foreground">
+                          Saldo {formatTreasuryCurrency(invoice.remainingAmount)}
+                        </div>
                       </div>
                       <div>
                         <div className="text-xs uppercase text-muted-foreground">Pago esperado</div>
