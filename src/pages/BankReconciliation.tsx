@@ -132,6 +132,7 @@ type QuickExpenseForm = {
   description: string;
   counterparty: string;
   categoryId: string;
+  renditionNumber: string;
   priority: TreasuryPriority;
   notes: string;
   isRecurring: boolean;
@@ -260,6 +261,7 @@ export default function BankReconciliation() {
     description: "",
     counterparty: "",
     categoryId: "",
+    renditionNumber: "",
     priority: "normal",
     notes: "",
     isRecurring: false,
@@ -277,6 +279,11 @@ export default function BankReconciliation() {
     () => categories.filter((category) => category.active && category.directionScope !== "inflow"),
     [categories]
   );
+  const selectedQuickExpenseCategory = useMemo(
+    () => outflowCategories.find((category) => category.id === quickExpenseForm.categoryId) || null,
+    [outflowCategories, quickExpenseForm.categoryId]
+  );
+  const needsRenditionNumber = selectedQuickExpenseCategory?.code === "reimbursements";
 
   useEffect(() => {
     if (!selectedAccountId && bankAccounts.length > 0) {
@@ -300,6 +307,7 @@ export default function BankReconciliation() {
       description: selectedTxn.descripcion || "",
       counterparty: "",
       categoryId: "",
+      renditionNumber: "",
       priority: "normal",
       notes: "",
       isRecurring: false,
@@ -997,10 +1005,18 @@ export default function BankReconciliation() {
       alert("Descripción y categoría son obligatorias para la conciliación rápida.");
       return;
     }
+    if (needsRenditionNumber && !quickExpenseForm.renditionNumber.trim()) {
+      alert("Ingresa el número de rendición para este egreso.");
+      return;
+    }
 
     setSavingQuickExpense(true);
     try {
       const category = outflowCategories.find((item) => item.id === quickExpenseForm.categoryId) || null;
+      const renditionNumber = quickExpenseForm.renditionNumber.trim();
+      const description = quickExpenseForm.description.trim();
+      const counterparty = quickExpenseForm.counterparty.trim();
+      const notes = quickExpenseForm.notes.trim();
       const sourceType =
         category?.code === "taxes"
           ? "tax"
@@ -1015,8 +1031,8 @@ export default function BankReconciliation() {
             category_id: quickExpenseForm.categoryId,
             bank_account_id: selectedAccountId || null,
             obligation_type: sourceType === "tax" || sourceType === "payroll" || sourceType === "capex" ? sourceType : "recurring",
-            description: quickExpenseForm.description.trim(),
-            counterparty: quickExpenseForm.counterparty.trim() || null,
+            description,
+            counterparty: counterparty || null,
             frequency: quickExpenseForm.frequency,
             default_amount: Math.abs(selectedTxn.monto),
             requires_amount_confirmation: false,
@@ -1037,7 +1053,18 @@ export default function BankReconciliation() {
         templateId = createdTemplate.id;
       }
 
-      const commitmentLabel = quickExpenseForm.counterparty.trim() || quickExpenseForm.description.trim();
+      const commitmentLabel = needsRenditionNumber
+        ? `Rendición ${renditionNumber}${counterparty ? ` • ${counterparty}` : ""}`
+        : counterparty || description;
+      const commitmentDescription = needsRenditionNumber
+        ? `${description} • Rendición ${renditionNumber}`
+        : description;
+      const commitmentNotes = [
+        needsRenditionNumber ? `Número rendición: ${renditionNumber}` : null,
+        notes || null,
+      ]
+        .filter(Boolean)
+        .join("\n");
       const commitmentPayload = {
         template_id: templateId,
         bank_account_id: selectedAccountId || null,
@@ -1045,15 +1072,15 @@ export default function BankReconciliation() {
         source_type: sourceType,
         source_reference: `bank-reconciliation:${selectedTxn.id}`,
         direction: "outflow" as const,
-        counterparty: quickExpenseForm.counterparty.trim() || null,
-        description: quickExpenseForm.description.trim(),
+        counterparty: counterparty || null,
+        description: commitmentDescription,
         amount: Math.abs(selectedTxn.monto),
         is_estimated: false,
         due_date: selectedTxn.fecha_movimiento,
         expected_date: selectedTxn.fecha_movimiento,
         priority: quickExpenseForm.priority,
         status: "paid" as const,
-        notes: quickExpenseForm.notes.trim() || null,
+        notes: commitmentNotes || null,
         movimiento_banco_id: selectedTxn.id,
         archived_at: null,
         archived_by: null,
@@ -2129,6 +2156,16 @@ export default function BankReconciliation() {
                       placeholder="Remuneración, impuestos, gasto oficina..."
                     />
                   </div>
+                  {needsRenditionNumber && (
+                    <div className="space-y-2">
+                      <Label>Número rendición</Label>
+                      <Input
+                        value={quickExpenseForm.renditionNumber}
+                        onChange={(event) => setQuickExpenseForm((current) => ({ ...current, renditionNumber: event.target.value }))}
+                        placeholder="Ej: R-1458"
+                      />
+                    </div>
+                  )}
                   <div className="space-y-2">
                     <Label>Contraparte</Label>
                     <Input
