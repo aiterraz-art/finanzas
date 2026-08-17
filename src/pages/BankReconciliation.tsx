@@ -1840,8 +1840,8 @@ export default function BankReconciliation() {
               <CardTitle>Movimientos bancarios</CardTitle>
               <CardDescription>Filtrados por la cuenta seleccionada y listos para conciliación.</CardDescription>
             </div>
-            <div className="flex flex-col gap-3 sm:flex-row">
-              <div className="relative w-full sm:w-72">
+            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap lg:justify-end">
+              <div className="relative w-full sm:min-w-[18rem] sm:flex-1">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={searchTerm}
@@ -1854,22 +1854,22 @@ export default function BankReconciliation() {
                 value={amountFilter}
                 onChange={(event) => setAmountFilter(event.target.value)}
                 placeholder="Monto exacto"
-                className="w-full sm:w-40"
+                className="w-full sm:w-36"
               />
               <Input
                 type="date"
                 value={dateFromFilter}
                 onChange={(event) => setDateFromFilter(event.target.value)}
-                className="w-full sm:w-44"
+                className="w-full sm:w-40"
               />
               <Input
                 type="date"
                 value={dateToFilter}
                 onChange={(event) => setDateToFilter(event.target.value)}
-                className="w-full sm:w-44"
+                className="w-full sm:w-40"
               />
               <Select value={filter} onValueChange={(value: "all" | "unmatched" | "matched") => setFilter(value)}>
-                <SelectTrigger className="w-full sm:w-48">
+                <SelectTrigger className="w-full sm:w-40">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -1882,7 +1882,7 @@ export default function BankReconciliation() {
                 value={directionFilter}
                 onValueChange={(value: "all" | "inflow" | "outflow") => setDirectionFilter(value)}
               >
-                <SelectTrigger className="w-full sm:w-44">
+                <SelectTrigger className="w-full min-w-0 sm:w-40">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
