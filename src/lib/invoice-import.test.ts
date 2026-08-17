@@ -92,6 +92,8 @@ describe("invoice import helpers", () => {
       386.555
       386.555
       Forma de Pago:Crédito
+      MONTO NETO $386.555
+      I.V.A. 19% $73.445
       TOTAL $460.000
     `;
 
@@ -102,6 +104,8 @@ describe("invoice import helpers", () => {
     expect(parsed?.rut).toBe("76613571-4");
     expect(parsed?.terceroNombre).toBe("CLINICA DENTAL ODONTOLOGIA AVANZADA SONRIE SPA");
     expect(parsed?.fechaEmision).toBe("2026-08-13");
+    expect(parsed?.montoNeto).toBe(386555);
+    expect(parsed?.montoIva).toBe(73445);
     expect(parsed?.monto).toBe(460000);
     expect(parsed?.descripcion).toContain("LAB JULIO 2026");
   });

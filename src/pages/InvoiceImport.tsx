@@ -5,6 +5,15 @@ import { Link } from "react-router-dom";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { useCompany } from "@/contexts/CompanyContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
@@ -21,7 +30,7 @@ import {
   type ReceivableInvoiceImportRow,
 } from "@/lib/invoice-import";
 import { cn } from "@/lib/utils";
-import { canEditTreasury, normalizeRut, normalizeText } from "@/lib/treasury";
+import { canEditTreasury, formatTreasuryCurrency, formatTreasuryDate, normalizeRut, normalizeText } from "@/lib/treasury";
 
 type ImportMode = "issued" | "receivables";
 
@@ -58,6 +67,12 @@ type InvoiceRow = {
   vendedor_asignado: string | null;
   estado: string | null;
   archivo_url: string | null;
+};
+
+type PendingIssuedPdfItem = {
+  file: File;
+  parsedRow: IssuedInvoiceImportRow | null;
+  error: string | null;
 };
 
 const isPdfInvoiceFile = (file: File) =>
@@ -101,6 +116,7 @@ export default function InvoiceImport() {
     issued: null,
     receivables: null,
   });
+  const [pendingIssuedPdfItems, setPendingIssuedPdfItems] = useState<PendingIssuedPdfItem[]>([]);
   const fileRefs = {
     issued: useRef<HTMLInputElement>(null),
     receivables: useRef<HTMLInputElement>(null),
@@ -108,6 +124,7 @@ export default function InvoiceImport() {
 
   useEffect(() => {
     setSummary({ issued: null, receivables: null });
+    setPendingIssuedPdfItems([]);
   }, [selectedEmpresaId]);
 
   const fetchSupportData = async () => {
@@ -349,12 +366,28 @@ export default function InvoiceImport() {
     });
   };
 
-  const processIssuedPdfImport = async (files: File[]) => {
-    const parsedRows = await Promise.all(files.map((file) => extractIssuedInvoicePdfRow(file)));
-    await upsertIssuedRows(parsedRows, {
-      filename: files.length === 1 ? files[0].name : `${files.length} archivos PDF`,
-      notes: "Importación de facturas emitidas PDF",
-    });
+  const stageIssuedPdfFiles = async (files: File[]) => {
+    const staged = await Promise.all(
+      files.map(async (file) => {
+        try {
+          const parsedRow = await extractIssuedInvoicePdfRow(file);
+          return {
+            file,
+            parsedRow,
+            error: parsedRow ? null : "No se pudo reconocer la estructura de la factura.",
+          } satisfies PendingIssuedPdfItem;
+        } catch (error: any) {
+          return {
+            file,
+            parsedRow: null,
+            error: error?.message || "No se pudo leer el PDF.",
+          } satisfies PendingIssuedPdfItem;
+        }
+      })
+    );
+
+    setPendingIssuedPdfItems(staged);
+    setSummary((current) => ({ ...current, issued: null }));
   };
 
   const processReceivablesImport = async (file: File) => {
@@ -483,8 +516,9 @@ export default function InvoiceImport() {
       if (mode === "issued") {
         const pdfFiles = files.filter(isPdfInvoiceFile);
         if (pdfFiles.length === files.length) {
-          await processIssuedPdfImport(pdfFiles);
+          await stageIssuedPdfFiles(pdfFiles);
         } else if (files.length === 1) {
+          setPendingIssuedPdfItems([]);
           await processIssuedSpreadsheetImport(files[0]);
         } else {
           throw new Error("Para emitidas puedes subir un Excel/CSV o varios PDF, pero no mezclar formatos.");
@@ -505,6 +539,30 @@ export default function InvoiceImport() {
     const files = Array.from(event.target.files || []);
     await importFiles(mode, files);
   };
+
+  const handleAcceptIssuedPdfImport = async () => {
+    if (pendingIssuedPdfItems.length === 0) return;
+    setLoading(true);
+    try {
+      const parsedRows = pendingIssuedPdfItems.map((item) => item.parsedRow);
+      await upsertIssuedRows(parsedRows, {
+        filename:
+          pendingIssuedPdfItems.length === 1
+            ? pendingIssuedPdfItems[0].file.name
+            : `${pendingIssuedPdfItems.length} archivos PDF`,
+        notes: "Importación de facturas emitidas PDF",
+      });
+      setPendingIssuedPdfItems([]);
+    } catch (error: any) {
+      console.error("Error confirming invoice import:", error);
+      alert(error.message || "No se pudieron cargar las facturas al sistema.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const pendingIssuedPdfValidRows = pendingIssuedPdfItems.filter((item) => item.parsedRow);
+  const pendingIssuedPdfErrors = pendingIssuedPdfItems.filter((item) => item.error);
 
   if (!selectedEmpresaId) {
     return (
@@ -557,6 +615,11 @@ export default function InvoiceImport() {
             inputRef={fileRefs.issued}
             onChange={(event) => void handleFileImport("issued", event)}
             onFilesSelected={(files) => void importFiles("issued", files)}
+            pendingIssuedPdfItems={pendingIssuedPdfItems}
+            pendingIssuedPdfValidRows={pendingIssuedPdfValidRows.length}
+            pendingIssuedPdfErrors={pendingIssuedPdfErrors}
+            onAcceptPendingPdfImport={() => void handleAcceptIssuedPdfImport()}
+            onClearPendingPdfImport={() => setPendingIssuedPdfItems([])}
             summary={summary.issued}
             accept=".xlsx,.xls,.csv,.pdf"
             multiple
@@ -572,6 +635,11 @@ export default function InvoiceImport() {
             inputRef={fileRefs.receivables}
             onChange={(event) => void handleFileImport("receivables", event)}
             onFilesSelected={(files) => void importFiles("receivables", files)}
+            pendingIssuedPdfItems={[]}
+            pendingIssuedPdfValidRows={0}
+            pendingIssuedPdfErrors={[]}
+            onAcceptPendingPdfImport={() => undefined}
+            onClearPendingPdfImport={() => undefined}
             summary={summary.receivables}
             accept=".xlsx,.xls,.csv"
           />
@@ -589,6 +657,11 @@ function ImportCard({
   inputRef,
   onChange,
   onFilesSelected,
+  pendingIssuedPdfItems,
+  pendingIssuedPdfValidRows,
+  pendingIssuedPdfErrors,
+  onAcceptPendingPdfImport,
+  onClearPendingPdfImport,
   summary,
   accept,
   multiple = false,
@@ -600,6 +673,11 @@ function ImportCard({
   inputRef: React.RefObject<HTMLInputElement | null>;
   onChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onFilesSelected: (files: File[]) => void;
+  pendingIssuedPdfItems: PendingIssuedPdfItem[];
+  pendingIssuedPdfValidRows: number;
+  pendingIssuedPdfErrors: PendingIssuedPdfItem[];
+  onAcceptPendingPdfImport: () => void;
+  onClearPendingPdfImport: () => void;
   summary: ImportSummary | null;
   accept: string;
   multiple?: boolean;
@@ -671,10 +749,74 @@ function ImportCard({
           </div>
           <div className="mt-1 text-sm">
             {supportsPdfDrop
-              ? "Tambien puedes soltar uno o varios PDFs de facturas emitidas directamente en esta zona."
+              ? "Tambien puedes soltar uno o varios PDFs de facturas emitidas. Primero veras un resumen antes de cargarlas."
               : "Suelta el archivo en esta zona para importarlo sin usar el selector manual."}
           </div>
         </div>
+
+        {supportsPdfDrop && pendingIssuedPdfItems.length > 0 && (
+          <div className="space-y-4 rounded-xl border border-amber-200 bg-amber-50/40 p-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <div className="font-medium text-amber-900">Facturas listas para revisar</div>
+                <div className="text-sm text-muted-foreground">
+                  {pendingIssuedPdfValidRows} factura(s) validas de {pendingIssuedPdfItems.length}. Solo se cargaran cuando confirmes abajo.
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" onClick={onClearPendingPdfImport} disabled={loading}>
+                  Limpiar adjuntos
+                </Button>
+                <Button onClick={onAcceptPendingPdfImport} disabled={loading || pendingIssuedPdfValidRows === 0}>
+                  {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  Aceptar y cargar
+                </Button>
+              </div>
+            </div>
+
+            <div className="rounded-lg border bg-background">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Archivo</TableHead>
+                    <TableHead>N° factura</TableHead>
+                    <TableHead>Razon social</TableHead>
+                    <TableHead>Fecha emision</TableHead>
+                    <TableHead className="text-right">Monto neto</TableHead>
+                    <TableHead className="text-right">Monto con IVA</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {pendingIssuedPdfItems.map((item) => (
+                    <TableRow key={item.file.name}>
+                      <TableCell className="font-medium">{item.file.name}</TableCell>
+                      <TableCell>{item.parsedRow?.numeroDocumento || "—"}</TableCell>
+                      <TableCell>{item.parsedRow?.terceroNombre || "No reconocida"}</TableCell>
+                      <TableCell>
+                        {item.parsedRow?.fechaEmision ? formatTreasuryDate(item.parsedRow.fechaEmision) : "—"}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {item.parsedRow?.montoNeto != null ? formatTreasuryCurrency(item.parsedRow.montoNeto) : "—"}
+                      </TableCell>
+                      <TableCell className="text-right font-semibold">
+                        {item.parsedRow?.monto != null ? formatTreasuryCurrency(item.parsedRow.monto) : "—"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+
+            {pendingIssuedPdfErrors.length > 0 && (
+              <Alert>
+                <AlertTitle>Algunos PDFs no se pudieron preparar</AlertTitle>
+                <AlertDescription>
+                  {pendingIssuedPdfErrors.map((item) => `${item.file.name}: ${item.error}`).join(" | ")}
+                </AlertDescription>
+              </Alert>
+            )}
+          </div>
+        )}
 
         {summary && (
           <div className="rounded-xl border border-emerald-200 p-4 text-sm">

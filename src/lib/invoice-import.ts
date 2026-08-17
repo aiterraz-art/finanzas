@@ -21,6 +21,8 @@ export type IssuedInvoiceImportRow = {
   fechaEmision: string;
   fechaVencimiento: string | null;
   monto: number;
+  montoNeto?: number | null;
+  montoIva?: number | null;
   descripcion: string | null;
   tipoDocumento: string | null;
   nombreDocumento: string | null;
@@ -134,6 +136,11 @@ const normalizePdfLineText = (value: string) =>
     .filter(Boolean);
 
 const normalizePdfFlatText = (value: string) => normalizePdfLineText(value).join(" ");
+
+const extractMoneyFromMatch = (match: RegExpMatchArray | null) => {
+  if (!match?.[1]) return null;
+  return normalizeMoneyInput(match[1]);
+};
 
 const normalizeInvoiceMoneyValue = (value: unknown) => {
   const text = sanitizeImportText(value);
@@ -292,6 +299,8 @@ export const normalizeIssuedInvoiceImportRow = (rawRow: RawSheetRow): IssuedInvo
     fechaEmision,
     fechaVencimiento,
     monto,
+    montoNeto: null,
+    montoIva: null,
     descripcion:
       sanitizeImportText(getValueFromRow(rawRow, "descripcion", "detalle", "glosa", "concepto")) || nombreDocumento,
     tipoDocumento,
@@ -316,6 +325,8 @@ export const parseIssuedInvoicePdfText = (rawText: string): IssuedInvoiceImportR
   const fechaEmision =
     normalizeSpanishLongDate(flatText.match(/Fecha\s+Emision:\s*([^.]+?\d{4})/i)?.[1] || "") ||
     normalizeInvoiceDateInput(flatText.match(/Fecha\s+Emision:\s*([^.]+?\d{4})/i)?.[1] || "");
+  const montoNeto = extractMoneyFromMatch(flatText.match(/MONTO\s+NETO\s*\$?\s*([\d.,]+)/i));
+  const montoIva = extractMoneyFromMatch(flatText.match(/I\.?V\.?A\.?\s*19%\s*\$?\s*([\d.,]+)/i));
   const monto = normalizeMoneyInput(flatText.match(/TOTAL\s*\$?\s*([\d.,]+)/i)?.[1] || "");
 
   const valorIndex = lines.findIndex((line) => line.toLowerCase() === "valor");
@@ -345,6 +356,8 @@ export const parseIssuedInvoicePdfText = (rawText: string): IssuedInvoiceImportR
     fechaEmision,
     fechaVencimiento: null,
     monto,
+    montoNeto: montoNeto ?? null,
+    montoIva: montoIva ?? null,
     descripcion,
     tipoDocumento: "FACTURA ELECTRONICA",
     nombreDocumento: "Factura Electrónica",
