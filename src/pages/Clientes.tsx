@@ -135,6 +135,13 @@ export default function Clientes() {
           cliente.rut.toLowerCase().includes(normalized) ||
           cliente.invoices.some((invoice) => invoice.numeroDocumento.toLowerCase().includes(normalized))
         );
+      })
+      .sort((left, right) => {
+        const leftHasDebt = left.outstanding > 0.009;
+        const rightHasDebt = right.outstanding > 0.009;
+        if (leftHasDebt !== rightHasDebt) return leftHasDebt ? -1 : 1;
+        if (Math.abs(right.outstanding - left.outstanding) > 0.009) return right.outstanding - left.outstanding;
+        return left.razon_social.localeCompare(right.razon_social, "es");
       });
   }, [clientes, collectionPipeline, searchQuery]);
 
