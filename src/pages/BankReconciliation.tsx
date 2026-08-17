@@ -113,6 +113,8 @@ type MatchCandidate = {
   customerId?: string | null;
   customerName?: string | null;
   customerRut?: string | null;
+  amountDifference?: number;
+  isSuggested?: boolean;
 };
 
 type ImportSummary = {
@@ -225,6 +227,7 @@ const BANK_MOVEMENT_SELECT = `
 
 const readFirstLinkedRow = <T,>(value: T[] | T | null | undefined) => (Array.isArray(value) ? value[0] : value) ?? null;
 const getActivePayments = (txn: BankMovement) => (txn.facturas_pagos || []).filter((payment) => payment.estado !== "revertido");
+const isAmountMatch = (left: number, right: number) => Math.abs(left - right) <= 0.01;
 
 export default function BankReconciliation() {
   const { selectedEmpresaId, selectedRole } = useCompany();
@@ -523,23 +526,31 @@ export default function BankReconciliation() {
       if (customersError) throw customersError;
 
       const nextCandidates: MatchCandidate[] = [
-        ...(invoices || []).map((invoice: any) => ({
-          id: invoice.id,
-          type: "factura" as const,
-          label: `${invoice.tercero_nombre || "Sin tercero"} • ${invoice.numero_documento || "Sin folio"}`,
-          subtitle: invoice.estado === "pagada" ? "Factura pagada (vincular histórico)" : "Factura abierta",
-          amount: Math.max(
+        ...(invoices || []).map((invoice: any) => {
+          const remainingAmount = Math.max(
             Number(invoice.monto || 0) -
               ((invoice.facturas_pagos || []) as any[])
                 .filter((payment) => payment.estado === "aplicado")
                 .reduce((sum, payment) => sum + Number(payment.monto_aplicado || 0), 0),
             0
-          ),
-          dueDate: invoice.fecha_vencimiento || null,
-          invoiceNumber: invoice.numero_documento || null,
-          customerName: invoice.tercero_nombre || null,
-          status: invoice.estado || null,
-        })),
+          );
+          const amountDifference = Number(Math.abs(absAmount - remainingAmount).toFixed(2));
+          const isSuggested = txn.monto >= 0 && isAmountMatch(absAmount, remainingAmount);
+
+          return {
+            id: invoice.id,
+            type: "factura" as const,
+            label: `${invoice.tercero_nombre || "Sin tercero"} • ${invoice.numero_documento || "Sin folio"}`,
+            subtitle: invoice.estado === "pagada" ? "Factura pagada (vincular histórico)" : "Factura abierta",
+            amount: remainingAmount,
+            dueDate: invoice.fecha_vencimiento || null,
+            invoiceNumber: invoice.numero_documento || null,
+            customerName: invoice.tercero_nombre || null,
+            status: invoice.estado || null,
+            amountDifference,
+            isSuggested,
+          };
+        }),
         ...((rendiciones || []) as any[]).map((rendicion) => ({
           id: rendicion.id,
           type: "rendicion" as const,
@@ -588,16 +599,45 @@ export default function BankReconciliation() {
           customerName: customer.razon_social || "Cliente sin nombre",
           customerRut: customer.rut || null,
         })),
-      ].sort((a, b) => Math.abs(absAmount - a.amount) - Math.abs(absAmount - b.amount));
+      ].sort((a, b) => {
+        if (a.type === "factura" && b.type === "factura" && a.isSuggested !== b.isSuggested) {
+          return a.isSuggested ? -1 : 1;
+        }
 
-      setCandidates(
-        nextCandidates.filter(
+        const amountDistance = Math.abs(absAmount - a.amount) - Math.abs(absAmount - b.amount);
+        if (Math.abs(amountDistance) > 0.009) return amountDistance;
+
+        if (a.dueDate && b.dueDate) return a.dueDate.localeCompare(b.dueDate);
+        if (a.dueDate) return -1;
+        if (b.dueDate) return 1;
+        return a.label.localeCompare(b.label, "es");
+      });
+
+      const filteredCandidates = nextCandidates.filter(
           (candidate) =>
             candidate.type !== "factura" ||
             candidate.amount > 0 ||
             candidate.status === "pagada"
-        )
-      );
+        );
+
+      setCandidates(filteredCandidates);
+
+      if (txn.monto >= 0) {
+        const suggestedInvoices = filteredCandidates.filter(
+          (candidate) => candidate.type === "factura" && candidate.isSuggested
+        );
+
+        setSelectedInvoiceMatches(
+          suggestedInvoices.length === 1
+            ? {
+                [suggestedInvoices[0].id]: {
+                  mode: "full",
+                  amount: suggestedInvoices[0].amount.toFixed(2),
+                },
+              }
+            : {}
+        );
+      }
     } catch (error) {
       console.error("Error fetching reconciliation candidates:", error);
       setCandidates([]);
@@ -2389,10 +2429,22 @@ export default function BankReconciliation() {
               <div key={`${candidate.type}-${candidate.id}`} className="rounded-xl border p-4">
                 <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                   <div>
-                    <div className="font-medium">{candidate.label}</div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="font-medium">{candidate.label}</div>
+                      {selectedTxn && selectedTxn.monto >= 0 && candidate.type === "factura" && candidate.isSuggested && (
+                        <Badge variant="secondary" className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">
+                          Sugerida por monto
+                        </Badge>
+                      )}
+                    </div>
                     <div className="text-sm text-muted-foreground">
                       {candidate.subtitle}
                       {candidate.dueDate ? ` • vence ${formatTreasuryDate(candidate.dueDate)}` : ""}
+                      {selectedTxn && selectedTxn.monto >= 0 && candidate.type === "factura" && candidate.amountDifference !== undefined
+                        ? candidate.isSuggested
+                          ? " • coincide exacto con el ingreso"
+                          : ` • diferencia ${formatTreasuryCurrency(candidate.amountDifference, selectedAccount?.moneda || "CLP")}`
+                        : ""}
                     </div>
                   </div>
                     <div className="text-right">
