@@ -13,6 +13,7 @@ import {
   buildInvoiceObjectsFromWorksheet,
   detectIssuedInvoiceWorksheetFormat,
   detectReceivablesWorksheetFormat,
+  extractIssuedInvoicePdfRow,
   inferReceivableEmissionDate,
   normalizeIssuedInvoiceImportRow,
   normalizeReceivableInvoiceImportRow,
@@ -57,6 +58,9 @@ type InvoiceRow = {
   estado: string | null;
   archivo_url: string | null;
 };
+
+const isPdfInvoiceFile = (file: File) =>
+  file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
 
 const today = new Date().toISOString().split("T")[0];
 
@@ -213,16 +217,10 @@ export default function InvoiceImport() {
     };
   };
 
-  const processIssuedImport = async (file: File) => {
-    const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
-    const rows = XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: "", raw: true });
-    const detection = detectIssuedInvoiceWorksheetFormat(rows);
-    if (detection.kind !== "issued" || detection.headerRowIndex === null) {
-      throw new Error(detection.reason || "No se detectó un layout compatible de facturas emitidas.");
-    }
-
-    const rawObjects = buildInvoiceObjectsFromWorksheet(rows, detection.headerRowIndex);
-    const parsedRows = rawObjects.map((row) => normalizeIssuedInvoiceImportRow(row));
+  const upsertIssuedRows = async (
+    parsedRows: Array<IssuedInvoiceImportRow | null>,
+    metadata: { filename: string; notes: string | null }
+  ) => {
     const validRows = parsedRows.filter(Boolean) as IssuedInvoiceImportRow[];
     const rejectedRows = parsedRows.length - validRows.length;
 
@@ -319,7 +317,7 @@ export default function InvoiceImport() {
     }
 
     const importSummary: ImportSummary = {
-      filename: file.name,
+      filename: metadata.filename,
       totalRows: parsedRows.length,
       validRows: validRows.length,
       insertedRows,
@@ -327,11 +325,35 @@ export default function InvoiceImport() {
       duplicateRows,
       rejectedRows,
       createdClients,
-      notes: "Importación de emitidas 6 meses",
+      notes: metadata.notes,
     };
 
     await registerImportRun("issued", importSummary);
     setSummary((current) => ({ ...current, issued: importSummary }));
+  };
+
+  const processIssuedSpreadsheetImport = async (file: File) => {
+    const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
+    const rows = XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: "", raw: true });
+    const detection = detectIssuedInvoiceWorksheetFormat(rows);
+    if (detection.kind !== "issued" || detection.headerRowIndex === null) {
+      throw new Error(detection.reason || "No se detectó un layout compatible de facturas emitidas.");
+    }
+
+    const rawObjects = buildInvoiceObjectsFromWorksheet(rows, detection.headerRowIndex);
+    const parsedRows = rawObjects.map((row) => normalizeIssuedInvoiceImportRow(row));
+    await upsertIssuedRows(parsedRows, {
+      filename: file.name,
+      notes: "Importación de emitidas 6 meses",
+    });
+  };
+
+  const processIssuedPdfImport = async (files: File[]) => {
+    const parsedRows = await Promise.all(files.map((file) => extractIssuedInvoicePdfRow(file)));
+    await upsertIssuedRows(parsedRows, {
+      filename: files.length === 1 ? files[0].name : `${files.length} archivos PDF`,
+      notes: "Importación de facturas emitidas PDF",
+    });
   };
 
   const processReceivablesImport = async (file: File) => {
@@ -453,15 +475,22 @@ export default function InvoiceImport() {
   };
 
   const handleFileImport = async (mode: ImportMode, event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file || !selectedEmpresaId || !user || !canEdit) return;
+    const files = Array.from(event.target.files || []);
+    if (files.length === 0 || !selectedEmpresaId || !user || !canEdit) return;
 
     setLoading(true);
     try {
       if (mode === "issued") {
-        await processIssuedImport(file);
+        const pdfFiles = files.filter(isPdfInvoiceFile);
+        if (pdfFiles.length === files.length) {
+          await processIssuedPdfImport(pdfFiles);
+        } else if (files.length === 1) {
+          await processIssuedSpreadsheetImport(files[0]);
+        } else {
+          throw new Error("Para emitidas puedes subir un Excel/CSV o varios PDF, pero no mezclar formatos.");
+        }
       } else {
-        await processReceivablesImport(file);
+        await processReceivablesImport(files[0]);
       }
     } catch (error: any) {
       console.error("Error importing invoices:", error);
@@ -517,12 +546,14 @@ export default function InvoiceImport() {
         <TabsContent value="issued">
           <ImportCard
             title="Facturas emitidas últimos 6 meses"
-            description="Base histórica de ventas. Si el cliente no existe, se crea. Si la factura ya existe, se actualiza sin duplicar."
+            description="Base histórica de ventas. Acepta Excel/CSV y también PDFs de Factura Electrónica generados por el laboratorio. Si el cliente no existe, se crea. Si la factura ya existe, se actualiza sin duplicar."
             canEdit={canEdit}
             loading={loading}
             inputRef={fileRefs.issued}
             onChange={(event) => void handleFileImport("issued", event)}
             summary={summary.issued}
+            accept=".xlsx,.xls,.csv,.pdf"
+            multiple
           />
         </TabsContent>
 
@@ -535,6 +566,7 @@ export default function InvoiceImport() {
             inputRef={fileRefs.receivables}
             onChange={(event) => void handleFileImport("receivables", event)}
             summary={summary.receivables}
+            accept=".xlsx,.xls,.csv"
           />
         </TabsContent>
       </Tabs>
@@ -550,6 +582,8 @@ function ImportCard({
   inputRef,
   onChange,
   summary,
+  accept,
+  multiple = false,
 }: {
   title: string;
   description: string;
@@ -558,6 +592,8 @@ function ImportCard({
   inputRef: React.RefObject<HTMLInputElement | null>;
   onChange: (event: ChangeEvent<HTMLInputElement>) => void;
   summary: ImportSummary | null;
+  accept: string;
+  multiple?: boolean;
 }) {
   return (
     <Card>
@@ -566,11 +602,11 @@ function ImportCard({
         <CardDescription>{description}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <input ref={inputRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={onChange} />
+        <input ref={inputRef} type="file" accept={accept} multiple={multiple} className="hidden" onChange={onChange} />
         <div className="flex flex-wrap items-center gap-3">
           <Button onClick={() => inputRef.current?.click()} disabled={!canEdit || loading}>
             {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileUp className="mr-2 h-4 w-4" />}
-            Seleccionar archivo
+            {multiple ? "Seleccionar archivo(s)" : "Seleccionar archivo"}
           </Button>
           {!canEdit && <div className="text-sm text-amber-700">Tu rol es solo lectura.</div>}
         </div>

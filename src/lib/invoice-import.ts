@@ -42,6 +42,22 @@ export type ReceivableInvoiceImportRow = {
 
 type RawSheetRow = Record<string, unknown>;
 
+const SPANISH_MONTHS: Record<string, string> = {
+  enero: "01",
+  febrero: "02",
+  marzo: "03",
+  abril: "04",
+  mayo: "05",
+  junio: "06",
+  julio: "07",
+  agosto: "08",
+  septiembre: "09",
+  setiembre: "09",
+  octubre: "10",
+  noviembre: "11",
+  diciembre: "12",
+};
+
 const sanitizeImportText = (value: unknown) =>
   normalizeText(value)
     .replace(/[\uD800-\uDFFF\uFFFD]/g, "")
@@ -106,6 +122,19 @@ const inferRutFromRow = (rawRow: RawSheetRow) => {
 const rowContainsPatterns = (tokens: string[], patterns: string[]) =>
   tokens.some((token) => patterns.some((pattern) => token.includes(pattern)));
 
+const normalizePdfLineText = (value: string) =>
+  value
+    .replace(/\r/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{2,}/g, "\n")
+    .split("\n")
+    .map((line) => sanitizeImportText(line))
+    .filter(Boolean);
+
+const normalizePdfFlatText = (value: string) => normalizePdfLineText(value).join(" ");
+
 const normalizeInvoiceMoneyValue = (value: unknown) => {
   const text = sanitizeImportText(value);
   if (!text) return null;
@@ -149,6 +178,20 @@ const normalizeInvoiceDateInput = (value: unknown) => {
   }
 
   return normalizeDateInput(text);
+};
+
+const normalizeSpanishLongDate = (value: string) => {
+  const normalized = sanitizeImportText(value)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+  const match = normalized.match(/(\d{1,2})\s+de\s+([a-z]+)\s+(?:del\s+)?(\d{4})/i);
+  if (!match) return null;
+
+  const [, dd, monthName, yyyy] = match;
+  const mm = SPANISH_MONTHS[monthName];
+  if (!mm) return null;
+  return `${yyyy}-${mm}-${dd.padStart(2, "0")}`;
 };
 
 const subtractDaysIso = (dateIso: string, days: number) => {
@@ -255,6 +298,85 @@ export const normalizeIssuedInvoiceImportRow = (rawRow: RawSheetRow): IssuedInvo
     nombreDocumento,
     vendedorAsignado,
   };
+};
+
+export const parseIssuedInvoicePdfText = (rawText: string): IssuedInvoiceImportRow | null => {
+  const lines = normalizePdfLineText(rawText);
+  const flatText = normalizePdfFlatText(rawText);
+  if (!flatText || !/FACTURA ELECTRONICA/i.test(flatText)) return null;
+
+  const numeroDocumento =
+    sanitizeImportText(flatText.match(/FACTURA\s+ELECTRONICA\s+N[º°]?\s*([A-Z0-9-]+)/i)?.[1]) || "";
+  const terceroNombre =
+    sanitizeImportText(flatText.match(/SEÑOR\(ES\):\s*(.+?)\s*R\.U\.T\.:/i)?.[1]) || "";
+  const rut =
+    normalizeRut(
+      (flatText.match(/SEÑOR\(ES\):.+?R\.U\.T\.\:\s*([0-9.\-\sKk]+?)\s*GIRO:/i)?.[1] || "").replace(/\s+/g, "")
+    );
+  const fechaEmision =
+    normalizeSpanishLongDate(flatText.match(/Fecha\s+Emision:\s*([^.]+?\d{4})/i)?.[1] || "") ||
+    normalizeInvoiceDateInput(flatText.match(/Fecha\s+Emision:\s*([^.]+?\d{4})/i)?.[1] || "");
+  const monto = normalizeMoneyInput(flatText.match(/TOTAL\s*\$?\s*([\d.,]+)/i)?.[1] || "");
+
+  const valorIndex = lines.findIndex((line) => line.toLowerCase() === "valor");
+  const formaPagoIndex = lines.findIndex((line) => /^Forma de Pago:/i.test(line));
+  const itemLines =
+    valorIndex >= 0 && formaPagoIndex > valorIndex
+      ? lines
+          .slice(valorIndex + 1, formaPagoIndex)
+          .filter(
+            (line) =>
+              line !== "-" &&
+              !/^\d+$/.test(line) &&
+              !/^[\d.,]+$/.test(line) &&
+              !/^%/i.test(line)
+          )
+      : [];
+  const descripcion = itemLines.length > 0 ? itemLines.join(" ") : null;
+
+  if (!numeroDocumento || !terceroNombre || !fechaEmision || !monto) {
+    return null;
+  }
+
+  return {
+    numeroDocumento,
+    rut,
+    terceroNombre,
+    fechaEmision,
+    fechaVencimiento: null,
+    monto,
+    descripcion,
+    tipoDocumento: "FACTURA ELECTRONICA",
+    nombreDocumento: "Factura Electrónica",
+    vendedorAsignado: null,
+  };
+};
+
+export const extractIssuedInvoicePdfRow = async (file: File): Promise<IssuedInvoiceImportRow | null> => {
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  if (!pdfjs.GlobalWorkerOptions.workerSrc) {
+    pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+      "pdfjs-dist/legacy/build/pdf.worker.mjs",
+      import.meta.url
+    ).toString();
+  }
+
+  const data = new Uint8Array(await file.arrayBuffer());
+  const loadingTask = pdfjs.getDocument({ data });
+  const pdf = await loadingTask.promise;
+  const texts: string[] = [];
+
+  for (let pageIndex = 1; pageIndex <= pdf.numPages; pageIndex += 1) {
+    const page = await pdf.getPage(pageIndex);
+    const content = await page.getTextContent();
+    texts.push(
+      content.items
+        .map((item) => ("str" in item ? item.str : ""))
+        .join("\n")
+    );
+  }
+
+  return parseIssuedInvoicePdfText(texts.join("\n"));
 };
 
 export const normalizeReceivableInvoiceImportRow = (rawRow: RawSheetRow): ReceivableInvoiceImportRow | null => {
