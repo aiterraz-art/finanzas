@@ -1578,24 +1578,62 @@ export default function BankReconciliation() {
         delete next[candidate.id];
         return next;
       }
+
+      const bankAmount = selectedTxn && selectedTxn.monto >= 0 ? Math.abs(selectedTxn.monto) : candidate.amount;
+      const alreadyApplied = candidates.reduce((sum, currentCandidate) => {
+        if (currentCandidate.type !== "factura" || currentCandidate.id === candidate.id) return sum;
+        const selection = current[currentCandidate.id];
+        if (!selection) return sum;
+        const amount = selection.mode === "partial" ? Number(selection.amount || 0) : currentCandidate.amount;
+        return sum + amount;
+      }, 0);
+      const remainingAmount = Math.max(Number((bankAmount - alreadyApplied).toFixed(2)), 0);
+      const isPartialPayment = remainingAmount > 0.009 && remainingAmount + 0.01 < candidate.amount;
+      const defaultAmount = isPartialPayment ? remainingAmount : candidate.amount;
+
       return {
         ...current,
         [candidate.id]: {
-          mode: "full",
-          amount: candidate.amount.toFixed(2),
+          mode: isPartialPayment ? "partial" : "full",
+          amount: defaultAmount.toFixed(2),
         },
       };
     });
   };
 
   const handleInvoiceSelectionMode = (candidateId: string, mode: "full" | "partial", candidateAmount: number) => {
-    setSelectedInvoiceMatches((current) => ({
-      ...current,
-      [candidateId]: {
-        mode,
-        amount: mode === "partial" ? current[candidateId]?.amount || candidateAmount.toFixed(2) : candidateAmount.toFixed(2),
-      },
-    }));
+    setSelectedInvoiceMatches((current) => {
+      const currentAmount = current[candidateId]?.amount || candidateAmount.toFixed(2);
+      if (mode === "full") {
+        return {
+          ...current,
+          [candidateId]: {
+            mode,
+            amount: candidateAmount.toFixed(2),
+          },
+        };
+      }
+
+      const bankAmount = selectedTxn && selectedTxn.monto >= 0 ? Math.abs(selectedTxn.monto) : candidateAmount;
+      const alreadyApplied = candidates.reduce((sum, candidate) => {
+        if (candidate.type !== "factura" || candidate.id === candidateId) return sum;
+        const selection = current[candidate.id];
+        if (!selection) return sum;
+        const amount = selection.mode === "partial" ? Number(selection.amount || 0) : candidate.amount;
+        return sum + amount;
+      }, 0);
+      const remainingAmount = Math.max(Number((bankAmount - alreadyApplied).toFixed(2)), 0);
+      const suggestedAmount =
+        remainingAmount > 0.009 ? Math.min(candidateAmount, remainingAmount).toFixed(2) : currentAmount;
+
+      return {
+        ...current,
+        [candidateId]: {
+          mode,
+          amount: suggestedAmount,
+        },
+      };
+    });
   };
 
   const handleInvoiceSelectionAmount = (candidateId: string, value: string) => {
