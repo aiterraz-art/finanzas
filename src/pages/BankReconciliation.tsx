@@ -239,6 +239,7 @@ export default function BankReconciliation() {
   const [latestImport, setLatestImport] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<"all" | "unmatched" | "matched">("all");
+  const [directionFilter, setDirectionFilter] = useState<"all" | "inflow" | "outflow">("all");
   const [searchTerm, setSearchTerm] = useState("");
   const [amountFilter, setAmountFilter] = useState("");
   const [dateFromFilter, setDateFromFilter] = useState("");
@@ -1348,6 +1349,8 @@ export default function BankReconciliation() {
     return transactions.filter((txn) => {
       if (filter === "matched" && txn.estado !== "conciliado") return false;
       if (filter === "unmatched" && txn.estado === "conciliado") return false;
+      if (directionFilter === "inflow" && Number(txn.monto) < 0) return false;
+      if (directionFilter === "outflow" && Number(txn.monto) >= 0) return false;
       if (dateFromFilter && txn.fecha_movimiento < dateFromFilter) return false;
       if (dateToFilter && txn.fecha_movimiento > dateToFilter) return false;
       if (amountFilter.trim()) {
@@ -1391,7 +1394,7 @@ export default function BankReconciliation() {
         .toLowerCase();
       return haystack.includes(searchTerm.toLowerCase());
     });
-  }, [transactions, filter, searchTerm, amountFilter, dateFromFilter, dateToFilter]);
+  }, [transactions, filter, directionFilter, searchTerm, amountFilter, dateFromFilter, dateToFilter]);
 
   const stats = useMemo(() => {
     return {
@@ -1873,6 +1876,19 @@ export default function BankReconciliation() {
                   <SelectItem value="all">Todos</SelectItem>
                   <SelectItem value="unmatched">No conciliados</SelectItem>
                   <SelectItem value="matched">Conciliados</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select
+                value={directionFilter}
+                onValueChange={(value: "all" | "inflow" | "outflow") => setDirectionFilter(value)}
+              >
+                <SelectTrigger className="w-full sm:w-44">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos los movimientos</SelectItem>
+                  <SelectItem value="inflow">Ingresos</SelectItem>
+                  <SelectItem value="outflow">Egresos</SelectItem>
                 </SelectContent>
               </Select>
             </div>
