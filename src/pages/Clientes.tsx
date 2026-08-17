@@ -355,10 +355,13 @@ export default function Clientes() {
                     {cliente.rut} • {cliente.email || "sin email"} • {cliente.telefono || "sin teléfono"}
                   </div>
                 </div>
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <Badge variant="outline">{formatTreasuryCurrency(cliente.outstanding)}</Badge>
                   {cliente.activePromises > 0 && <Badge className="bg-blue-100 text-blue-700 hover:bg-blue-100">{cliente.activePromises} promesa(s)</Badge>}
                   {cliente.highestOverdue > 30 && <Badge className="bg-red-100 text-red-700 hover:bg-red-100">riesgo alto</Badge>}
+                  <Button variant="outline" size="sm" asChild>
+                    <Link to={`/clientes/${cliente.id}`}>Estado de cuenta</Link>
+                  </Button>
                 </div>
               </div>
 
