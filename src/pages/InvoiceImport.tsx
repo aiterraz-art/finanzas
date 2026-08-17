@@ -1,4 +1,4 @@
-import { type ChangeEvent, useEffect, useRef, useState } from "react";
+import { type ChangeEvent, type DragEvent, useEffect, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import { FileUp, Loader2, RefreshCcw } from "lucide-react";
 import { Link } from "react-router-dom";
@@ -20,6 +20,7 @@ import {
   type IssuedInvoiceImportRow,
   type ReceivableInvoiceImportRow,
 } from "@/lib/invoice-import";
+import { cn } from "@/lib/utils";
 import { canEditTreasury, normalizeRut, normalizeText } from "@/lib/treasury";
 
 type ImportMode = "issued" | "receivables";
@@ -474,8 +475,7 @@ export default function InvoiceImport() {
     setSummary((current) => ({ ...current, receivables: importSummary }));
   };
 
-  const handleFileImport = async (mode: ImportMode, event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files || []);
+  const importFiles = async (mode: ImportMode, files: File[]) => {
     if (files.length === 0 || !selectedEmpresaId || !user || !canEdit) return;
 
     setLoading(true);
@@ -499,6 +499,11 @@ export default function InvoiceImport() {
       setLoading(false);
       if (fileRefs[mode].current) fileRefs[mode].current.value = "";
     }
+  };
+
+  const handleFileImport = async (mode: ImportMode, event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []);
+    await importFiles(mode, files);
   };
 
   if (!selectedEmpresaId) {
@@ -551,6 +556,7 @@ export default function InvoiceImport() {
             loading={loading}
             inputRef={fileRefs.issued}
             onChange={(event) => void handleFileImport("issued", event)}
+            onFilesSelected={(files) => void importFiles("issued", files)}
             summary={summary.issued}
             accept=".xlsx,.xls,.csv,.pdf"
             multiple
@@ -565,6 +571,7 @@ export default function InvoiceImport() {
             loading={loading}
             inputRef={fileRefs.receivables}
             onChange={(event) => void handleFileImport("receivables", event)}
+            onFilesSelected={(files) => void importFiles("receivables", files)}
             summary={summary.receivables}
             accept=".xlsx,.xls,.csv"
           />
@@ -581,6 +588,7 @@ function ImportCard({
   loading,
   inputRef,
   onChange,
+  onFilesSelected,
   summary,
   accept,
   multiple = false,
@@ -591,10 +599,32 @@ function ImportCard({
   loading: boolean;
   inputRef: React.RefObject<HTMLInputElement | null>;
   onChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onFilesSelected: (files: File[]) => void;
   summary: ImportSummary | null;
   accept: string;
   multiple?: boolean;
 }) {
+  const [isDragActive, setIsDragActive] = useState(false);
+  const supportsPdfDrop = accept.includes(".pdf");
+
+  const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
+    if (!canEdit || loading) return;
+    event.preventDefault();
+    setIsDragActive(true);
+  };
+
+  const handleDragLeave = (event: DragEvent<HTMLDivElement>) => {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+    setIsDragActive(false);
+  };
+
+  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
+    if (!canEdit || loading) return;
+    event.preventDefault();
+    setIsDragActive(false);
+    onFilesSelected(Array.from(event.dataTransfer.files || []));
+  };
+
   return (
     <Card>
       <CardHeader>
@@ -609,6 +639,41 @@ function ImportCard({
             {multiple ? "Seleccionar archivo(s)" : "Seleccionar archivo"}
           </Button>
           {!canEdit && <div className="text-sm text-amber-700">Tu rol es solo lectura.</div>}
+        </div>
+
+        <div
+          className={cn(
+            "rounded-xl border border-dashed p-6 text-center transition-colors",
+            canEdit ? "cursor-pointer" : "opacity-70",
+            isDragActive
+              ? "border-primary bg-primary/5 text-primary"
+              : "border-border text-muted-foreground"
+          )}
+          onClick={() => {
+            if (!canEdit || loading) return;
+            inputRef.current?.click();
+          }}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          role="button"
+          tabIndex={canEdit ? 0 : -1}
+          onKeyDown={(event) => {
+            if (!canEdit || loading) return;
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              inputRef.current?.click();
+            }
+          }}
+        >
+          <div className="font-medium">
+            {supportsPdfDrop ? "Arrastra PDFs aquí" : "Arrastra archivos aquí"}
+          </div>
+          <div className="mt-1 text-sm">
+            {supportsPdfDrop
+              ? "Tambien puedes soltar uno o varios PDFs de facturas emitidas directamente en esta zona."
+              : "Suelta el archivo en esta zona para importarlo sin usar el selector manual."}
+          </div>
         </div>
 
         {summary && (
