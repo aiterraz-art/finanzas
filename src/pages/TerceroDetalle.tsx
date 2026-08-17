@@ -96,6 +96,12 @@ const getPaymentDate = (payment: PaymentRecord) => {
   return movement?.fecha_movimiento || payment.created_at?.split("T")[0] || null;
 };
 
+const getPaymentMethodLabel = (payment: PaymentRecord) => {
+  const movement = readFirstLinkedRow(payment.movimientos_banco);
+  if (movement?.id) return "Transferencia";
+  return "Pago manual";
+};
+
 const getStatusMeta = (document: {
   tipo: string | null;
   estado: string | null;
@@ -197,6 +203,19 @@ export default function TerceroDetalle() {
           .filter((value): value is string => Boolean(value))
           .sort((left, right) => left.localeCompare(right));
         const lastPaymentDate = paymentDates[paymentDates.length - 1] || null;
+        const paymentBreakdown = payments
+          .map((payment, index) => {
+            const movement = readFirstLinkedRow(payment.movimientos_banco);
+            return {
+              id: payment.id,
+              sequence: index + 1,
+              amount: Number(payment.monto_aplicado || 0),
+              date: getPaymentDate(payment),
+              methodLabel: getPaymentMethodLabel(payment),
+              reference: movement?.descripcion || movement?.numero_documento || null,
+            };
+          })
+          .sort((left, right) => (left.date || "").localeCompare(right.date || ""));
 
         return {
           ...document,
@@ -206,6 +225,7 @@ export default function TerceroDetalle() {
           balance,
           payments,
           paymentCount: payments.length,
+          paymentBreakdown,
           lastPaymentDate,
           statusMeta: getStatusMeta({
             tipo: document.tipo,
@@ -605,8 +625,18 @@ export default function TerceroDetalle() {
                         <TableCell>
                           <div className="font-mono">{document.numero_documento || "---"}</div>
                           {document.paymentCount > 0 ? (
-                            <div className="text-xs text-muted-foreground">
-                              {document.paymentCount} pago(s) aplicado(s)
+                            <div className="mt-1 space-y-1 text-xs text-muted-foreground">
+                              <div>
+                                {document.paymentCount === 1
+                                  ? "Pagada con 1 transferencia"
+                                  : `Pagada con ${document.paymentCount} transferencias`}
+                              </div>
+                              {document.paymentBreakdown.map((payment) => (
+                                <div key={payment.id}>
+                                  {formatDate(payment.date)} · {payment.methodLabel} {payment.sequence} · {formatCurrency(payment.amount)}
+                                  {payment.reference ? ` · ${payment.reference}` : ""}
+                                </div>
+                              ))}
                             </div>
                           ) : null}
                         </TableCell>
