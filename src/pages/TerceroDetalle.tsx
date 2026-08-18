@@ -87,6 +87,9 @@ const readFirstLinkedRow = <T,>(value: T[] | T | null | undefined) => (Array.isA
 
 const formatCurrency = (value: number) => currencyFormatter.format(value || 0);
 
+const formatStatementNumber = (value: number) =>
+  Math.abs(value || 0).toLocaleString("es-CL");
+
 const formatDate = (value?: string | null, fallback = "Sin fecha") => {
   if (!value) return fallback;
   const normalized = value.includes("T") ? value : `${value}T12:00:00`;
@@ -338,6 +341,65 @@ export default function TerceroDetalle() {
       .sort((left, right) => (right.paymentDate || "").localeCompare(left.paymentDate || ""));
   }, [accountRows]);
 
+  const accountStatementEntries = useMemo(() => {
+    const entries = accountRows.flatMap((document) => {
+      const baseEntry = {
+        id: `doc-${document.id}`,
+        serie: document.tipo === "nota_credito" ? "NC" : "FE",
+        numero: document.numero_documento || "---",
+        fechaEmisionDocumento: document.fecha_emision,
+        fechaContable: document.fecha_emision,
+        documentoReferencia: document.tipo === "nota_credito" ? "Factura" : "",
+        numeroDocumentoReferencia: document.referencedInvoiceNumber || "",
+        glosa:
+          document.tipo === "nota_credito"
+            ? document.nombre_documento || document.descripcion || "Nota de crédito"
+            : document.nombre_documento || document.descripcion || "Factura electrónica",
+        cargo: document.tipo === "nota_credito" ? 0 : document.rawTotal,
+        abono: document.tipo === "nota_credito" ? document.rawTotal : 0,
+        sourceKind: document.tipo === "nota_credito" ? "credit-note" : "invoice",
+      };
+
+      const paymentEntries = document.paymentBreakdown.map((payment) => ({
+        id: `payment-${payment.id}`,
+        serie: "AB",
+        numero: document.numero_documento || "---",
+        fechaEmisionDocumento: document.fecha_emision,
+        fechaContable: payment.date,
+        documentoReferencia: payment.methodLabel,
+        numeroDocumentoReferencia: payment.reference || "",
+        glosa: `Abono ${payment.sequence}${payment.reference ? ` • ${payment.reference}` : ""}`,
+        cargo: 0,
+        abono: payment.amount,
+        sourceKind: "payment",
+      }));
+
+      return [baseEntry, ...paymentEntries];
+    });
+
+    const sorted = entries.sort((left, right) => {
+      const byPostingDate = (left.fechaContable || "").localeCompare(right.fechaContable || "");
+      if (byPostingDate !== 0) return byPostingDate;
+      const byEmissionDate = (left.fechaEmisionDocumento || "").localeCompare(right.fechaEmisionDocumento || "");
+      if (byEmissionDate !== 0) return byEmissionDate;
+      if (left.sourceKind === right.sourceKind) return left.numero.localeCompare(right.numero, "es");
+      if (left.sourceKind === "invoice") return -1;
+      if (right.sourceKind === "invoice") return 1;
+      if (left.sourceKind === "credit-note") return -1;
+      if (right.sourceKind === "credit-note") return 1;
+      return left.numero.localeCompare(right.numero, "es");
+    });
+
+    let runningBalance = 0;
+    return sorted.map((entry) => {
+      runningBalance += entry.cargo - entry.abono;
+      return {
+        ...entry,
+        saldo: runningBalance,
+      };
+    });
+  }, [accountRows]);
+
   const summary = useMemo(() => {
     return accountRows.reduce(
       (acc, document) => {
@@ -349,6 +411,19 @@ export default function TerceroDetalle() {
       { netDocumentTotal: 0, totalPaid: 0, pendingBalance: 0 }
     );
   }, [accountRows]);
+
+  const statementTotals = useMemo(
+    () =>
+      accountStatementEntries.reduce(
+        (acc, entry) => {
+          acc.cargos += entry.cargo;
+          acc.abonos += entry.abono;
+          return acc;
+        },
+        { cargos: 0, abonos: 0 }
+      ),
+    [accountStatementEntries]
+  );
 
   const handleDeleteTercero = async () => {
     if (!selectedEmpresaId || !tercero) return;
@@ -468,39 +543,6 @@ export default function TerceroDetalle() {
       console.error("Error fetching detail:", error);
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleDeleteFactura = async (documentId: string, numero: string | null) => {
-    if (!selectedEmpresaId) return;
-    const confirmed = window.confirm(`¿Archivar la factura folio ${numero || "sin número"}? No se borrará, pero saldrá de la operación diaria.`);
-    if (!confirmed) return;
-
-    try {
-      const { error } = await supabase
-        .from("facturas")
-        .update({
-          estado: "archivada",
-          archived_at: new Date().toISOString(),
-          archived_by: user?.id ?? null,
-          archive_reason: "Factura archivada desde detalle de tercero",
-        })
-        .eq("id", documentId)
-        .eq("empresa_id", selectedEmpresaId);
-
-      if (error) throw error;
-
-      setDocumentos((current) =>
-        current.map((document) =>
-          document.id === documentId
-            ? { ...document, estado: "archivada" }
-            : document
-        )
-      );
-      alert("Factura archivada correctamente.");
-    } catch (error) {
-      console.error("Error al archivar factura:", error);
-      alert("Error al archivar la factura.");
     }
   };
 
@@ -662,126 +704,86 @@ export default function TerceroDetalle() {
         <TabsContent value="estado-cuenta" className="mt-6">
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">Estado de cuenta</CardTitle>
+              <CardTitle className="text-lg">Informe análisis por cliente</CardTitle>
               <CardDescription>
-                Revisa facturas, fechas de emisión, vencimientos, abonos, saldo y último pago.
+                Fecha de control {formatDate(new Date().toISOString().split("T")[0])}. Detalle contable con cargos, abonos y saldo corrido.
               </CardDescription>
             </CardHeader>
             <CardContent className="overflow-x-auto">
-              <Table>
+              <div className="min-w-[1200px] rounded-lg border">
+                <div className="border-b bg-muted/20 px-4 py-3 text-center">
+                  <div className="text-lg font-semibold">Informe Análisis por cliente</div>
+                  <div className="text-sm text-muted-foreground">Fecha de Control {formatDate(new Date().toISOString().split("T")[0])}</div>
+                </div>
+                <div className="border-b bg-background px-4 py-3 text-sm">
+                  <div className="font-semibold">{tercero.rut} • {tercero.razon_social}</div>
+                </div>
+                <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Emisión</TableHead>
-                    <TableHead>Vencimiento</TableHead>
-                    <TableHead>Documento</TableHead>
-                    <TableHead>Tipo</TableHead>
-                    <TableHead className="text-right">Total</TableHead>
-                    <TableHead className="text-right">Pagado</TableHead>
-                    <TableHead className="text-right">Saldo</TableHead>
-                    <TableHead>Último pago</TableHead>
-                    <TableHead>Estado</TableHead>
-                    <TableHead className="text-right">Acciones</TableHead>
+                    <TableHead>RUT / Glosa</TableHead>
+                    <TableHead>Serie</TableHead>
+                    <TableHead>Número</TableHead>
+                    <TableHead>Fecha Emisión Documento</TableHead>
+                    <TableHead>Fecha Contable</TableHead>
+                    <TableHead>Doc. Referencia</TableHead>
+                    <TableHead>N° Doc. Ref.</TableHead>
+                    <TableHead className="text-right">Cargos $</TableHead>
+                    <TableHead className="text-right">Abonos $</TableHead>
+                    <TableHead className="text-right">Saldo $</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {accountRows.length === 0 ? (
+                  {accountStatementEntries.length === 0 ? (
                     <TableRow>
                       <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
                         No hay documentos registrados para este {entityLabel}.
                       </TableCell>
                     </TableRow>
                   ) : (
-                    accountRows.map((document) => (
-                      <TableRow key={document.id}>
-                        <TableCell>{formatDate(document.fecha_emision)}</TableCell>
-                        <TableCell>{formatDate(document.fecha_vencimiento, "Sin vencimiento")}</TableCell>
+                    accountStatementEntries.map((entry) => (
+                      <TableRow key={entry.id}>
                         <TableCell>
-                          <div className="font-mono">{document.numero_documento || "---"}</div>
-                          {document.tipo === "nota_credito" && (
-                            <div className="mt-1 text-xs text-muted-foreground">
-                              {document.referencedInvoiceNumber
-                                ? `Asociada a factura ${document.referencedInvoiceNumber}`
-                                : "Sin factura asociada detectada"}
-                            </div>
-                          )}
-                          {document.paymentCount > 0 ? (
+                          <div className="font-medium">{entry.glosa}</div>
+                          {entry.sourceKind === "invoice" ? (
                             <div className="mt-1 space-y-1 text-xs text-muted-foreground">
-                              <div>
-                                {document.paymentCount === 1
-                                  ? "Pagada con 1 transferencia"
-                                  : `Pagada con ${document.paymentCount} transferencias`}
-                              </div>
-                              {document.paymentBreakdown.map((payment) => (
-                                <div key={payment.id}>
-                                  {formatDate(payment.date)} · {payment.methodLabel} {payment.sequence} · {formatCurrency(payment.amount)}
-                                  {payment.reference ? ` · ${payment.reference}` : ""}
-                                </div>
-                              ))}
-                            </div>
-                          ) : null}
-                          {document.tipo !== "nota_credito" && document.linkedCreditNotes.length > 0 ? (
-                            <div className="mt-1 space-y-1 text-xs text-sky-700">
-                              {document.linkedCreditNotes.map((note) => (
-                                <div key={note.id}>
-                                  NC {note.numeroDocumento || "S/F"} rebaja {formatCurrency(note.amount)}
-                                </div>
-                              ))}
+                              {accountRows
+                                .find((document) => document.id === entry.id.replace("doc-", ""))?.linkedCreditNotes
+                                ?.map((note) => (
+                                  <div key={note.id}>NC {note.numeroDocumento || "S/F"} rebaja {formatCurrency(note.amount)}</div>
+                                ))}
                             </div>
                           ) : null}
                         </TableCell>
-                        <TableCell>
-                          <Badge variant="outline">
-                            {document.tipo === "nota_credito" ? "Nota de crédito" : "Factura"}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="text-right font-medium">{formatCurrency(document.total)}</TableCell>
-                        <TableCell className="text-right">
-                          <div>{formatCurrency(document.paidAmount)}</div>
-                          {document.creditNoteAppliedAmount > 0.01 ? (
-                            <div className="text-xs text-sky-700">
-                              NC aplicadas {formatCurrency(document.creditNoteAppliedAmount)}
-                            </div>
-                          ) : null}
-                        </TableCell>
-                        <TableCell className={`text-right font-semibold ${document.balance > 0.01 ? "text-red-600" : "text-emerald-600"}`}>
-                          {formatCurrency(document.balance)}
-                        </TableCell>
-                        <TableCell>{formatDate(document.lastPaymentDate, "Sin pago")}</TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-2">
-                            {document.statusMeta.icon}
-                            <Badge variant="outline" className={document.statusMeta.badgeClassName}>
-                              {document.statusMeta.label}
-                            </Badge>
-                          </div>
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <div className="flex justify-end gap-2">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className={!document.archivo_url ? "cursor-not-allowed opacity-30" : ""}
-                              onClick={() => document.archivo_url && window.open(document.archivo_url, "_blank")}
-                              title={document.archivo_url ? "Ver PDF escaneado" : "No hay PDF asociado"}
-                            >
-                              Ver PDF
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="text-amber-600 hover:bg-amber-50 hover:text-amber-700"
-                              onClick={() => handleDeleteFactura(document.id, document.numero_documento)}
-                              title="Archivar factura"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
+                        <TableCell>{entry.serie}</TableCell>
+                        <TableCell className="font-mono">{entry.numero}</TableCell>
+                        <TableCell>{formatDate(entry.fechaEmisionDocumento)}</TableCell>
+                        <TableCell>{formatDate(entry.fechaContable)}</TableCell>
+                        <TableCell>{entry.documentoReferencia || "-"}</TableCell>
+                        <TableCell>{entry.numeroDocumentoReferencia || "-"}</TableCell>
+                        <TableCell className="text-right">{entry.cargo > 0 ? formatStatementNumber(entry.cargo) : "0"}</TableCell>
+                        <TableCell className="text-right">{entry.abono > 0 ? formatStatementNumber(entry.abono) : "0"}</TableCell>
+                        <TableCell className="text-right font-semibold">
+                          {entry.saldo < 0 ? `(${formatStatementNumber(entry.saldo)})` : formatStatementNumber(entry.saldo)}
                         </TableCell>
                       </TableRow>
                     ))
                   )}
+                  {accountStatementEntries.length > 0 && (
+                    <TableRow className="bg-muted/20 font-semibold">
+                      <TableCell colSpan={7} className="text-right">Total {tercero.rut} • {tercero.razon_social}</TableCell>
+                      <TableCell className="text-right">{formatStatementNumber(statementTotals.cargos)}</TableCell>
+                      <TableCell className="text-right">{formatStatementNumber(statementTotals.abonos)}</TableCell>
+                      <TableCell className="text-right">
+                        {summary.pendingBalance < 0
+                          ? `(${formatStatementNumber(summary.pendingBalance)})`
+                          : formatStatementNumber(summary.pendingBalance)}
+                      </TableCell>
+                    </TableRow>
+                  )}
                 </TableBody>
-              </Table>
+                </Table>
+              </div>
             </CardContent>
           </Card>
         </TabsContent>
