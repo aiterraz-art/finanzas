@@ -342,7 +342,7 @@ export default function TerceroDetalle() {
   }, [accountRows]);
 
   const accountStatementEntries = useMemo(() => {
-    const entries = accountRows.flatMap((document) => {
+    const groupedEntries = accountRows.flatMap((document) => {
       const baseEntry = {
         id: `doc-${document.id}`,
         serie: document.tipo === "nota_credito" ? "NC" : "FE",
@@ -377,21 +377,8 @@ export default function TerceroDetalle() {
       return [baseEntry, ...paymentEntries];
     });
 
-    const sorted = entries.sort((left, right) => {
-      const byPostingDate = (left.fechaContable || "").localeCompare(right.fechaContable || "");
-      if (byPostingDate !== 0) return byPostingDate;
-      const byEmissionDate = (left.fechaEmisionDocumento || "").localeCompare(right.fechaEmisionDocumento || "");
-      if (byEmissionDate !== 0) return byEmissionDate;
-      if (left.sourceKind === right.sourceKind) return left.numero.localeCompare(right.numero, "es");
-      if (left.sourceKind === "invoice") return -1;
-      if (right.sourceKind === "invoice") return 1;
-      if (left.sourceKind === "credit-note") return -1;
-      if (right.sourceKind === "credit-note") return 1;
-      return left.numero.localeCompare(right.numero, "es");
-    });
-
     let runningBalance = 0;
-    return sorted.map((entry) => {
+    return groupedEntries.map((entry) => {
       runningBalance += entry.cargo - entry.abono;
       return {
         ...entry,
