@@ -85,6 +85,7 @@ type BankMovement = {
     counterparty: string | null;
     amount: number;
     status: string;
+    direction: "inflow" | "outflow";
     source_type: string;
     archived_at: string | null;
     estado_previo_conciliacion: string | null;
@@ -128,7 +129,7 @@ type ImportSummary = {
 
 const HASH_QUERY_CHUNK = 20;
 const INSERT_CHUNK_SIZE = 200;
-type InflowMatchSource = "factura" | "cheque" | "webpay" | "anticipo";
+type InflowMatchSource = "factura" | "cheque" | "webpay" | "anticipo" | "capital";
 
 type QuickExpenseForm = {
   description: string;
@@ -144,6 +145,12 @@ type QuickExpenseForm = {
 type AdvanceForm = {
   customerId: string;
   customerSearch: string;
+  notes: string;
+};
+
+type QuickCapitalForm = {
+  counterparty: string;
+  categoryId: string;
   notes: string;
 };
 
@@ -209,6 +216,7 @@ const BANK_MOVEMENT_SELECT = `
     counterparty,
     amount,
     status,
+    direction,
     source_type,
     archived_at,
     estado_previo_conciliacion
@@ -272,6 +280,12 @@ export default function BankReconciliation() {
     frequency: "monthly",
   });
   const [savingQuickExpense, setSavingQuickExpense] = useState(false);
+  const [quickCapitalForm, setQuickCapitalForm] = useState<QuickCapitalForm>({
+    counterparty: "",
+    categoryId: "",
+    notes: "",
+  });
+  const [savingQuickCapital, setSavingQuickCapital] = useState(false);
 
   const { data: bankAccounts, refresh: refreshBankAccounts } = useBankAccounts(selectedEmpresaId);
   const { data: bankPositions, refresh: refreshPositions } = useBankAccountPositions(selectedEmpresaId);
@@ -279,9 +293,17 @@ export default function BankReconciliation() {
 
   const selectedAccount = bankAccounts.find((account) => account.id === selectedAccountId) || null;
   const selectedPosition = bankPositions.find((position) => position.bankAccountId === selectedAccountId) || null;
+  const inflowCategories = useMemo(
+    () => categories.filter((category) => category.active && category.directionScope !== "outflow"),
+    [categories]
+  );
   const outflowCategories = useMemo(
     () => categories.filter((category) => category.active && category.directionScope !== "inflow"),
     [categories]
+  );
+  const defaultCapitalCategoryId = useMemo(
+    () => inflowCategories.find((category) => category.code === "other_inflow")?.id || inflowCategories[0]?.id || "",
+    [inflowCategories]
   );
   const selectedQuickExpenseCategory = useMemo(
     () => outflowCategories.find((category) => category.id === quickExpenseForm.categoryId) || null,
@@ -318,6 +340,15 @@ export default function BankReconciliation() {
       frequency: "monthly",
     });
   }, [selectedTxn]);
+
+  useEffect(() => {
+    if (!selectedTxn || selectedTxn.monto < 0) return;
+    setQuickCapitalForm({
+      counterparty: "",
+      categoryId: defaultCapitalCategoryId,
+      notes: selectedTxn.descripcion?.trim() ? `Cartola: ${selectedTxn.descripcion.trim()}` : "",
+    });
+  }, [defaultCapitalCategoryId, selectedTxn]);
 
   useEffect(() => {
     if (!selectedTxn || selectedTxn.monto < 0 || selectedInflowSource !== "factura") {
@@ -1003,9 +1034,10 @@ export default function BankReconciliation() {
     if (!selectedEmpresaId || !canEdit || !user?.id) return;
     const linkedCommitment = txn.cash_commitments?.[0];
     if (!linkedCommitment || linkedCommitment.source_type !== "manual" || linkedCommitment.archived_at) return;
+    const manualLabel = linkedCommitment.direction === "inflow" ? "ingreso manual" : "egreso manual";
 
     const confirmed = window.confirm(
-      "Se archivará el egreso manual y el movimiento quedará no conciliado. El registro histórico se conserva."
+      `Se archivará el ${manualLabel} y el movimiento quedará no conciliado. El registro histórico se conserva.`
     );
     if (!confirmed) return;
 
@@ -1036,7 +1068,7 @@ export default function BankReconciliation() {
       await refreshPositions();
     } catch (error: any) {
       console.error("Error archiving linked manual expense:", error);
-      alert(`No se pudo archivar el egreso manual: ${error.message}`);
+      alert(`No se pudo archivar el ${manualLabel}: ${error.message}`);
     }
   };
 
@@ -1185,6 +1217,103 @@ export default function BankReconciliation() {
       alert(`No se pudo registrar la conciliación rápida: ${error.message}`);
     } finally {
       setSavingQuickExpense(false);
+    }
+  };
+
+  const handleQuickCapitalMatch = async () => {
+    if (!selectedEmpresaId || !selectedTxn || selectedTxn.monto < 0 || !canEdit) return;
+    if (!quickCapitalForm.categoryId) {
+      alert("Selecciona una categoría para registrar el aporte de capital.");
+      return;
+    }
+
+    setSavingQuickCapital(true);
+    try {
+      const counterparty = quickCapitalForm.counterparty.trim();
+      const notes = quickCapitalForm.notes.trim();
+      const capitalLabel = counterparty ? `Aporte de capital • ${counterparty}` : "Aporte de capital";
+      const commitmentPayload = {
+        bank_account_id: selectedAccountId || null,
+        category_id: quickCapitalForm.categoryId,
+        source_type: "manual",
+        source_reference: `bank-reconciliation:${selectedTxn.id}`,
+        direction: "inflow" as const,
+        counterparty: counterparty || null,
+        description: "Aporte de capital",
+        amount: Math.abs(selectedTxn.monto),
+        is_estimated: false,
+        due_date: selectedTxn.fecha_movimiento,
+        expected_date: selectedTxn.fecha_movimiento,
+        priority: "normal" as const,
+        status: "paid" as const,
+        notes: notes || null,
+        movimiento_banco_id: selectedTxn.id,
+        archived_at: null,
+        archived_by: null,
+        archive_reason: null,
+      };
+
+      const { data: existingLinkedCommitment, error: existingLinkedCommitmentError } = await supabase
+        .from("cash_commitments")
+        .select("id")
+        .eq("empresa_id", selectedEmpresaId)
+        .eq("movimiento_banco_id", selectedTxn.id)
+        .maybeSingle();
+      if (existingLinkedCommitmentError) throw existingLinkedCommitmentError;
+
+      let commitmentId: string;
+      if (existingLinkedCommitment?.id) {
+        const { error: updateCommitmentError } = await supabase
+          .from("cash_commitments")
+          .update(commitmentPayload)
+          .eq("id", existingLinkedCommitment.id)
+          .eq("empresa_id", selectedEmpresaId);
+        if (updateCommitmentError) throw updateCommitmentError;
+        commitmentId = existingLinkedCommitment.id;
+      } else {
+        const { data: createdCommitment, error: commitmentError } = await supabase
+          .from("cash_commitments")
+          .insert({
+            empresa_id: selectedEmpresaId,
+            ...commitmentPayload,
+          })
+          .select("id")
+          .single();
+        if (commitmentError) throw commitmentError;
+        commitmentId = createdCommitment.id;
+      }
+
+      const { error: movementError } = await supabase
+        .from("movimientos_banco")
+        .update({
+          estado: "conciliado",
+          tipo_conciliacion: "commitment",
+          numero_documento: capitalLabel,
+        })
+        .eq("id", selectedTxn.id)
+        .eq("empresa_id", selectedEmpresaId);
+      if (movementError) {
+        await supabase
+          .from("cash_commitments")
+          .update({
+            status: "cancelled",
+            archived_at: new Date().toISOString(),
+            archive_reason: "Rollback por error conciliando movimiento",
+          })
+          .eq("id", commitmentId)
+          .eq("empresa_id", selectedEmpresaId);
+        throw movementError;
+      }
+
+      setSelectedTxn(null);
+      setCandidates([]);
+      await fetchTransactions();
+      await refreshPositions();
+    } catch (error: any) {
+      console.error("Error performing capital contribution reconciliation:", error);
+      alert(`No se pudo registrar el aporte de capital: ${error.message}`);
+    } finally {
+      setSavingQuickCapital(false);
     }
   };
 
@@ -1409,7 +1538,9 @@ export default function BankReconciliation() {
   const searchableCandidates = useMemo(() => {
     const filteredBySource =
       selectedTxn && selectedTxn.monto >= 0
-        ? candidates.filter((candidate) => candidate.type === selectedInflowSource)
+        ? selectedInflowSource === "capital"
+          ? []
+          : candidates.filter((candidate) => candidate.type === selectedInflowSource)
         : candidates;
     if (!candidateSearchTerm.trim()) return filteredBySource;
     const normalized = candidateSearchTerm.toLowerCase();
@@ -1489,7 +1620,12 @@ export default function BankReconciliation() {
       paymentLines.push({
         id: commitmentInfo.id,
         title: `${commitmentInfo.counterparty || "Sin contraparte"} • ${commitmentInfo.description || "Compromiso"}`,
-        subtitle: "Egreso / compromiso conciliado",
+        subtitle:
+          commitmentInfo.direction === "inflow"
+            ? commitmentInfo.description === "Aporte de capital"
+              ? "Aporte de capital conciliado"
+              : "Ingreso manual conciliado"
+            : "Egreso / compromiso conciliado",
         amount: Number(commitmentInfo.amount || 0),
       });
     }
@@ -1515,7 +1651,11 @@ export default function BankReconciliation() {
             : selectedTxn.tipo_conciliacion === "webpay"
               ? "WebPay"
               : selectedTxn.tipo_conciliacion === "commitment"
-                ? "Egreso / compromiso"
+                ? commitmentInfo?.direction === "inflow"
+                  ? commitmentInfo?.description === "Aporte de capital"
+                    ? "Aporte de capital"
+                    : "Ingreso manual"
+                  : "Egreso / compromiso"
                 : selectedTxn.tipo_conciliacion === "advance"
                   ? "Anticipo cliente"
                   : "Conciliación";
@@ -2029,8 +2169,16 @@ export default function BankReconciliation() {
                         </div>
                       ) : commitmentInfo ? (
                         <div>
-                          <div className="font-medium">{commitmentInfo.counterparty || "Compromiso conciliado"}</div>
-                          <div className="text-xs text-muted-foreground">{commitmentInfo.description || "Sin detalle"}</div>
+                          <div className="font-medium">
+                            {commitmentInfo.direction === "inflow"
+                              ? commitmentInfo.description || commitmentInfo.counterparty || "Ingreso manual conciliado"
+                              : commitmentInfo.counterparty || "Compromiso conciliado"}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            {commitmentInfo.direction === "inflow"
+                              ? commitmentInfo.counterparty || "Ingreso manual conciliado"
+                              : commitmentInfo.description || "Sin detalle"}
+                          </div>
                         </div>
                       ) : advanceInfo ? (
                         <div>
@@ -2068,7 +2216,7 @@ export default function BankReconciliation() {
                             </Button>
                             {canArchiveLinkedManual && (
                               <Button size="sm" variant="outline" disabled={!canEdit} onClick={() => void handleArchiveLinkedManualExpense(txn)}>
-                                Archivar egreso
+                                {commitmentInfo?.direction === "inflow" ? "Archivar ingreso" : "Archivar egreso"}
                               </Button>
                             )}
                           </>
@@ -2187,7 +2335,7 @@ export default function BankReconciliation() {
                 <div className="mb-4">
                   <div className="font-medium">Fuente del ingreso</div>
                   <div className="text-sm text-muted-foreground">
-                    Selecciona si el abono corresponde a un cheque, una liquidación de WebPay o una transferencia que paga una factura.
+                    Selecciona si el abono corresponde a una factura, cheque, WebPay, anticipo o un aporte de capital.
                   </div>
                 </div>
                 <div className="space-y-2">
@@ -2204,6 +2352,7 @@ export default function BankReconciliation() {
                     <SelectItem value="cheque">Cheque</SelectItem>
                     <SelectItem value="webpay">WebPay</SelectItem>
                     <SelectItem value="anticipo">Anticipo cliente</SelectItem>
+                    <SelectItem value="capital">Aporte de capital</SelectItem>
                   </SelectContent>
                 </Select>
                 <div className="text-xs text-muted-foreground">
@@ -2213,7 +2362,9 @@ export default function BankReconciliation() {
                         ? "Se mostrarán solo los cheques disponibles para conciliar. Al aceptar pasarán a cobrados."
                       : selectedInflowSource === "webpay"
                         ? "Se mostrarán solo pagos WebPay pendientes de abono."
-                        : "Selecciona el cliente para dejar el ingreso completo como anticipo."}
+                        : selectedInflowSource === "capital"
+                          ? "Registra este ingreso como aporte de capital y quedará conciliado de inmediato."
+                          : "Selecciona el cliente para dejar el ingreso completo como anticipo."}
                 </div>
               </div>
                 {(selectedInflowSource === "factura" || selectedInflowSource === "anticipo") && (
@@ -2230,6 +2381,63 @@ export default function BankReconciliation() {
                     />
                   </div>
                 )}
+              </div>
+            )}
+
+            {!loadingCandidates && selectedTxn && selectedTxn.monto >= 0 && selectedInflowSource === "capital" && (
+              <div className="rounded-xl border border-dashed p-4">
+                <div className="mb-4">
+                  <div className="font-medium">Conciliación rápida de ingreso</div>
+                  <div className="text-sm text-muted-foreground">
+                    Usa esta opción cuando la transferencia corresponde a un aporte de capital y no a una factura ni a otro documento comercial.
+                  </div>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Aportante / referencia</Label>
+                    <Input
+                      value={quickCapitalForm.counterparty}
+                      onChange={(event) => setQuickCapitalForm((current) => ({ ...current, counterparty: event.target.value }))}
+                      placeholder="Socio, accionista o referencia interna"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Categoría / cuenta</Label>
+                    <Select
+                      value={quickCapitalForm.categoryId}
+                      onValueChange={(value) => setQuickCapitalForm((current) => ({ ...current, categoryId: value }))}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Selecciona categoría" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {inflowCategories.map((category) => (
+                          <SelectItem key={category.id} value={category.id}>
+                            {category.nombre}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Monto</Label>
+                    <Input value={formatTreasuryCurrency(Math.abs(selectedTxn.monto), selectedAccount?.moneda || "CLP")} disabled />
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <Label>Nota</Label>
+                    <Textarea
+                      value={quickCapitalForm.notes}
+                      onChange={(event) => setQuickCapitalForm((current) => ({ ...current, notes: event.target.value }))}
+                      placeholder="Observaciones para tesorería o respaldo del aporte"
+                    />
+                  </div>
+                </div>
+                <div className="mt-4 flex justify-end">
+                  <Button onClick={() => void handleQuickCapitalMatch()} disabled={!canEdit || savingQuickCapital}>
+                    {savingQuickCapital ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
+                    Registrar aporte de capital
+                  </Button>
+                </div>
               </div>
             )}
 
@@ -2466,7 +2674,7 @@ export default function BankReconciliation() {
                 )}
               </div>
             )}
-            {!loadingCandidates && searchableCandidates.length === 0 && (
+            {!loadingCandidates && selectedInflowSource !== "capital" && searchableCandidates.length === 0 && (
               <div className="rounded-xl border border-dashed p-8 text-center text-muted-foreground">
                 {selectedTxn && selectedTxn.monto >= 0
                   ? selectedInflowSource === "factura"
@@ -2603,7 +2811,7 @@ export default function BankReconciliation() {
                     disabled={!canEdit}
                     onClick={() => void handleArchiveLinkedManualExpense(selectedTxn)}
                   >
-                    Archivar egreso
+                    {selectedTxnReview.commitmentInfo?.direction === "inflow" ? "Archivar ingreso" : "Archivar egreso"}
                   </Button>
                 )}
               </>
