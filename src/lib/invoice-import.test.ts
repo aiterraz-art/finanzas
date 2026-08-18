@@ -30,6 +30,7 @@ describe("invoice import helpers", () => {
     expect(parsed?.rut).toBe("76123456-7");
     expect(parsed?.fechaEmision).toBe("2026-04-15");
     expect(parsed?.monto).toBe(1250000);
+    expect(parsed?.tipo).toBe("venta");
   });
 
   it("parses the issued invoice format used by FacturasFlujo exports", () => {
@@ -53,6 +54,7 @@ describe("invoice import helpers", () => {
     expect(parsed?.nombreDocumento).toBe("33 Factura Electrónica");
     expect(parsed?.vendedorAsignado).toBe("Vendedor Uno");
     expect(parsed?.monto).toBe(428487);
+    expect(parsed?.tipo).toBe("venta");
   });
 
   it("removes broken surrogate characters from imported customer names", () => {
@@ -108,6 +110,23 @@ describe("invoice import helpers", () => {
     expect(parsed?.montoIva).toBe(73445);
     expect(parsed?.monto).toBe(460000);
     expect(parsed?.descripcion).toContain("LAB JULIO 2026");
+    expect(parsed?.tipo).toBe("venta");
+  });
+
+  it("parses credit note references from issued rows", () => {
+    const rows = [
+      ["Tipo Doc", "Nombre Doc", "Nmero del Documento", "Nombre del Cliente", "Fecha", "Total", "Factura Asociada"],
+      ["NCELECT", "61 Nota de Crédito Electrónica", "88", "Cliente NC", "08/12/26", "119000", "57"],
+    ];
+
+    const detection = detectIssuedInvoiceWorksheetFormat(rows);
+    const parsed = normalizeIssuedInvoiceImportRow(
+      buildObjectsFromWorksheetRows(rows, detection.headerRowIndex!)[0]
+    );
+
+    expect(parsed).not.toBeNull();
+    expect(parsed?.tipo).toBe("nota_credito");
+    expect(parsed?.documentoReferencia).toBe("57");
   });
 
   it("detects and parses receivable invoice rows", () => {
@@ -159,6 +178,7 @@ describe("invoice import helpers", () => {
       terceroNombre: "Cliente",
       fechaEmision: "2026-04-15",
       monto: 150000,
+      tipo: "venta",
     });
     const fallback = buildInvoiceDuplicateKey({
       numeroDocumento: null,
@@ -166,10 +186,12 @@ describe("invoice import helpers", () => {
       terceroNombre: "Cliente",
       fechaEmision: "2026-04-15",
       monto: 150000,
+      tipo: "nota_credito",
     });
 
-    expect(keyed).toBe("folio:f-22");
+    expect(keyed).toBe("folio:venta:f-22");
     expect(fallback).toContain("fallback");
+    expect(fallback).toContain("nota_credito");
   });
 
   it("infers emission date for pending rows when missing", () => {

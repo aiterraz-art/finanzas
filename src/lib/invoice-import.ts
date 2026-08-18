@@ -27,6 +27,8 @@ export type IssuedInvoiceImportRow = {
   tipoDocumento: string | null;
   nombreDocumento: string | null;
   vendedorAsignado: string | null;
+  tipo: "venta" | "nota_credito";
+  documentoReferencia: string | null;
 };
 
 export type ReceivableInvoiceImportRow = {
@@ -207,6 +209,36 @@ const subtractDaysIso = (dateIso: string, days: number) => {
   return next.toISOString().split("T")[0];
 };
 
+const inferIssuedDocumentType = (values: Array<string | null | undefined>) => {
+  const haystack = values
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+  return haystack.includes("nota") && haystack.includes("credit") ? "nota_credito" as const : "venta" as const;
+};
+
+const extractReferencedDocumentNumber = (value: unknown) => {
+  const text = sanitizeImportText(value);
+  if (!text) return null;
+
+  const patterns = [
+    /factura(?:\s+asociada|\s+referencia)?[:#\s-]*([A-Z0-9-]+)/i,
+    /folio(?:\s+referencia)?[:#\s-]*([A-Z0-9-]+)/i,
+    /documento(?:\s+referencia)?[:#\s-]*([A-Z0-9-]+)/i,
+    /ref(?:erencia)?[:#\s-]*([A-Z0-9-]+)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return sanitizeImportText(match[1]) || null;
+  }
+
+  if (/^[A-Z0-9-]+$/i.test(text) && /\d/.test(text)) return text;
+  return null;
+};
+
 export const detectIssuedInvoiceWorksheetFormat = (rows: unknown[][]): InvoiceImportDetection => {
   for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
     const tokens = rows[rowIndex].map(normalizeImportHeaderToken).filter(Boolean);
@@ -287,6 +319,24 @@ export const normalizeIssuedInvoiceImportRow = (rawRow: RawSheetRow): IssuedInvo
     sanitizeImportText(getValueFromRow(rawRow, "nombre doc", "nombre documento")) || null;
   const vendedorAsignado =
     sanitizeImportText(getValueFromRow(rawRow, "nombre del vendedor", "vendedor", "seller")) || null;
+  const descripcion =
+    sanitizeImportText(getValueFromRow(rawRow, "descripcion", "detalle", "glosa", "concepto")) || nombreDocumento;
+  const tipo = inferIssuedDocumentType([tipoDocumento, nombreDocumento, descripcion]);
+  const documentoReferencia =
+    tipo === "nota_credito"
+      ? extractReferencedDocumentNumber(
+          getValueFromRow(
+            rawRow,
+            "factura asociada",
+            "folio referencia",
+            "documento referencia",
+            "numero documento referencia",
+            "n documento ref",
+            "factura ref",
+            "referencia"
+          ) || descripcion
+        )
+      : null;
 
   if (!numeroDocumento || !terceroNombre || !fechaEmision || !monto) {
     return null;
@@ -301,21 +351,28 @@ export const normalizeIssuedInvoiceImportRow = (rawRow: RawSheetRow): IssuedInvo
     monto,
     montoNeto: null,
     montoIva: null,
-    descripcion:
-      sanitizeImportText(getValueFromRow(rawRow, "descripcion", "detalle", "glosa", "concepto")) || nombreDocumento,
+    descripcion,
     tipoDocumento,
     nombreDocumento,
     vendedorAsignado,
+    tipo,
+    documentoReferencia,
   };
 };
 
 export const parseIssuedInvoicePdfText = (rawText: string): IssuedInvoiceImportRow | null => {
   const lines = normalizePdfLineText(rawText);
   const flatText = normalizePdfFlatText(rawText);
-  if (!flatText || !/FACTURA ELECTRONICA/i.test(flatText)) return null;
+  if (!flatText || !/(FACTURA ELECTRONICA|NOTA DE CREDITO ELECTRONICA|NOTA CREDITO ELECTRONICA)/i.test(flatText)) return null;
+
+  const tipoDocumentoDetectado = /NOTA(?:\s+DE)?\s+CREDITO\s+ELECTRONICA/i.test(flatText)
+    ? "NOTA DE CREDITO ELECTRONICA"
+    : "FACTURA ELECTRONICA";
 
   const numeroDocumento =
-    sanitizeImportText(flatText.match(/FACTURA\s+ELECTRONICA\s+N[º°]?\s*([A-Z0-9-]+)/i)?.[1]) || "";
+    sanitizeImportText(
+      flatText.match(/(?:FACTURA\s+ELECTRONICA|NOTA(?:\s+DE)?\s+CREDITO\s+ELECTRONICA)\s+N[º°]?\s*([A-Z0-9-]+)/i)?.[1]
+    ) || "";
   const terceroNombre =
     sanitizeImportText(flatText.match(/SEÑOR\(ES\):\s*(.+?)\s*R\.U\.T\.:/i)?.[1]) || "";
   const rut =
@@ -344,6 +401,13 @@ export const parseIssuedInvoicePdfText = (rawText: string): IssuedInvoiceImportR
           )
       : [];
   const descripcion = itemLines.length > 0 ? itemLines.join(" ") : null;
+  const tipo = inferIssuedDocumentType([tipoDocumentoDetectado, descripcion]);
+  const documentoReferencia =
+    tipo === "nota_credito"
+      ? extractReferencedDocumentNumber(
+          flatText.match(/(?:factura asociada|folio referencia|documento referencia|referencia)[^.\n]{0,40}/i)?.[0] || descripcion
+        )
+      : null;
 
   if (!numeroDocumento || !terceroNombre || !fechaEmision || !monto) {
     return null;
@@ -359,9 +423,11 @@ export const parseIssuedInvoicePdfText = (rawText: string): IssuedInvoiceImportR
     montoNeto: montoNeto ?? null,
     montoIva: montoIva ?? null,
     descripcion,
-    tipoDocumento: "FACTURA ELECTRONICA",
-    nombreDocumento: "Factura Electrónica",
+    tipoDocumento: tipoDocumentoDetectado,
+    nombreDocumento: tipoDocumentoDetectado === "FACTURA ELECTRONICA" ? "Factura Electrónica" : "Nota de Crédito Electrónica",
     vendedorAsignado: null,
+    tipo,
+    documentoReferencia,
   };
 };
 
@@ -446,13 +512,18 @@ export const buildInvoiceDuplicateKey = (row: {
   terceroNombre: string;
   fechaEmision: string | null;
   monto: number;
+  tipoDocumento?: string | null;
+  tipo?: string | null;
 }) => {
+  const documentKind =
+    row.tipo || inferIssuedDocumentType([row.tipoDocumento || null]);
   if (row.numeroDocumento) {
-    return `folio:${normalizeText(row.numeroDocumento).toLowerCase()}`;
+    return `folio:${documentKind}:${normalizeText(row.numeroDocumento).toLowerCase()}`;
   }
 
   return [
     "fallback",
+    documentKind,
     normalizeRut(row.rut) || normalizeText(row.terceroNombre).toLowerCase(),
     row.fechaEmision || "",
     Number(row.monto).toFixed(2),

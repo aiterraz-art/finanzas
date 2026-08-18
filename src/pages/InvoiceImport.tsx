@@ -54,6 +54,7 @@ type ClientRow = {
 
 type InvoiceRow = {
   id: string;
+  tipo: "venta" | "compra" | "nota_credito";
   numero_documento: string | null;
   rut: string | null;
   tercero_nombre: string | null;
@@ -146,9 +147,9 @@ export default function InvoiceImport() {
           .is("archived_at", null),
         supabase
           .from("facturas")
-          .select("id, numero_documento, rut, tercero_nombre, tercero_id, fecha_emision, fecha_vencimiento, monto, descripcion, tipo_documento, nombre_documento, vendedor_asignado, estado, archivo_url")
+          .select("id, tipo, numero_documento, rut, tercero_nombre, tercero_id, fecha_emision, fecha_vencimiento, monto, descripcion, tipo_documento, nombre_documento, vendedor_asignado, estado, archivo_url")
           .eq("empresa_id", selectedEmpresaId)
-          .eq("tipo", "venta")
+          .in("tipo", ["venta", "nota_credito"])
           .is("archived_at", null),
         supabase
           .from("treasury_categories")
@@ -259,6 +260,8 @@ export default function InvoiceImport() {
         terceroNombre: invoice.tercero_nombre || "",
         fechaEmision: invoice.fecha_emision,
         monto: Number(invoice.monto),
+        tipo: invoice.tipo,
+        tipoDocumento: invoice.tipo_documento,
       });
       if (!existingInvoiceByKey.has(key)) existingInvoiceByKey.set(key, invoice);
     }
@@ -267,11 +270,13 @@ export default function InvoiceImport() {
     let duplicateRows = 0;
     let insertedRows = 0;
     let updatedRows = 0;
+    const duplicateMessages: string[] = [];
 
     for (const row of validRows) {
       const key = buildInvoiceDuplicateKey(row);
       if (seenKeys.has(key)) {
         duplicateRows += 1;
+        duplicateMessages.push(`Folio ${row.numeroDocumento}: duplicada dentro del archivo.`);
         continue;
       }
       seenKeys.add(key);
@@ -281,9 +286,13 @@ export default function InvoiceImport() {
         clientByName.get(matchText(row.terceroNombre)) ||
         null;
       const dueDate = row.fechaVencimiento || row.fechaEmision;
+      const descriptionWithReference =
+        row.tipo === "nota_credito" && row.documentoReferencia
+          ? [row.descripcion, `Factura asociada: ${row.documentoReferencia}`].filter(Boolean).join(" | ")
+          : row.descripcion;
       const basePayload = {
         empresa_id: selectedEmpresaId,
-        tipo: "venta",
+        tipo: row.tipo,
         tercero_id: client?.id || null,
         tercero_nombre: row.terceroNombre,
         rut: row.rut,
@@ -291,7 +300,7 @@ export default function InvoiceImport() {
         fecha_vencimiento: dueDate,
         numero_documento: row.numeroDocumento,
         monto: row.monto,
-        descripcion: row.descripcion,
+        descripcion: descriptionWithReference,
         tipo_documento: row.tipoDocumento,
         nombre_documento: row.nombreDocumento,
         vendedor_asignado: row.vendedorAsignado,
@@ -304,29 +313,8 @@ export default function InvoiceImport() {
 
       const existing = existingInvoiceByKey.get(key);
       if (existing) {
-        const { error } = await supabase
-          .from("facturas")
-          .update({
-            tercero_id: existing.tercero_id || basePayload.tercero_id,
-            tercero_nombre: basePayload.tercero_nombre,
-            rut: basePayload.rut,
-            fecha_emision: existing.fecha_emision || basePayload.fecha_emision,
-            fecha_vencimiento: basePayload.fecha_vencimiento,
-            monto: basePayload.monto,
-            descripcion: existing.descripcion || basePayload.descripcion,
-            tipo_documento: existing.tipo_documento || basePayload.tipo_documento,
-            nombre_documento: existing.nombre_documento || basePayload.nombre_documento,
-            vendedor_asignado: existing.vendedor_asignado || basePayload.vendedor_asignado,
-            estado: existing.estado === "pagada" ? existing.estado : basePayload.estado,
-            planned_cash_date: basePayload.planned_cash_date,
-            cash_confidence_pct: basePayload.cash_confidence_pct,
-            treasury_priority: "high",
-            treasury_category_id: support.salesCategoryId,
-          })
-          .eq("id", existing.id)
-          .eq("empresa_id", selectedEmpresaId);
-        if (error) throw new Error(`No se pudo actualizar la factura ${row.numeroDocumento}: ${error.message}`);
-        updatedRows += 1;
+        duplicateRows += 1;
+        duplicateMessages.push(`Folio ${row.numeroDocumento}: ya existe para ${existing.tercero_nombre || row.terceroNombre}.`);
       } else {
         const { error } = await supabase.from("facturas").insert(basePayload);
         if (error) throw new Error(`No se pudo insertar la factura ${row.numeroDocumento}: ${error.message}`);
@@ -348,6 +336,9 @@ export default function InvoiceImport() {
 
     await registerImportRun("issued", importSummary);
     setSummary((current) => ({ ...current, issued: importSummary }));
+    if (duplicateMessages.length > 0) {
+      throw new Error(`Se detectaron ${duplicateMessages.length} documento(s) duplicado(s). ${duplicateMessages.slice(0, 3).join(" ")}`);
+    }
   };
 
   const processIssuedSpreadsheetImport = async (file: File) => {
@@ -367,6 +358,20 @@ export default function InvoiceImport() {
   };
 
   const stageIssuedPdfFiles = async (files: File[]) => {
+    const support = await fetchSupportData();
+    const existingKeys = new Set(
+      support.invoices.map((invoice) =>
+        buildInvoiceDuplicateKey({
+          numeroDocumento: invoice.numero_documento,
+          rut: invoice.rut,
+          terceroNombre: invoice.tercero_nombre || "",
+          fechaEmision: invoice.fecha_emision,
+          monto: Number(invoice.monto),
+          tipo: invoice.tipo,
+          tipoDocumento: invoice.tipo_documento,
+        })
+      )
+    );
     const staged = await Promise.all(
       files.map(async (file) => {
         try {
@@ -386,7 +391,27 @@ export default function InvoiceImport() {
       })
     );
 
-    setPendingIssuedPdfItems(staged);
+    const seenKeys = new Set<string>();
+    const stagedWithDuplicateChecks = staged.map((item) => {
+      if (!item.parsedRow || item.error) return item;
+      const key = buildInvoiceDuplicateKey(item.parsedRow);
+      if (existingKeys.has(key)) {
+        return {
+          ...item,
+          error: `Documento duplicado: el folio ${item.parsedRow.numeroDocumento} ya existe en el sistema.`,
+        };
+      }
+      if (seenKeys.has(key)) {
+        return {
+          ...item,
+          error: "Documento duplicado dentro de los archivos seleccionados.",
+        };
+      }
+      seenKeys.add(key);
+      return item;
+    });
+
+    setPendingIssuedPdfItems(stagedWithDuplicateChecks);
     setSummary((current) => ({ ...current, issued: null }));
   };
 
@@ -420,6 +445,8 @@ export default function InvoiceImport() {
         terceroNombre: invoice.tercero_nombre || "",
         fechaEmision: invoice.fecha_emision,
         monto: Number(invoice.monto),
+        tipo: invoice.tipo,
+        tipoDocumento: invoice.tipo_documento,
       });
       if (!existingInvoiceByKey.has(key)) existingInvoiceByKey.set(key, invoice);
     }
@@ -436,6 +463,8 @@ export default function InvoiceImport() {
         terceroNombre: row.terceroNombre,
         fechaEmision: row.fechaEmision || inferReceivableEmissionDate(row),
         monto: row.monto,
+        tipo: "venta",
+        tipoDocumento: row.tipoDocumento,
       });
       if (seenKeys.has(key)) {
         duplicateRows += 1;
@@ -544,7 +573,9 @@ export default function InvoiceImport() {
     if (pendingIssuedPdfItems.length === 0) return;
     setLoading(true);
     try {
-      const parsedRows = pendingIssuedPdfItems.map((item) => item.parsedRow);
+      const parsedRows = pendingIssuedPdfItems
+        .filter((item) => item.parsedRow && !item.error)
+        .map((item) => item.parsedRow);
       await upsertIssuedRows(parsedRows, {
         filename:
           pendingIssuedPdfItems.length === 1
@@ -561,7 +592,7 @@ export default function InvoiceImport() {
     }
   };
 
-  const pendingIssuedPdfValidRows = pendingIssuedPdfItems.filter((item) => item.parsedRow);
+  const pendingIssuedPdfValidRows = pendingIssuedPdfItems.filter((item) => item.parsedRow && !item.error);
   const pendingIssuedPdfErrors = pendingIssuedPdfItems.filter((item) => item.error);
 
   if (!selectedEmpresaId) {

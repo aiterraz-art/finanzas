@@ -38,6 +38,9 @@ type DocumentRecord = {
   fecha_emision: string | null;
   fecha_vencimiento: string | null;
   numero_documento: string | null;
+  descripcion?: string | null;
+  tipo_documento?: string | null;
+  nombre_documento?: string | null;
   archivo_url?: string | null;
   tercero_id?: string | null;
   rut?: string | null;
@@ -52,6 +55,9 @@ const DOCUMENT_SELECT = `
   fecha_emision,
   fecha_vencimiento,
   numero_documento,
+  descripcion,
+  tipo_documento,
+  nombre_documento,
   archivo_url,
   tercero_id,
   rut,
@@ -100,6 +106,33 @@ const getPaymentMethodLabel = (payment: PaymentRecord) => {
   const movement = readFirstLinkedRow(payment.movimientos_banco);
   if (movement?.id) return "Transferencia";
   return "Pago manual";
+};
+
+const normalizeDocumentNumber = (value?: string | null) => {
+  const cleaned = (value || "").trim().toLowerCase();
+  return cleaned ? cleaned.replace(/\s+/g, "") : "";
+};
+
+const extractReferencedInvoiceNumber = (document: Pick<DocumentRecord, "descripcion" | "nombre_documento" | "tipo_documento">) => {
+  const haystack = [document.descripcion, document.nombre_documento, document.tipo_documento]
+    .filter(Boolean)
+    .join(" | ");
+  if (!haystack) return null;
+
+  const patterns = [
+    /factura asociada[:\s-]*([A-Z0-9-]+)/i,
+    /factura(?:\s+de\s+referencia)?[:\s-]*([A-Z0-9-]+)/i,
+    /folio(?:\s+referencia)?[:\s-]*([A-Z0-9-]+)/i,
+    /documento(?:\s+referencia)?[:\s-]*([A-Z0-9-]+)/i,
+    /ref(?:erencia)?[:\s-]*([A-Z0-9-]+)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = haystack.match(pattern);
+    if (match?.[1]) return match[1].trim();
+  }
+
+  return null;
 };
 
 const getStatusMeta = (document: {
@@ -190,14 +223,38 @@ export default function TerceroDetalle() {
   const entityLabel = tercero?.tipo === "proveedor" ? "proveedor" : "cliente";
 
   const accountRows = useMemo(() => {
+    const creditNotesByInvoiceNumber = new Map<string, Array<{ id: string; numeroDocumento: string | null; amount: number }>>();
+
+    for (const document of documentos) {
+      if (document.tipo !== "nota_credito") continue;
+      const referencedInvoiceNumber = normalizeDocumentNumber(extractReferencedInvoiceNumber(document));
+      if (!referencedInvoiceNumber) continue;
+      const current = creditNotesByInvoiceNumber.get(referencedInvoiceNumber) || [];
+      current.push({
+        id: document.id,
+        numeroDocumento: document.numero_documento,
+        amount: Number(document.monto || 0),
+      });
+      creditNotesByInvoiceNumber.set(referencedInvoiceNumber, current);
+    }
+
     return documentos
       .map((document) => {
         const total = Number(document.monto || 0);
         const payments = getAppliedPayments(document);
         const paidAmount = payments.reduce((sum, payment) => sum + Number(payment.monto_aplicado || 0), 0);
         const isCreditNote = document.tipo === "nota_credito";
+        const referencedInvoiceNumber = isCreditNote ? extractReferencedInvoiceNumber(document) : null;
+        const linkedCreditNotes = !isCreditNote
+          ? creditNotesByInvoiceNumber.get(normalizeDocumentNumber(document.numero_documento)) || []
+          : [];
+        const creditNoteAppliedAmount = linkedCreditNotes.reduce((sum, note) => sum + note.amount, 0);
         const signedTotal = isCreditNote ? -total : total;
-        const balance = isCreditNote ? -total : Math.max(total - paidAmount, 0);
+        const balance = isCreditNote
+          ? referencedInvoiceNumber
+            ? 0
+            : -total
+          : Math.max(total - paidAmount - creditNoteAppliedAmount, 0);
         const paymentDates = payments
           .map((payment) => getPaymentDate(payment))
           .filter((value): value is string => Boolean(value))
@@ -226,14 +283,30 @@ export default function TerceroDetalle() {
           payments,
           paymentCount: payments.length,
           paymentBreakdown,
+          linkedCreditNotes,
+          creditNoteAppliedAmount,
+          referencedInvoiceNumber,
           lastPaymentDate,
-          statusMeta: getStatusMeta({
-            tipo: document.tipo,
-            estado: document.estado,
-            total,
-            paidAmount,
-            balance,
-          }),
+          statusMeta:
+            isCreditNote && referencedInvoiceNumber
+              ? {
+                  label: "Aplicada",
+                  icon: <CheckCircle2 className="h-4 w-4 text-emerald-600" />,
+                  badgeClassName: "border-emerald-200 text-emerald-700",
+                }
+              : isCreditNote
+                ? {
+                    label: "Sin asociar",
+                    icon: <Clock className="h-4 w-4 text-amber-500" />,
+                    badgeClassName: "border-amber-200 text-amber-700",
+                  }
+                : getStatusMeta({
+                    tipo: document.tipo,
+                    estado: document.estado,
+                    total,
+                    paidAmount,
+                    balance,
+                  }),
         };
       })
       .sort((left, right) => {
@@ -624,6 +697,13 @@ export default function TerceroDetalle() {
                         <TableCell>{formatDate(document.fecha_vencimiento, "Sin vencimiento")}</TableCell>
                         <TableCell>
                           <div className="font-mono">{document.numero_documento || "---"}</div>
+                          {document.tipo === "nota_credito" && (
+                            <div className="mt-1 text-xs text-muted-foreground">
+                              {document.referencedInvoiceNumber
+                                ? `Asociada a factura ${document.referencedInvoiceNumber}`
+                                : "Sin factura asociada detectada"}
+                            </div>
+                          )}
                           {document.paymentCount > 0 ? (
                             <div className="mt-1 space-y-1 text-xs text-muted-foreground">
                               <div>
@@ -639,6 +719,15 @@ export default function TerceroDetalle() {
                               ))}
                             </div>
                           ) : null}
+                          {document.tipo !== "nota_credito" && document.linkedCreditNotes.length > 0 ? (
+                            <div className="mt-1 space-y-1 text-xs text-sky-700">
+                              {document.linkedCreditNotes.map((note) => (
+                                <div key={note.id}>
+                                  NC {note.numeroDocumento || "S/F"} rebaja {formatCurrency(note.amount)}
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
                         </TableCell>
                         <TableCell>
                           <Badge variant="outline">
@@ -646,7 +735,14 @@ export default function TerceroDetalle() {
                           </Badge>
                         </TableCell>
                         <TableCell className="text-right font-medium">{formatCurrency(document.total)}</TableCell>
-                        <TableCell className="text-right">{formatCurrency(document.paidAmount)}</TableCell>
+                        <TableCell className="text-right">
+                          <div>{formatCurrency(document.paidAmount)}</div>
+                          {document.creditNoteAppliedAmount > 0.01 ? (
+                            <div className="text-xs text-sky-700">
+                              NC aplicadas {formatCurrency(document.creditNoteAppliedAmount)}
+                            </div>
+                          ) : null}
+                        </TableCell>
                         <TableCell className={`text-right font-semibold ${document.balance > 0.01 ? "text-red-600" : "text-emerald-600"}`}>
                           {formatCurrency(document.balance)}
                         </TableCell>
