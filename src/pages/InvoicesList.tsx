@@ -198,6 +198,23 @@ export default function InvoicesList() {
         return Array.from(new Set(vendors)).sort((a, b) => a.localeCompare(b, "es"));
     }, [invoices]);
 
+    const creditNotesByInvoiceId = useMemo(() => {
+        const amounts = new Map<string, number>();
+        for (const invoice of invoices) {
+            if (invoice.tipo !== "nota_credito" || !invoice.factura_referencia_id || invoice.estado === "archivada") continue;
+            amounts.set(
+                invoice.factura_referencia_id,
+                (amounts.get(invoice.factura_referencia_id) || 0) + Number(invoice.monto || 0)
+            );
+        }
+        return amounts;
+    }, [invoices]);
+
+    const getEffectiveInvoiceAmount = (invoice: any) =>
+        invoice.tipo === "venta"
+            ? Math.max(Number(invoice.monto || 0) - (creditNotesByInvoiceId.get(invoice.id) || 0), 0)
+            : Number(invoice.monto || 0);
+
     const filteredInvoices = useMemo(() => {
         const normalizedSearch = searchTerm.toLowerCase().trim();
         const normalizedInvoiceNumber = invoiceNumberFilter.toLowerCase().trim();
@@ -337,7 +354,7 @@ export default function InvoicesList() {
                                     <TableHead>Vendedor</TableHead>
                                     <TableHead>Fecha</TableHead>
                                     <TableHead>Estado</TableHead>
-                                    <TableHead className="text-right">Monto</TableHead>
+                                    <TableHead className="text-right">Monto / saldo</TableHead>
                                     <TableHead className="text-right">Acciones</TableHead>
                                 </TableRow>
                             </TableHeader>
@@ -371,7 +388,7 @@ export default function InvoicesList() {
                                                 </Badge>
                                             </TableCell>
                                             <TableCell className="text-right font-medium">
-                                                ${parseFloat(invoice.monto).toLocaleString('es-CL')}
+                                                ${getEffectiveInvoiceAmount(invoice).toLocaleString('es-CL')}
                                             </TableCell>
                                             <TableCell className="text-right flex justify-end gap-2">
                                                 <Button

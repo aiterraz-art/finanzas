@@ -494,8 +494,18 @@ export default function BankReconciliation() {
             .eq("tipo", "compra")
             .in("estado", ["pendiente", "morosa"]);
 
+      const creditNotesQuery = txn.monto >= 0
+        ? supabase
+            .from("facturas")
+            .select("factura_referencia_id, monto")
+            .eq("empresa_id", selectedEmpresaId)
+            .eq("tipo", "nota_credito")
+            .neq("estado", "archivada")
+        : Promise.resolve({ data: [], error: null });
+
       const [
         { data: invoices, error: invoiceError },
+        { data: creditNotes, error: creditNotesError },
         { data: rendiciones, error: rendicionError },
         { data: cheques, error: chequesError },
         { data: webpayRows, error: webpayError },
@@ -504,6 +514,7 @@ export default function BankReconciliation() {
       ] =
         await Promise.all([
           invoiceQuery.order("fecha_vencimiento", { ascending: true }),
+          creditNotesQuery,
           txn.monto < 0
             ? supabase
                 .from("rendiciones")
@@ -551,11 +562,21 @@ export default function BankReconciliation() {
         ]);
 
       if (invoiceError) throw invoiceError;
+      if (creditNotesError) throw creditNotesError;
       if (rendicionError) throw rendicionError;
       if (chequesError) throw chequesError;
       if (webpayError) throw webpayError;
       if (commitmentsError) throw commitmentsError;
       if (customersError) throw customersError;
+
+      const creditNotesByInvoiceId = new Map<string, number>();
+      for (const creditNote of creditNotes || []) {
+        if (!creditNote.factura_referencia_id) continue;
+        creditNotesByInvoiceId.set(
+          creditNote.factura_referencia_id,
+          (creditNotesByInvoiceId.get(creditNote.factura_referencia_id) || 0) + Number(creditNote.monto || 0)
+        );
+      }
 
       const nextCandidates: MatchCandidate[] = [
         ...(invoices || []).map((invoice: any) => {
@@ -563,7 +584,8 @@ export default function BankReconciliation() {
             Number(invoice.monto || 0) -
               ((invoice.facturas_pagos || []) as any[])
                 .filter((payment) => payment.estado === "aplicado")
-                .reduce((sum, payment) => sum + Number(payment.monto_aplicado || 0), 0),
+                .reduce((sum, payment) => sum + Number(payment.monto_aplicado || 0), 0) -
+              (creditNotesByInvoiceId.get(invoice.id) || 0),
             0
           );
           const amountDifference = Number(Math.abs(absAmount - remainingAmount).toFixed(2));

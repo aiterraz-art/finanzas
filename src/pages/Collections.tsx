@@ -137,16 +137,27 @@ export default function Collections() {
             cash_confidence_pct,
             last_collection_contact_at,
             disputed,
-            estado
+            estado,
+            tipo,
+            factura_referencia_id
           `)
           .eq("empresa_id", selectedEmpresaId)
-          .eq("tipo", "venta")
+          .in("tipo", ["venta", "nota_credito"])
           .is("archived_at", null)
           .order("fecha_vencimiento", { ascending: true });
         if (fetchError) throw fetchError;
         if (cancelled) return;
 
-        const mapped = (data || []).map((row) => {
+        const creditNotesByInvoiceId = new Map<string, number>();
+        for (const row of data || []) {
+          if (row.tipo !== "nota_credito" || !row.factura_referencia_id) continue;
+          creditNotesByInvoiceId.set(
+            row.factura_referencia_id,
+            (creditNotesByInvoiceId.get(row.factura_referencia_id) || 0) + Number(row.monto || 0)
+          );
+        }
+
+        const mapped = (data || []).filter((row) => row.tipo === "venta").map((row) => {
           const dueDate =
             row.fecha_vencimiento ||
             (row.fecha_emision ? new Date(new Date(`${row.fecha_emision}T12:00:00`).getTime() + 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0] : today);
@@ -168,7 +179,7 @@ export default function Collections() {
             terceroNombre: row.tercero_nombre || "Sin cliente",
             numeroDocumento: row.numero_documento || "",
             estado: row.estado || "pendiente",
-            amount: Number(row.monto || 0),
+            amount: Math.max(Number(row.monto || 0) - (creditNotesByInvoiceId.get(row.id) || 0), 0),
             dueDate,
             expectedDate,
             confidencePct: Number(row.cash_confidence_pct || (row.estado === "pagada" ? 100 : 60)),

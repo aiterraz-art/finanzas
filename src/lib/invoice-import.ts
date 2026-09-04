@@ -224,10 +224,11 @@ const extractReferencedDocumentNumber = (value: unknown) => {
   if (!text) return null;
 
   const patterns = [
+    /fact(?:ura)?\.?\s*electronica\s*n[º°o]?\s*([A-Z0-9-]+)/i,
     /factura(?:\s+asociada|\s+referencia)?[:#\s-]*([A-Z0-9-]+)/i,
     /folio(?:\s+referencia)?[:#\s-]*([A-Z0-9-]+)/i,
     /documento(?:\s+referencia)?[:#\s-]*([A-Z0-9-]+)/i,
-    /ref(?:erencia)?[:#\s-]*([A-Z0-9-]+)/i,
+    /\bref(?:erencia)?\b[:#\s-]*([A-Z0-9-]+)/i,
   ];
 
   for (const pattern of patterns) {
@@ -405,7 +406,7 @@ export const parseIssuedInvoicePdfText = (rawText: string): IssuedInvoiceImportR
   const documentoReferencia =
     tipo === "nota_credito"
       ? extractReferencedDocumentNumber(
-          flatText.match(/(?:factura asociada|folio referencia|documento referencia|referencia)[^.\n]{0,40}/i)?.[0] || descripcion
+          flatText.match(/(?:factura\s+asociada|folio\s+referencia|documento\s+referencia|referencias?|fact(?:ura)?\.?\s*electronica)[\s\S]{0,120}/i)?.[0] || descripcion
         )
       : null;
 

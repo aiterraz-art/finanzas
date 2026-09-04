@@ -68,6 +68,7 @@ type InvoiceRow = {
   vendedor_asignado: string | null;
   estado: string | null;
   archivo_url: string | null;
+  factura_referencia_id: string | null;
 };
 
 type PendingIssuedPdfItem = {
@@ -106,6 +107,7 @@ const inferReceivableDueDate = (row: ReceivableInvoiceImportRow) => {
 };
 
 const matchText = (value: unknown) => normalizeText(value).toLowerCase();
+const normalizeDocumentNumber = (value: unknown) => matchText(value).replace(/\s+/g, "");
 
 export default function InvoiceImport() {
   const { selectedEmpresaId, selectedRole } = useCompany();
@@ -147,7 +149,7 @@ export default function InvoiceImport() {
           .is("archived_at", null),
         supabase
           .from("facturas")
-          .select("id, tipo, numero_documento, rut, tercero_nombre, tercero_id, fecha_emision, fecha_vencimiento, monto, descripcion, tipo_documento, nombre_documento, vendedor_asignado, estado, archivo_url")
+          .select("id, tipo, numero_documento, rut, tercero_nombre, tercero_id, fecha_emision, fecha_vencimiento, monto, descripcion, tipo_documento, nombre_documento, vendedor_asignado, estado, archivo_url, factura_referencia_id")
           .eq("empresa_id", selectedEmpresaId)
           .in("tipo", ["venta", "nota_credito"])
           .is("archived_at", null),
@@ -266,13 +268,33 @@ export default function InvoiceImport() {
       if (!existingInvoiceByKey.has(key)) existingInvoiceByKey.set(key, invoice);
     }
 
+    const findReferencedInvoice = (row: IssuedInvoiceImportRow, client: ClientRow | null) => {
+      if (row.tipo !== "nota_credito" || !row.documentoReferencia) return null;
+
+      const matches = Array.from(existingInvoiceByKey.values()).filter(
+        (invoice) =>
+          invoice.tipo === "venta" &&
+          normalizeDocumentNumber(invoice.numero_documento) === normalizeDocumentNumber(row.documentoReferencia)
+      );
+      if (matches.length === 0) return null;
+
+      return (
+        matches.find((invoice) => client?.id && invoice.tercero_id === client.id) ||
+        matches.find((invoice) => row.rut && normalizeRut(invoice.rut) === normalizeRut(row.rut)) ||
+        matches.find((invoice) => matchText(invoice.tercero_nombre) === matchText(row.terceroNombre)) ||
+        matches[0]
+      );
+    };
+
     const seenKeys = new Set<string>();
     let duplicateRows = 0;
     let insertedRows = 0;
     let updatedRows = 0;
     const duplicateMessages: string[] = [];
 
-    for (const row of validRows) {
+    const orderedRows = [...validRows].sort((left, right) => Number(left.tipo === "nota_credito") - Number(right.tipo === "nota_credito"));
+
+    for (const row of orderedRows) {
       const key = buildInvoiceDuplicateKey(row);
       if (seenKeys.has(key)) {
         duplicateRows += 1;
@@ -290,6 +312,7 @@ export default function InvoiceImport() {
         row.tipo === "nota_credito" && row.documentoReferencia
           ? [row.descripcion, `Factura asociada: ${row.documentoReferencia}`].filter(Boolean).join(" | ")
           : row.descripcion;
+      const referencedInvoice = findReferencedInvoice(row, client);
       const basePayload = {
         empresa_id: selectedEmpresaId,
         tipo: row.tipo,
@@ -309,15 +332,29 @@ export default function InvoiceImport() {
         cash_confidence_pct: confidenceFromDueDate(dueDate),
         treasury_priority: "high",
         treasury_category_id: support.salesCategoryId,
+        factura_referencia_id: referencedInvoice?.id || null,
       };
 
       const existing = existingInvoiceByKey.get(key);
       if (existing) {
+        if (row.tipo === "nota_credito" && referencedInvoice && existing.factura_referencia_id !== referencedInvoice.id) {
+          const { error } = await supabase
+            .from("facturas")
+            .update({
+              factura_referencia_id: referencedInvoice.id,
+              descripcion: descriptionWithReference || existing.descripcion,
+            })
+            .eq("id", existing.id)
+            .eq("empresa_id", selectedEmpresaId);
+          if (error) throw new Error(`No se pudo vincular la nota de crédito ${row.numeroDocumento}: ${error.message}`);
+          updatedRows += 1;
+        }
         duplicateRows += 1;
         duplicateMessages.push(`Folio ${row.numeroDocumento}: ya existe para ${existing.tercero_nombre || row.terceroNombre}.`);
       } else {
-        const { error } = await supabase.from("facturas").insert(basePayload);
+        const { data, error } = await supabase.from("facturas").insert(basePayload).select().single();
         if (error) throw new Error(`No se pudo insertar la factura ${row.numeroDocumento}: ${error.message}`);
+        existingInvoiceByKey.set(key, data as InvoiceRow);
         insertedRows += 1;
       }
     }

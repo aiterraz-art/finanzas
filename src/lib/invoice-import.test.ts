@@ -129,6 +129,29 @@ describe("invoice import helpers", () => {
     expect(parsed?.documentoReferencia).toBe("57");
   });
 
+  it("parses the SII credit-note reference format used in uploaded PDFs", () => {
+    const pdfText = `
+      SEÑOR(ES): ACADEMIA DE IMPLANTES SPA. R.U.T.: 76.448.799- 0 GIRO: CENTROS ODONTOLOGICOS
+      NOTA DE CREDITO ELECTRONICA Nº3
+      Fecha Emision: 31 de Agosto del 2026
+      LAB JULIO 2026
+      FACTURA VEVI N32
+      Referencias:
+      CORRESPONDIENTE A AGOSTO- Fact.Electronica N° 48 del 2026-08-13
+      MONTO NETO $ 216.000
+      I.V.A. 19% $ 41.040
+      TOTAL $ 257.040
+    `;
+
+    const parsed = parseIssuedInvoicePdfText(pdfText);
+
+    expect(parsed).not.toBeNull();
+    expect(parsed?.tipo).toBe("nota_credito");
+    expect(parsed?.numeroDocumento).toBe("3");
+    expect(parsed?.monto).toBe(257040);
+    expect(parsed?.documentoReferencia).toBe("48");
+  });
+
   it("detects and parses receivable invoice rows", () => {
     const rows = [
       ["Cliente", "RUT", "Folio", "Fecha Vencimiento", "Saldo", "Días Mora"],
