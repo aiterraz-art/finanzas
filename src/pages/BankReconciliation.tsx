@@ -43,6 +43,7 @@ import {
 import { useBankAccountPositions, useBankAccounts, useTreasuryCategories } from "@/hooks/useTreasury";
 import { cn } from "@/lib/utils";
 import type { TreasuryPriority } from "@/lib/treasury";
+import { extractReferencedDocumentNumber } from "@/lib/invoice-import";
 
 type BankMovement = {
   id: string;
@@ -129,6 +130,7 @@ type ImportSummary = {
 
 const HASH_QUERY_CHUNK = 20;
 const INSERT_CHUNK_SIZE = 200;
+const normalizeInvoiceNumber = (value: unknown) => String(value || "").trim().toLowerCase().replace(/\s+/g, "");
 type InflowMatchSource = "factura" | "cheque" | "webpay" | "anticipo" | "capital";
 
 type QuickExpenseForm = {
@@ -497,7 +499,7 @@ export default function BankReconciliation() {
       const creditNotesQuery = txn.monto >= 0
         ? supabase
             .from("facturas")
-            .select("factura_referencia_id, monto")
+            .select("monto, descripcion, tercero_nombre")
             .eq("empresa_id", selectedEmpresaId)
             .eq("tipo", "nota_credito")
             .neq("estado", "archivada")
@@ -571,10 +573,15 @@ export default function BankReconciliation() {
 
       const creditNotesByInvoiceId = new Map<string, number>();
       for (const creditNote of creditNotes || []) {
-        if (!creditNote.factura_referencia_id) continue;
+        const referencedInvoice = (invoices || []).find(
+          (invoice: any) =>
+            normalizeInvoiceNumber(invoice.numero_documento) === normalizeInvoiceNumber(extractReferencedDocumentNumber(creditNote.descripcion)) &&
+            (!creditNote.tercero_nombre || invoice.tercero_nombre === creditNote.tercero_nombre)
+        );
+        if (!referencedInvoice) continue;
         creditNotesByInvoiceId.set(
-          creditNote.factura_referencia_id,
-          (creditNotesByInvoiceId.get(creditNote.factura_referencia_id) || 0) + Number(creditNote.monto || 0)
+          referencedInvoice.id,
+          (creditNotesByInvoiceId.get(referencedInvoice.id) || 0) + Number(creditNote.monto || 0)
         );
       }
 

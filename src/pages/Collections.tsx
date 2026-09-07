@@ -51,11 +51,13 @@ import {
   buildInvoiceObjectsFromWorksheet,
   detectReceivablesWorksheetFormat,
   inferReceivableEmissionDate,
+  extractReferencedDocumentNumber,
   normalizeReceivableInvoiceImportRow,
   type ReceivableInvoiceImportRow,
 } from "@/lib/invoice-import";
 
 const today = new Date().toISOString().split("T")[0];
+const normalizeInvoiceNumber = (value: unknown) => String(value || "").trim().toLowerCase().replace(/\s+/g, "");
 
 const quickMessage = (invoice: CollectionPipelineItem) =>
   `Hola ${invoice.terceroNombre}, seguimos la factura ${invoice.numeroDocumento || ""} por ${formatTreasuryCurrency(invoice.amount)}. ` +
@@ -83,6 +85,7 @@ export default function Collections() {
   const [saving, setSaving] = useState(false);
   const [importingReceivables, setImportingReceivables] = useState(false);
   const [allInvoices, setAllInvoices] = useState<CollectionPipelineItem[]>([]);
+  const [creditNoteAmounts, setCreditNoteAmounts] = useState<Map<string, number>>(new Map());
   const [loadingAllInvoices, setLoadingAllInvoices] = useState(false);
   const [allInvoicesError, setAllInvoicesError] = useState<string | null>(null);
   const [importSummary, setImportSummary] = useState<null | {
@@ -107,6 +110,40 @@ export default function Collections() {
 
   const { data: pipeline, loading, error, refresh } = useCollectionPipeline(selectedEmpresaId, asOfDate);
   const { data: policy } = useTreasuryPolicy(selectedEmpresaId);
+
+  useEffect(() => {
+    if (!selectedEmpresaId) {
+      setCreditNoteAmounts(new Map());
+      return;
+    }
+
+    const loadCreditNoteAmounts = async () => {
+      const { data, error: fetchError } = await supabase
+        .from("facturas")
+        .select("id, tipo, numero_documento, tercero_nombre, descripcion, monto, estado")
+        .eq("empresa_id", selectedEmpresaId)
+        .in("tipo", ["venta", "nota_credito"]);
+      if (fetchError) {
+        console.error("Error loading credit notes for collections:", fetchError);
+        return;
+      }
+
+      const invoices = (data || []).filter((row) => row.tipo === "venta");
+      const amounts = new Map<string, number>();
+      for (const creditNote of (data || []).filter((row) => row.tipo === "nota_credito" && row.estado !== "archivada")) {
+        const invoice = invoices.find(
+          (candidate) =>
+            normalizeInvoiceNumber(candidate.numero_documento) === normalizeInvoiceNumber(extractReferencedDocumentNumber(creditNote.descripcion)) &&
+            (!creditNote.tercero_nombre || candidate.tercero_nombre === creditNote.tercero_nombre)
+        );
+        if (!invoice) continue;
+        amounts.set(invoice.id, (amounts.get(invoice.id) || 0) + Number(creditNote.monto || 0));
+      }
+      setCreditNoteAmounts(amounts);
+    };
+
+    void loadCreditNoteAmounts();
+  }, [selectedEmpresaId]);
 
   useEffect(() => {
     if (!selectedEmpresaId || scopeFilter !== "all") {
@@ -139,7 +176,7 @@ export default function Collections() {
             disputed,
             estado,
             tipo,
-            factura_referencia_id
+            descripcion
           `)
           .eq("empresa_id", selectedEmpresaId)
           .in("tipo", ["venta", "nota_credito"])
@@ -150,10 +187,17 @@ export default function Collections() {
 
         const creditNotesByInvoiceId = new Map<string, number>();
         for (const row of data || []) {
-          if (row.tipo !== "nota_credito" || !row.factura_referencia_id) continue;
+          if (row.tipo !== "nota_credito") continue;
+          const referencedInvoice = (data || []).find(
+            (candidate) =>
+              candidate.tipo === "venta" &&
+              normalizeInvoiceNumber(candidate.numero_documento) === normalizeInvoiceNumber(extractReferencedDocumentNumber(row.descripcion)) &&
+              (!row.tercero_nombre || candidate.tercero_nombre === row.tercero_nombre)
+          );
+          if (!referencedInvoice) continue;
           creditNotesByInvoiceId.set(
-            row.factura_referencia_id,
-            (creditNotesByInvoiceId.get(row.factura_referencia_id) || 0) + Number(row.monto || 0)
+            referencedInvoice.id,
+            (creditNotesByInvoiceId.get(referencedInvoice.id) || 0) + Number(row.monto || 0)
           );
         }
 
@@ -545,7 +589,18 @@ export default function Collections() {
     }
   };
 
-  const visibleInvoices = scopeFilter === "all" ? allInvoices : pipeline;
+  const adjustedPipeline = useMemo(
+    () =>
+      pipeline
+        .map((invoice) => ({
+          ...invoice,
+          amount: Math.max(invoice.amount - (creditNoteAmounts.get(invoice.facturaId) || 0), 0),
+        }))
+        .filter((invoice) => invoice.amount > 0),
+    [creditNoteAmounts, pipeline]
+  );
+
+  const visibleInvoices = scopeFilter === "all" ? allInvoices : adjustedPipeline;
 
   const filteredPipeline = useMemo(() => {
     const normalized = searchTerm.toLowerCase().trim();

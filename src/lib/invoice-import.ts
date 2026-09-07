@@ -219,7 +219,7 @@ const inferIssuedDocumentType = (values: Array<string | null | undefined>) => {
   return haystack.includes("nota") && haystack.includes("credit") ? "nota_credito" as const : "venta" as const;
 };
 
-const extractReferencedDocumentNumber = (value: unknown) => {
+export const extractReferencedDocumentNumber = (value: unknown) => {
   const text = sanitizeImportText(value);
   if (!text) return null;
 

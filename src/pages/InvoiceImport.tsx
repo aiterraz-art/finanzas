@@ -68,7 +68,6 @@ type InvoiceRow = {
   vendedor_asignado: string | null;
   estado: string | null;
   archivo_url: string | null;
-  factura_referencia_id: string | null;
 };
 
 type PendingIssuedPdfItem = {
@@ -149,7 +148,7 @@ export default function InvoiceImport() {
           .is("archived_at", null),
         supabase
           .from("facturas")
-          .select("id, tipo, numero_documento, rut, tercero_nombre, tercero_id, fecha_emision, fecha_vencimiento, monto, descripcion, tipo_documento, nombre_documento, vendedor_asignado, estado, archivo_url, factura_referencia_id")
+          .select("id, tipo, numero_documento, rut, tercero_nombre, tercero_id, fecha_emision, fecha_vencimiento, monto, descripcion, tipo_documento, nombre_documento, vendedor_asignado, estado, archivo_url")
           .eq("empresa_id", selectedEmpresaId)
           .in("tipo", ["venta", "nota_credito"])
           .is("archived_at", null),
@@ -332,16 +331,14 @@ export default function InvoiceImport() {
         cash_confidence_pct: confidenceFromDueDate(dueDate),
         treasury_priority: "high",
         treasury_category_id: support.salesCategoryId,
-        factura_referencia_id: referencedInvoice?.id || null,
       };
 
       const existing = existingInvoiceByKey.get(key);
       if (existing) {
-        if (row.tipo === "nota_credito" && referencedInvoice && existing.factura_referencia_id !== referencedInvoice.id) {
+        if (row.tipo === "nota_credito" && referencedInvoice && existing.descripcion !== descriptionWithReference) {
           const { error } = await supabase
             .from("facturas")
             .update({
-              factura_referencia_id: referencedInvoice.id,
               descripcion: descriptionWithReference || existing.descripcion,
             })
             .eq("id", existing.id)

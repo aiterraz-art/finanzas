@@ -34,6 +34,7 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { canEditTreasury } from "@/lib/treasury";
+import { extractReferencedDocumentNumber } from "@/lib/invoice-import";
 
 const statusButtonOptions = [
     { value: "all", label: "Ver todos" },
@@ -60,6 +61,7 @@ type InvoiceEditForm = {
 };
 
 const invoiceDateValue = (value: string | null | undefined) => value?.split("T")[0] || "";
+const normalizeInvoiceNumber = (value: unknown) => String(value || "").trim().toLowerCase().replace(/\s+/g, "");
 
 export default function InvoicesList() {
     const { selectedEmpresaId, selectedRole } = useCompany();
@@ -201,10 +203,19 @@ export default function InvoicesList() {
     const creditNotesByInvoiceId = useMemo(() => {
         const amounts = new Map<string, number>();
         for (const invoice of invoices) {
-            if (invoice.tipo !== "nota_credito" || !invoice.factura_referencia_id || invoice.estado === "archivada") continue;
+            if (invoice.tipo !== "nota_credito" || invoice.estado === "archivada") continue;
+            const referencedInvoiceId =
+                invoice.factura_referencia_id ||
+                invoices.find(
+                    (candidate) =>
+                        candidate.tipo === "venta" &&
+                        normalizeInvoiceNumber(candidate.numero_documento) === normalizeInvoiceNumber(extractReferencedDocumentNumber(invoice.descripcion)) &&
+                        (!invoice.tercero_nombre || candidate.tercero_nombre === invoice.tercero_nombre)
+                )?.id;
+            if (!referencedInvoiceId) continue;
             amounts.set(
-                invoice.factura_referencia_id,
-                (amounts.get(invoice.factura_referencia_id) || 0) + Number(invoice.monto || 0)
+                referencedInvoiceId,
+                (amounts.get(referencedInvoiceId) || 0) + Number(invoice.monto || 0)
             );
         }
         return amounts;
