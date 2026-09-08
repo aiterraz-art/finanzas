@@ -88,6 +88,7 @@ type BankMovement = {
     status: string;
     direction: "inflow" | "outflow";
     source_type: string;
+    source_reference: string | null;
     archived_at: string | null;
     estado_previo_conciliacion: string | null;
   }>;
@@ -131,7 +132,7 @@ type ImportSummary = {
 const HASH_QUERY_CHUNK = 20;
 const INSERT_CHUNK_SIZE = 200;
 const normalizeInvoiceNumber = (value: unknown) => String(value || "").trim().toLowerCase().replace(/\s+/g, "");
-type InflowMatchSource = "factura" | "cheque" | "webpay" | "anticipo" | "capital";
+type InflowMatchSource = "factura" | "cheque" | "webpay" | "anticipo" | "capital" | "transfer";
 
 type QuickExpenseForm = {
   description: string;
@@ -220,6 +221,7 @@ const BANK_MOVEMENT_SELECT = `
     status,
     direction,
     source_type,
+    source_reference,
     archived_at,
     estado_previo_conciliacion
   ),
@@ -288,6 +290,8 @@ export default function BankReconciliation() {
     notes: "",
   });
   const [savingQuickCapital, setSavingQuickCapital] = useState(false);
+  const [transferMode, setTransferMode] = useState(false);
+  const [transferCounterpartId, setTransferCounterpartId] = useState("");
 
   const { data: bankAccounts, refresh: refreshBankAccounts } = useBankAccounts(selectedEmpresaId);
   const { data: bankPositions, refresh: refreshPositions } = useBankAccountPositions(selectedEmpresaId);
@@ -312,6 +316,10 @@ export default function BankReconciliation() {
     [outflowCategories, quickExpenseForm.categoryId]
   );
   const needsRenditionNumber = selectedQuickExpenseCategory?.code === "reimbursements";
+  const internalTransferCategoryId = useMemo(
+    () => categories.find((category) => category.active && category.code === "internal_transfers")?.id || "",
+    [categories]
+  );
 
   useEffect(() => {
     if (!selectedAccountId && bankAccounts.length > 0) {
@@ -331,6 +339,8 @@ export default function BankReconciliation() {
 
   useEffect(() => {
     if (!selectedTxn || selectedTxn.monto >= 0) return;
+    setTransferMode(false);
+    setTransferCounterpartId("");
     setQuickExpenseForm({
       description: selectedTxn.descripcion || "",
       counterparty: "",
@@ -1101,6 +1111,99 @@ export default function BankReconciliation() {
     }
   };
 
+  const handleInternalTransferMatch = async () => {
+    if (!selectedEmpresaId || !selectedTxn || !transferCounterpartId || !canEdit) return;
+
+    const counterpart = transactions.find((transaction) => transaction.id === transferCounterpartId);
+    if (!counterpart) {
+      alert("Selecciona el movimiento bancario de contraparte.");
+      return;
+    }
+    if (counterpart.estado === "conciliado" || Math.sign(counterpart.monto) === Math.sign(selectedTxn.monto)) {
+      alert("La contraparte debe ser un movimiento pendiente y de sentido contrario.");
+      return;
+    }
+    if (Math.abs(Math.abs(counterpart.monto) - Math.abs(selectedTxn.monto)) > 0.01) {
+      alert("Los movimientos de un traspaso deben tener el mismo monto.");
+      return;
+    }
+    if (!internalTransferCategoryId) {
+      alert("No existe la categoría 'Traspasos entre cuentas' para esta empresa.");
+      return;
+    }
+
+    setSavingQuickExpense(true);
+    const movements = [selectedTxn, counterpart];
+    const transferReference = `internal-transfer:${[selectedTxn.id, counterpart.id].sort().join(":")}`;
+    try {
+      for (const movement of movements) {
+        const otherMovement = movement.id === selectedTxn.id ? counterpart : selectedTxn;
+        const description = `Traspaso interno • ${otherMovement.descripcion || otherMovement.numero_documento || "movimiento bancario"}`;
+        const payload = {
+          bank_account_id: movement.bank_account_id,
+          category_id: internalTransferCategoryId,
+          source_type: "manual",
+          source_reference: transferReference,
+          direction: movement.monto >= 0 ? "inflow" : "outflow",
+          counterparty: "Traspaso interno",
+          description,
+          amount: Math.abs(movement.monto),
+          is_estimated: false,
+          due_date: movement.fecha_movimiento,
+          expected_date: movement.fecha_movimiento,
+          priority: "normal" as const,
+          status: "paid" as const,
+          notes: `Contraparte: ${otherMovement.descripcion || otherMovement.numero_documento || otherMovement.id}`,
+          movimiento_banco_id: movement.id,
+          archived_at: null,
+          archived_by: null,
+          archive_reason: null,
+        };
+
+        const { data: existingCommitment, error: existingCommitmentError } = await supabase
+          .from("cash_commitments")
+          .select("id")
+          .eq("empresa_id", selectedEmpresaId)
+          .eq("movimiento_banco_id", movement.id)
+          .maybeSingle();
+        if (existingCommitmentError) throw existingCommitmentError;
+
+        const { error: commitmentError } = existingCommitment?.id
+          ? await supabase
+              .from("cash_commitments")
+              .update(payload)
+              .eq("id", existingCommitment.id)
+              .eq("empresa_id", selectedEmpresaId)
+          : await supabase.from("cash_commitments").insert({ empresa_id: selectedEmpresaId, ...payload });
+        if (commitmentError) throw commitmentError;
+      }
+
+      const { error: movementsError } = await supabase
+        .from("movimientos_banco")
+        .update({
+          estado: "conciliado",
+          tipo_conciliacion: "commitment",
+          numero_documento: "Traspaso interno",
+          comentario_tesoreria: `Traspaso interno vinculado: ${transferReference}`,
+        })
+        .in("id", movements.map((movement) => movement.id))
+        .eq("empresa_id", selectedEmpresaId);
+      if (movementsError) throw movementsError;
+
+      setSelectedTxn(null);
+      setCandidates([]);
+      setTransferCounterpartId("");
+      setTransferMode(false);
+      await fetchTransactions();
+      await refreshPositions();
+    } catch (error: any) {
+      console.error("Error conciliando traspaso interno:", error);
+      alert(`No se pudo conciliar el traspaso interno: ${error.message}`);
+    } finally {
+      setSavingQuickExpense(false);
+    }
+  };
+
   const handleQuickExpenseMatch = async () => {
     if (!selectedEmpresaId || !selectedTxn || selectedTxn.monto >= 0 || !canEdit) return;
     if (!quickExpenseForm.description.trim() || !quickExpenseForm.categoryId) {
@@ -1578,6 +1681,17 @@ export default function BankReconciliation() {
     );
   }, [candidateSearchTerm, candidates, selectedInflowSource, selectedTxn]);
 
+  const transferCandidates = useMemo(() => {
+    if (!selectedTxn) return [];
+    return transactions.filter(
+      (transaction) =>
+        transaction.id !== selectedTxn.id &&
+        transaction.estado !== "conciliado" &&
+        Math.sign(transaction.monto) !== Math.sign(selectedTxn.monto) &&
+        Math.abs(Math.abs(transaction.monto) - Math.abs(selectedTxn.monto)) <= 0.01
+    );
+  }, [selectedTxn, transactions]);
+
   const selectedInvoiceCandidates = useMemo(
     () =>
       candidates.filter(
@@ -1646,11 +1760,14 @@ export default function BankReconciliation() {
     }
 
     if (commitmentInfo) {
+      const isInternalTransfer = commitmentInfo.source_reference?.startsWith("internal-transfer:");
       paymentLines.push({
         id: commitmentInfo.id,
         title: `${commitmentInfo.counterparty || "Sin contraparte"} • ${commitmentInfo.description || "Compromiso"}`,
         subtitle:
-          commitmentInfo.direction === "inflow"
+          isInternalTransfer
+            ? "Traspaso interno conciliado"
+            : commitmentInfo.direction === "inflow"
             ? commitmentInfo.description === "Aporte de capital"
               ? "Aporte de capital conciliado"
               : "Ingreso manual conciliado"
@@ -1680,7 +1797,9 @@ export default function BankReconciliation() {
             : selectedTxn.tipo_conciliacion === "webpay"
               ? "WebPay"
               : selectedTxn.tipo_conciliacion === "commitment"
-                ? commitmentInfo?.direction === "inflow"
+                ? commitmentInfo?.source_reference?.startsWith("internal-transfer:")
+                  ? "Traspaso interno"
+                  : commitmentInfo?.direction === "inflow"
                   ? commitmentInfo?.description === "Aporte de capital"
                     ? "Aporte de capital"
                     : "Ingreso manual"
@@ -2382,6 +2501,7 @@ export default function BankReconciliation() {
                     <SelectItem value="webpay">WebPay</SelectItem>
                     <SelectItem value="anticipo">Anticipo cliente</SelectItem>
                     <SelectItem value="capital">Aporte de capital</SelectItem>
+                    <SelectItem value="transfer">Traspaso interno</SelectItem>
                   </SelectContent>
                 </Select>
                 <div className="text-xs text-muted-foreground">
@@ -2393,6 +2513,8 @@ export default function BankReconciliation() {
                         ? "Se mostrarán solo pagos WebPay pendientes de abono."
                         : selectedInflowSource === "capital"
                           ? "Registra este ingreso como aporte de capital y quedará conciliado de inmediato."
+                          : selectedInflowSource === "transfer"
+                            ? "Vincula este abono con el cargo interno de igual monto; no afectará ingresos, gastos ni capital."
                           : "Selecciona el cliente para dejar el ingreso completo como anticipo."}
                 </div>
               </div>
@@ -2470,13 +2592,70 @@ export default function BankReconciliation() {
               </div>
             )}
 
-            {!loadingCandidates && selectedTxn && selectedTxn.monto < 0 && (
+            {!loadingCandidates && selectedTxn && (
+              (selectedTxn.monto >= 0 && selectedInflowSource === "transfer") ||
+              (selectedTxn.monto < 0 && transferMode)
+            ) && (
               <div className="rounded-xl border border-dashed p-4">
                 <div className="mb-4">
+                  <div className="font-medium">Conciliar traspaso interno</div>
+                  <div className="text-sm text-muted-foreground">
+                    Selecciona el abono o cargo contrario por el mismo monto. Ambos movimientos se marcarán como conciliados y quedarán vinculados.
+                  </div>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Movimiento actual</Label>
+                    <Input
+                      value={`${selectedTxn.descripcion || "Sin descripción"} • ${formatTreasuryCurrency(selectedTxn.monto, selectedAccount?.moneda || "CLP")}`}
+                      disabled
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Movimiento de contraparte</Label>
+                    <Select value={transferCounterpartId} onValueChange={setTransferCounterpartId}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Selecciona el movimiento contrario" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {transferCandidates.map((transaction) => (
+                          <SelectItem key={transaction.id} value={transaction.id}>
+                            {transaction.fecha_movimiento} • {transaction.descripcion || transaction.numero_documento || "Sin descripción"} • {formatTreasuryCurrency(transaction.monto, selectedAccount?.moneda || "CLP")} • Saldo {formatTreasuryCurrency(transaction.saldo || 0, selectedAccount?.moneda || "CLP")}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {transferCandidates.length === 0 && (
+                      <p className="text-xs text-amber-700">No hay un movimiento pendiente de sentido contrario por el mismo monto en esta cuenta.</p>
+                    )}
+                  </div>
+                </div>
+                <div className="mt-4 flex justify-end gap-2">
+                  {selectedTxn.monto < 0 && (
+                    <Button variant="outline" onClick={() => setTransferMode(false)} disabled={savingQuickExpense}>
+                      Volver a egreso
+                    </Button>
+                  )}
+                  <Button onClick={() => void handleInternalTransferMatch()} disabled={!canEdit || savingQuickExpense || !transferCounterpartId}>
+                    {savingQuickExpense ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
+                    Conciliar ambos movimientos
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {!loadingCandidates && selectedTxn && selectedTxn.monto < 0 && !transferMode && (
+              <div className="rounded-xl border border-dashed p-4">
+                <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                  <div>
                   <div className="font-medium">Conciliación rápida de egreso</div>
                   <div className="text-sm text-muted-foreground">
                     Si el movimiento no corresponde a un documento existente, clasifícalo aquí y se creará el egreso manual ya conciliado.
                   </div>
+                  </div>
+                  <Button type="button" variant="outline" onClick={() => setTransferMode(true)}>
+                    Traspaso interno
+                  </Button>
                 </div>
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-2 md:col-span-2">

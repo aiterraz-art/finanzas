@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Landmark, Loader2, Plus, Search } from "lucide-react";
+import { Landmark, Loader2, Plus, Search, Trash2 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -193,6 +193,12 @@ export default function Proveedores() {
     planned_cash_date: "",
     blocked_reason: "",
   });
+  const [editInvoiceData, setEditInvoiceData] = useState({
+    numero_documento: "",
+    monto: "",
+    fecha_emision: "",
+    fecha_vencimiento: "",
+  });
 
   const { data: bankAccounts } = useBankAccounts(selectedEmpresaId);
   const { data: treasuryCategories } = useTreasuryCategories(selectedEmpresaId);
@@ -217,7 +223,7 @@ export default function Proveedores() {
           .from("terceros")
           .select("id, rut, razon_social, email, telefono, direccion")
           .eq("empresa_id", selectedEmpresaId)
-          .eq("tipo", "proveedor")
+          .in("tipo", ["proveedor", "ambos"])
           .eq("estado", "activo")
           .or("es_trabajador.is.null,es_trabajador.eq.false")
           .order("razon_social", { ascending: true }),
@@ -226,6 +232,7 @@ export default function Proveedores() {
           .select("id, tercero_id, tercero_nombre, numero_documento, monto, estado, fecha_emision, fecha_vencimiento, planned_cash_date, treasury_priority, preferred_bank_account_id, blocked_reason, treasury_category_id, facturas_pagos(monto_aplicado, estado)")
           .eq("empresa_id", selectedEmpresaId)
           .eq("tipo", "compra")
+          .is("archived_at", null)
           .order("fecha_emision", { ascending: false }),
         supabase
           .from("bank_loans")
@@ -389,15 +396,38 @@ export default function Proveedores() {
     setIsSavingProv(true);
     try {
       const cleanRut = newProvData.rut.replace(/\./g, "").replace(/-/g, "").toUpperCase();
-      const { error } = await supabase.from("terceros").insert({
-        empresa_id: selectedEmpresaId,
-        ...newProvData,
-        rut: cleanRut,
-        tipo: "proveedor",
-        estado: "activo",
-        es_trabajador: false,
-      });
-      if (error) throw error;
+      const candidateRuts = Array.from(new Set([cleanRut, newProvData.rut.trim().toUpperCase()]));
+      const { data: existingTercero, error: existingError } = await supabase
+        .from("terceros")
+        .select("id, tipo")
+        .eq("empresa_id", selectedEmpresaId)
+        .in("rut", candidateRuts)
+        .maybeSingle();
+      if (existingError) throw existingError;
+
+      if (existingTercero) {
+        if (existingTercero.tipo === "cliente") {
+          const { error } = await supabase
+            .from("terceros")
+            .update({ tipo: "ambos", estado: "activo", es_trabajador: false })
+            .eq("id", existingTercero.id)
+            .eq("empresa_id", selectedEmpresaId);
+          if (error) throw error;
+          alert("El RUT ya existía como cliente y ahora también quedó habilitado como proveedor.");
+        } else {
+          alert("Este RUT ya está registrado como proveedor. Puedes seleccionarlo al crear la factura de compra.");
+        }
+      } else {
+        const { error } = await supabase.from("terceros").insert({
+          empresa_id: selectedEmpresaId,
+          ...newProvData,
+          rut: cleanRut,
+          tipo: "proveedor",
+          estado: "activo",
+          es_trabajador: false,
+        });
+        if (error) throw error;
+      }
 
       setIsNewProvOpen(false);
       setNewProvData({ rut: "", razon_social: "", email: "", telefono: "", direccion: "" });
@@ -425,6 +455,22 @@ export default function Proveedores() {
 
     setIsSavingInvoice(true);
     try {
+      const { data: duplicateInvoice, error: duplicateCheckError } = await supabase
+        .from("facturas")
+        .select("id, estado")
+        .eq("empresa_id", selectedEmpresaId)
+        .eq("tipo", "compra")
+        .eq("tercero_id", selectedSupplier.id)
+        .eq("numero_documento", newInvoiceData.numero_documento.trim())
+        .neq("estado", "archivada")
+        .limit(1)
+        .maybeSingle();
+      if (duplicateCheckError) throw duplicateCheckError;
+      if (duplicateInvoice) {
+        alert(`Ya existe una factura de compra con el folio ${newInvoiceData.numero_documento.trim()} para este proveedor. No se creó un duplicado.`);
+        return;
+      }
+
       const { error } = await supabase.from("facturas").insert({
         empresa_id: selectedEmpresaId,
         tipo: "compra",
@@ -460,7 +506,11 @@ export default function Proveedores() {
       await fetchData();
     } catch (error: any) {
       console.error("Error creando factura de compra:", error);
-      alert(`No se pudo guardar la factura: ${error.message}`);
+      if (error?.code === "23505" || String(error?.message || "").includes("ux_facturas_compra_proveedor_folio")) {
+        alert(`Ya existe una factura de compra con el folio ${newInvoiceData.numero_documento.trim()} para este proveedor. No se creó un duplicado.`);
+      } else {
+        alert(`No se pudo guardar la factura: ${error.message}`);
+      }
     } finally {
       setIsSavingInvoice(false);
     }
@@ -669,15 +719,37 @@ export default function Proveedores() {
       planned_cash_date: invoice.planned_cash_date || invoice.fecha_vencimiento || "",
       blocked_reason: invoice.blocked_reason || "",
     });
+    setEditInvoiceData({
+      numero_documento: invoice.numero_documento || "",
+      monto: String(invoice.monto || ""),
+      fecha_emision: invoice.fecha_emision || "",
+      fecha_vencimiento: invoice.fecha_vencimiento || "",
+    });
   };
 
   const handleSaveTreasury = async () => {
     if (!selectedEmpresaId || !editingInvoice) return;
+    const amount = Number(editInvoiceData.monto);
+    if (!editInvoiceData.numero_documento.trim() || !editInvoiceData.fecha_emision || !editInvoiceData.fecha_vencimiento || !Number.isFinite(amount) || amount <= 0) {
+      alert("Completa folio, fechas y un monto mayor a cero.");
+      return;
+    }
+    const appliedAmount = (editingInvoice.facturas_pagos || [])
+      .filter((payment) => payment.estado === "aplicado")
+      .reduce((sum, payment) => sum + Number(payment.monto_aplicado || 0), 0);
+    if (amount < appliedAmount) {
+      alert(`El monto no puede ser menor que los pagos ya aplicados (${formatTreasuryCurrency(appliedAmount)}).`);
+      return;
+    }
     setSavingTreasury(true);
     try {
       const { error } = await supabase
         .from("facturas")
         .update({
+          numero_documento: editInvoiceData.numero_documento.trim(),
+          monto: amount,
+          fecha_emision: editInvoiceData.fecha_emision,
+          fecha_vencimiento: editInvoiceData.fecha_vencimiento,
           treasury_category_id: editForm.treasury_category_id || null,
           treasury_priority: editForm.treasury_priority,
           preferred_bank_account_id: editForm.preferred_bank_account_id === "none" ? null : editForm.preferred_bank_account_id,
@@ -691,9 +763,43 @@ export default function Proveedores() {
       await fetchData();
     } catch (error: any) {
       console.error("Error saving treasury data:", error);
-      alert(`No se pudo guardar la metadata de tesorería: ${error.message}`);
+      if (error?.code === "23505" || String(error?.message || "").includes("ux_facturas_compra_proveedor_folio")) {
+        alert("Ya existe una factura de compra con este folio para el proveedor.");
+      } else {
+        alert(`No se pudo guardar la factura: ${error.message}`);
+      }
     } finally {
       setSavingTreasury(false);
+    }
+  };
+
+  const handleArchiveInvoice = async (invoice: PurchaseInvoice) => {
+    if (!selectedEmpresaId || !canEdit) return;
+    const appliedAmount = (invoice.facturas_pagos || [])
+      .filter((payment) => payment.estado === "aplicado")
+      .reduce((sum, payment) => sum + Number(payment.monto_aplicado || 0), 0);
+    if (appliedAmount > 0) {
+      alert("No puedes eliminar una factura que ya tiene pagos conciliados. Corrige o revierte primero la conciliación bancaria.");
+      return;
+    }
+    if (!window.confirm(`¿Eliminar la factura ${invoice.numero_documento || "sin folio"}? Se archivará y no aparecerá en las cuentas por pagar.`)) return;
+
+    try {
+      const { error } = await supabase
+        .from("facturas")
+        .update({
+          estado: "archivada",
+          archived_at: new Date().toISOString(),
+          archived_by: user?.id || null,
+          archive_reason: "Factura de compra archivada desde proveedores",
+        })
+        .eq("id", invoice.id)
+        .eq("empresa_id", selectedEmpresaId);
+      if (error) throw error;
+      await fetchData();
+    } catch (error: any) {
+      console.error("Error archivando factura de compra:", error);
+      alert(`No se pudo eliminar la factura: ${error.message}`);
     }
   };
 
@@ -936,7 +1042,17 @@ export default function Proveedores() {
                       <div className="flex flex-col items-start gap-2 lg:items-end">
                         <div className="text-sm">{invoice.blocked_reason || "Sin bloqueo"}</div>
                         <Button size="sm" variant="outline" disabled={!canEdit} onClick={() => openEditDialog(invoice)}>
-                          Editar tesorería
+                          Editar factura
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+                          disabled={!canEdit}
+                          onClick={() => void handleArchiveInvoice(invoice)}
+                        >
+                          <Trash2 className="mr-2 h-4 w-4" />
+                          Eliminar
                         </Button>
                       </div>
                     </div>
@@ -1222,14 +1338,28 @@ export default function Proveedores() {
       </Dialog>
 
       <Dialog open={Boolean(editingInvoice)} onOpenChange={(open) => !open && setEditingInvoice(null)}>
-        <DialogContent>
+        <DialogContent className="max-h-[88vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Editar tesorería de factura</DialogTitle>
+            <DialogTitle>Editar factura de compra</DialogTitle>
             <DialogDescription>
-              {editingInvoice ? `Factura ${editingInvoice.numero_documento || "sin folio"} • ${editingInvoice.tercero_nombre}` : ""}
+              {editingInvoice ? `${editingInvoice.tercero_nombre}. Los pagos ya conciliados se conservan.` : ""}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4">
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field label="Folio">
+                <Input value={editInvoiceData.numero_documento} onChange={(event) => setEditInvoiceData((current) => ({ ...current, numero_documento: event.target.value }))} />
+              </Field>
+              <Field label="Monto">
+                <Input type="number" min="0.01" step="0.01" value={editInvoiceData.monto} onChange={(event) => setEditInvoiceData((current) => ({ ...current, monto: event.target.value }))} />
+              </Field>
+              <Field label="Fecha de emisión">
+                <Input type="date" value={editInvoiceData.fecha_emision} onChange={(event) => setEditInvoiceData((current) => ({ ...current, fecha_emision: event.target.value }))} />
+              </Field>
+              <Field label="Fecha de vencimiento">
+                <Input type="date" value={editInvoiceData.fecha_vencimiento} onChange={(event) => setEditInvoiceData((current) => ({ ...current, fecha_vencimiento: event.target.value }))} />
+              </Field>
+            </div>
             <Field label="Categoría">
               <Select value={editForm.treasury_category_id} onValueChange={(value) => setEditForm((current) => ({ ...current, treasury_category_id: value }))}>
                 <SelectTrigger>
