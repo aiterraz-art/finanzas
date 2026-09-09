@@ -283,7 +283,6 @@ export default function InvoiceImport() {
     let duplicateRows = 0;
     let insertedRows = 0;
     let updatedRows = 0;
-    const duplicateMessages: string[] = [];
 
     const orderedRows = [...validRows].sort((left, right) => Number(left.tipo === "nota_credito") - Number(right.tipo === "nota_credito"));
 
@@ -291,7 +290,6 @@ export default function InvoiceImport() {
       const key = buildInvoiceDuplicateKey(row);
       if (seenKeys.has(key)) {
         duplicateRows += 1;
-        duplicateMessages.push(`Folio ${row.numeroDocumento}: duplicada dentro del archivo.`);
         continue;
       }
       seenKeys.add(key);
@@ -345,8 +343,6 @@ export default function InvoiceImport() {
           .eq("empresa_id", selectedEmpresaId);
         if (error) throw new Error(`No se pudo actualizar la factura ${row.numeroDocumento}: ${error.message}`);
         updatedRows += 1;
-        duplicateRows += 1;
-        duplicateMessages.push(`Folio ${row.numeroDocumento}: ya existe para ${existing.tercero_nombre || row.terceroNombre}.`);
       } else {
         const { data, error } = await supabase.from("facturas").insert(basePayload).select().single();
         if (error) throw new Error(`No se pudo insertar la factura ${row.numeroDocumento}: ${error.message}`);
@@ -369,9 +365,6 @@ export default function InvoiceImport() {
 
     await registerImportRun("issued", importSummary);
     setSummary((current) => ({ ...current, issued: importSummary }));
-    if (duplicateMessages.length > 0) {
-      throw new Error(`Se detectaron ${duplicateMessages.length} documento(s) duplicado(s). ${duplicateMessages.slice(0, 3).join(" ")}`);
-    }
   };
 
   const processIssuedSpreadsheetImport = async (file: File) => {
