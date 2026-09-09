@@ -142,6 +142,7 @@ export default function Proveedores() {
   const [loanCommitments, setLoanCommitments] = useState<LoanCommitment[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
+  const [invoiceSupplierSearch, setInvoiceSupplierSearch] = useState("");
   const [isNewProvOpen, setIsNewProvOpen] = useState(false);
   const [isSavingProv, setIsSavingProv] = useState(false);
   const [isNewInvoiceOpen, setIsNewInvoiceOpen] = useState(false);
@@ -338,6 +339,22 @@ export default function Proveedores() {
     );
   }, [groupedSuppliers]);
 
+  const invoiceSupplierOptions = useMemo(() => {
+    const normalized = invoiceSupplierSearch.trim().toLowerCase();
+    const selectedSupplier = proveedores.find((supplier) => supplier.id === newInvoiceData.tercero_id);
+    const matches = !normalized
+      ? proveedores
+      : proveedores.filter(
+          (supplier) =>
+            supplier.razon_social.toLowerCase().includes(normalized) ||
+            supplier.rut.toLowerCase().includes(normalized)
+        );
+
+    return selectedSupplier && !matches.some((supplier) => supplier.id === selectedSupplier.id)
+      ? [selectedSupplier, ...matches]
+      : matches;
+  }, [invoiceSupplierSearch, newInvoiceData.tercero_id, proveedores]);
+
   const suppliersCategoryId = treasuryCategories.find((category) => category.code === "suppliers")?.id ?? "";
   const debtCategoryId = treasuryCategories.find((category) => category.code === "debt_service")?.id ?? "";
 
@@ -491,6 +508,7 @@ export default function Proveedores() {
       if (error) throw error;
 
       setIsNewInvoiceOpen(false);
+      setInvoiceSupplierSearch("");
       setNewInvoiceData({
         tercero_id: "",
         fecha_emision: new Date().toISOString().split("T")[0],
@@ -1102,7 +1120,13 @@ export default function Proveedores() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={isNewInvoiceOpen} onOpenChange={setIsNewInvoiceOpen}>
+      <Dialog
+        open={isNewInvoiceOpen}
+        onOpenChange={(open) => {
+          setIsNewInvoiceOpen(open);
+          if (!open) setInvoiceSupplierSearch("");
+        }}
+      >
         <DialogContent className="max-h-[88vh] max-w-2xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Nueva factura de compra</DialogTitle>
@@ -1110,18 +1134,29 @@ export default function Proveedores() {
           </DialogHeader>
           <div className="grid gap-4 md:grid-cols-2">
             <Field className="md:col-span-2" label="Proveedor">
-              <select
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm"
-                value={newInvoiceData.tercero_id}
-                onChange={(event) => setNewInvoiceData((current) => ({ ...current, tercero_id: event.target.value }))}
-              >
-                <option value="">Selecciona un proveedor</option>
-                {proveedores.map((supplier) => (
-                  <option key={supplier.id} value={supplier.id}>
-                    {supplier.razon_social}
-                  </option>
-                ))}
-              </select>
+              <div className="space-y-2">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={invoiceSupplierSearch}
+                    onChange={(event) => setInvoiceSupplierSearch(event.target.value)}
+                    placeholder="Buscar proveedor por razón social o RUT..."
+                    className="pl-10"
+                  />
+                </div>
+                <select
+                  className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm"
+                  value={newInvoiceData.tercero_id}
+                  onChange={(event) => setNewInvoiceData((current) => ({ ...current, tercero_id: event.target.value }))}
+                >
+                  <option value="">{invoiceSupplierOptions.length ? "Selecciona un proveedor" : "No se encontraron proveedores"}</option>
+                  {invoiceSupplierOptions.map((supplier) => (
+                    <option key={supplier.id} value={supplier.id}>
+                      {supplier.razon_social} • {supplier.rut}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </Field>
             <Field label="Fecha emisión">
               <Input type="date" value={newInvoiceData.fecha_emision} onChange={(event) => setNewInvoiceData((current) => ({ ...current, fecha_emision: event.target.value }))} />
