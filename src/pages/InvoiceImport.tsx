@@ -26,13 +26,15 @@ import {
   inferReceivableEmissionDate,
   normalizeIssuedInvoiceImportRow,
   normalizeReceivableInvoiceImportRow,
+  normalizeSiiPurchaseInvoiceImportRow,
   type IssuedInvoiceImportRow,
+  type PurchaseInvoiceImportRow,
   type ReceivableInvoiceImportRow,
 } from "@/lib/invoice-import";
 import { cn } from "@/lib/utils";
 import { canEditTreasury, formatTreasuryCurrency, formatTreasuryDate, normalizeRut, normalizeText } from "@/lib/treasury";
 
-type ImportMode = "issued" | "receivables";
+type ImportMode = "issued" | "receivables" | "purchases";
 
 type ImportSummary = {
   filename: string;
@@ -43,6 +45,7 @@ type ImportSummary = {
   duplicateRows: number;
   rejectedRows: number;
   createdClients: number;
+  createdCounterpartyLabel?: string;
   notes: string | null;
 };
 
@@ -50,6 +53,10 @@ type ClientRow = {
   id: string;
   razon_social: string;
   rut: string | null;
+};
+
+type SupplierRow = ClientRow & {
+  tipo: "cliente" | "proveedor" | "ambos";
 };
 
 type InvoiceRow = {
@@ -68,6 +75,9 @@ type InvoiceRow = {
   vendedor_asignado: string | null;
   estado: string | null;
   archivo_url: string | null;
+  monto_exento?: number | null;
+  monto_neto?: number | null;
+  monto_iva?: number | null;
 };
 
 type PendingIssuedPdfItem = {
@@ -117,15 +127,17 @@ export default function InvoiceImport() {
   const [summary, setSummary] = useState<Record<ImportMode, ImportSummary | null>>({
     issued: null,
     receivables: null,
+    purchases: null,
   });
   const [pendingIssuedPdfItems, setPendingIssuedPdfItems] = useState<PendingIssuedPdfItem[]>([]);
   const fileRefs = {
     issued: useRef<HTMLInputElement>(null),
     receivables: useRef<HTMLInputElement>(null),
+    purchases: useRef<HTMLInputElement>(null),
   };
 
   useEffect(() => {
-    setSummary({ issued: null, receivables: null });
+    setSummary({ issued: null, receivables: null, purchases: null });
     setPendingIssuedPdfItems([]);
   }, [selectedEmpresaId]);
 
@@ -148,7 +160,7 @@ export default function InvoiceImport() {
           .is("archived_at", null),
         supabase
           .from("facturas")
-          .select("id, tipo, numero_documento, rut, tercero_nombre, tercero_id, fecha_emision, fecha_vencimiento, monto, descripcion, tipo_documento, nombre_documento, vendedor_asignado, estado, archivo_url")
+          .select("id, tipo, numero_documento, rut, tercero_nombre, tercero_id, fecha_emision, fecha_vencimiento, monto, monto_exento, monto_neto, monto_iva, descripcion, tipo_documento, nombre_documento, vendedor_asignado, estado, archivo_url")
           .eq("empresa_id", selectedEmpresaId)
           .in("tipo", ["venta", "nota_credito"])
           .is("archived_at", null),
@@ -267,24 +279,6 @@ export default function InvoiceImport() {
       if (!existingInvoiceByKey.has(key)) existingInvoiceByKey.set(key, invoice);
     }
 
-    const findReferencedInvoice = (row: IssuedInvoiceImportRow, client: ClientRow | null) => {
-      if (row.tipo !== "nota_credito" || !row.documentoReferencia) return null;
-
-      const matches = Array.from(existingInvoiceByKey.values()).filter(
-        (invoice) =>
-          invoice.tipo === "venta" &&
-          normalizeDocumentNumber(invoice.numero_documento) === normalizeDocumentNumber(row.documentoReferencia)
-      );
-      if (matches.length === 0) return null;
-
-      return (
-        matches.find((invoice) => client?.id && invoice.tercero_id === client.id) ||
-        matches.find((invoice) => row.rut && normalizeRut(invoice.rut) === normalizeRut(row.rut)) ||
-        matches.find((invoice) => matchText(invoice.tercero_nombre) === matchText(row.terceroNombre)) ||
-        matches[0]
-      );
-    };
-
     const seenKeys = new Set<string>();
     let duplicateRows = 0;
     let insertedRows = 0;
@@ -311,7 +305,6 @@ export default function InvoiceImport() {
         row.tipo === "nota_credito" && row.documentoReferencia
           ? [row.descripcion, `Factura asociada: ${row.documentoReferencia}`].filter(Boolean).join(" | ")
           : row.descripcion;
-      const referencedInvoice = findReferencedInvoice(row, client);
       const basePayload = {
         empresa_id: selectedEmpresaId,
         tipo: row.tipo,
@@ -322,6 +315,10 @@ export default function InvoiceImport() {
         fecha_vencimiento: dueDate,
         numero_documento: row.numeroDocumento,
         monto: row.monto,
+        monto_neto: row.montoNeto ?? null,
+        monto_iva: row.montoIva ?? null,
+        monto_exento: row.montoExento ?? (row.montoNeto === 0 ? row.monto : null),
+        origen_importacion: "sii_ventas",
         descripcion: descriptionWithReference,
         tipo_documento: row.tipoDocumento,
         nombre_documento: row.nombreDocumento,
@@ -335,17 +332,19 @@ export default function InvoiceImport() {
 
       const existing = existingInvoiceByKey.get(key);
       if (existing) {
-        if (row.tipo === "nota_credito" && referencedInvoice && existing.descripcion !== descriptionWithReference) {
-          const { error } = await supabase
-            .from("facturas")
-            .update({
-              descripcion: descriptionWithReference || existing.descripcion,
-            })
-            .eq("id", existing.id)
-            .eq("empresa_id", selectedEmpresaId);
-          if (error) throw new Error(`No se pudo vincular la nota de crédito ${row.numeroDocumento}: ${error.message}`);
-          updatedRows += 1;
-        }
+        const { error } = await supabase
+          .from("facturas")
+          .update({
+            descripcion: descriptionWithReference || existing.descripcion,
+            ...(row.montoNeto != null ? { monto_neto: row.montoNeto } : {}),
+            ...(row.montoIva != null ? { monto_iva: row.montoIva } : {}),
+            ...(row.montoExento != null || row.montoNeto === 0 ? { monto_exento: row.montoExento ?? row.monto } : {}),
+            ...(row.montoNeto != null || row.montoIva != null ? { origen_importacion: "sii_ventas" } : {}),
+          })
+          .eq("id", existing.id)
+          .eq("empresa_id", selectedEmpresaId);
+        if (error) throw new Error(`No se pudo actualizar la factura ${row.numeroDocumento}: ${error.message}`);
+        updatedRows += 1;
         duplicateRows += 1;
         duplicateMessages.push(`Folio ${row.numeroDocumento}: ya existe para ${existing.tercero_nombre || row.terceroNombre}.`);
       } else {
@@ -389,6 +388,177 @@ export default function InvoiceImport() {
       filename: file.name,
       notes: "Importación de emitidas 6 meses",
     });
+  };
+
+  const fetchPurchaseSupportData = async () => {
+    const [{ data: terceros, error: tercerosError }, { data: invoices, error: invoicesError }, { data: category, error: categoryError }] =
+      await Promise.all([
+        supabase
+          .from("terceros")
+          .select("id, razon_social, rut, tipo")
+          .eq("empresa_id", selectedEmpresaId)
+          .eq("estado", "activo")
+          .or("es_trabajador.is.null,es_trabajador.eq.false"),
+        supabase
+          .from("facturas")
+          .select("id, tipo, numero_documento, rut, tercero_nombre, tercero_id, fecha_emision, monto, tipo_documento")
+          .eq("empresa_id", selectedEmpresaId)
+          .in("tipo", ["compra", "nota_credito_compra"])
+          .is("archived_at", null),
+        supabase
+          .from("treasury_categories")
+          .select("id")
+          .eq("empresa_id", selectedEmpresaId)
+          .eq("code", "suppliers")
+          .maybeSingle(),
+      ]);
+
+    if (tercerosError) throw tercerosError;
+    if (invoicesError) throw invoicesError;
+    if (categoryError) throw categoryError;
+
+    return {
+      terceros: (terceros || []) as SupplierRow[],
+      invoices: (invoices || []) as InvoiceRow[],
+      suppliersCategoryId: category?.id || null,
+    };
+  };
+
+  const ensurePurchaseSuppliers = async (rows: PurchaseInvoiceImportRow[], terceros: SupplierRow[]) => {
+    const byRut = new Map<string, SupplierRow>();
+    const byName = new Map<string, SupplierRow>();
+    for (const tercero of terceros) {
+      if (tercero.rut) byRut.set(normalizeRut(tercero.rut) || "", tercero);
+      byName.set(matchText(tercero.razon_social), tercero);
+    }
+
+    let createdCount = 0;
+    for (const row of rows) {
+      const existing =
+        (row.rut && byRut.get(normalizeRut(row.rut) || "")) ||
+        byName.get(matchText(row.terceroNombre));
+      if (existing) {
+        if (existing.tipo === "cliente") {
+          const { error } = await supabase
+            .from("terceros")
+            .update({ tipo: "ambos" })
+            .eq("id", existing.id)
+            .eq("empresa_id", selectedEmpresaId);
+          if (error) throw new Error(`No se pudo habilitar como proveedor a ${row.terceroNombre}: ${error.message}`);
+          existing.tipo = "ambos";
+        }
+        continue;
+      }
+
+      const { data, error } = await supabase
+        .from("terceros")
+        .insert({
+          empresa_id: selectedEmpresaId,
+          rut: normalizeRut(row.rut),
+          razon_social: row.terceroNombre,
+          tipo: "proveedor",
+          estado: "activo",
+          es_trabajador: false,
+        })
+        .select("id, razon_social, rut, tipo")
+        .single();
+      if (error) throw new Error(`No se pudo crear el proveedor ${row.terceroNombre}: ${error.message}`);
+      const supplier = data as SupplierRow;
+      if (supplier.rut) byRut.set(normalizeRut(supplier.rut) || "", supplier);
+      byName.set(matchText(supplier.razon_social), supplier);
+      createdCount += 1;
+    }
+
+    return { createdCount, byRut, byName };
+  };
+
+  const processSiiPurchaseImport = async (file: File) => {
+    const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
+    const rows = XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: "", raw: true });
+    const headers = (rows[0] || []).map((value) => String(value).toLowerCase());
+    if (!headers.some((header) => header.includes("rut proveedor")) || !headers.some((header) => header.includes("monto iva recuperable"))) {
+      throw new Error("El archivo no corresponde al Registro de Compras del SII.");
+    }
+
+    const parsedRows = buildInvoiceObjectsFromWorksheet(rows, 0).map((row) => normalizeSiiPurchaseInvoiceImportRow(row));
+    const validRows = parsedRows.filter(Boolean) as PurchaseInvoiceImportRow[];
+    const rejectedRows = parsedRows.length - validRows.length;
+    const support = await fetchPurchaseSupportData();
+    const { createdCount, byRut, byName } = await ensurePurchaseSuppliers(validRows, support.terceros);
+    const existingByKey = new Map<string, InvoiceRow>();
+    for (const invoice of support.invoices) {
+      const key = [invoice.tipo, normalizeRut(invoice.rut) || matchText(invoice.tercero_nombre), normalizeDocumentNumber(invoice.numero_documento)].join("|");
+      existingByKey.set(key, invoice);
+    }
+
+    let insertedRows = 0;
+    let updatedRows = 0;
+    let duplicateRows = 0;
+    const seenKeys = new Set<string>();
+    for (const row of validRows) {
+      const supplier =
+        (row.rut && byRut.get(normalizeRut(row.rut) || "")) ||
+        byName.get(matchText(row.terceroNombre));
+      if (!supplier) throw new Error(`No se encontró el proveedor ${row.terceroNombre} después de crearlo.`);
+      const key = [row.tipo, normalizeRut(row.rut) || matchText(row.terceroNombre), normalizeDocumentNumber(row.numeroDocumento)].join("|");
+      if (seenKeys.has(key)) {
+        duplicateRows += 1;
+        continue;
+      }
+      seenKeys.add(key);
+
+      const payload = {
+        empresa_id: selectedEmpresaId,
+        tipo: row.tipo,
+        tercero_id: supplier.id,
+        tercero_nombre: row.terceroNombre,
+        rut: row.rut,
+        fecha_emision: row.fechaEmision,
+        fecha_vencimiento: row.fechaEmision,
+        numero_documento: row.numeroDocumento,
+        monto: row.monto,
+        monto_neto: row.montoNeto,
+        monto_iva: row.montoIva,
+        monto_exento: row.montoExento,
+        descripcion: [row.descripcion, row.documentoReferencia ? `Documento asociado: ${row.documentoReferencia}` : null].filter(Boolean).join(" | ") || null,
+        tipo_documento: row.tipoDocumento,
+        nombre_documento: row.nombreDocumento,
+        estado: row.tipo === "compra" ? statusFromDueDate(row.fechaEmision) : "pagada",
+        planned_cash_date: row.fechaEmision,
+        treasury_priority: "normal",
+        treasury_category_id: support.suppliersCategoryId,
+        origen_importacion: "sii_compras",
+      };
+      const existing = existingByKey.get(key);
+      if (existing) {
+        const { error } = await supabase
+          .from("facturas")
+          .update(payload)
+          .eq("id", existing.id)
+          .eq("empresa_id", selectedEmpresaId);
+        if (error) throw new Error(`No se pudo actualizar la compra ${row.numeroDocumento}: ${error.message}`);
+        updatedRows += 1;
+      } else {
+        const { error } = await supabase.from("facturas").insert(payload);
+        if (error) throw new Error(`No se pudo insertar la compra ${row.numeroDocumento}: ${error.message}`);
+        insertedRows += 1;
+      }
+    }
+
+    const importSummary: ImportSummary = {
+      filename: file.name,
+      totalRows: parsedRows.length,
+      validRows: validRows.length,
+      insertedRows,
+      updatedRows,
+      duplicateRows,
+      rejectedRows,
+      createdClients: createdCount,
+      createdCounterpartyLabel: "proveedores",
+      notes: "Registro de Compras del SII",
+    };
+    await registerImportRun("purchases", importSummary);
+    setSummary((current) => ({ ...current, purchases: importSummary }));
   };
 
   const stageIssuedPdfFiles = async (files: File[]) => {
@@ -586,8 +756,11 @@ export default function InvoiceImport() {
         } else {
           throw new Error("Para emitidas puedes subir un Excel/CSV o varios PDF, pero no mezclar formatos.");
         }
-      } else {
+      } else if (mode === "receivables") {
         await processReceivablesImport(files[0]);
+      } else {
+        if (files.length !== 1) throw new Error("Selecciona un solo archivo de Registro de Compras del SII.");
+        await processSiiPurchaseImport(files[0]);
       }
     } catch (error: any) {
       console.error("Error importing invoices:", error);
@@ -658,7 +831,7 @@ export default function InvoiceImport() {
           <Button variant="outline" asChild>
             <Link to="/collections">Ver Cobranzas</Link>
           </Button>
-          <Button variant="outline" onClick={() => setSummary({ issued: null, receivables: null })}>
+          <Button variant="outline" onClick={() => setSummary({ issued: null, receivables: null, purchases: null })}>
             <RefreshCcw className="mr-2 h-4 w-4" />
             Limpiar resumen
           </Button>
@@ -667,14 +840,15 @@ export default function InvoiceImport() {
 
       <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as ImportMode)}>
         <TabsList>
-          <TabsTrigger value="issued">Emitidas</TabsTrigger>
+          <TabsTrigger value="issued">Ventas SII</TabsTrigger>
+          <TabsTrigger value="purchases">Compras SII</TabsTrigger>
           <TabsTrigger value="receivables">Pendientes</TabsTrigger>
         </TabsList>
 
         <TabsContent value="issued">
           <ImportCard
-            title="Facturas emitidas últimos 6 meses"
-            description="Base histórica de ventas. Acepta Excel/CSV y también PDFs de Factura Electrónica generados por el laboratorio. Si el cliente no existe, se crea. Si la factura ya existe, se actualiza sin duplicar."
+            title="Registro de Ventas del SII y facturas emitidas"
+            description="Carga el CSV/Excel del Registro de Ventas del SII o facturas emitidas/PDF. Conserva neto, IVA y total; crea clientes faltantes y no duplica documentos."
             canEdit={canEdit}
             loading={loading}
             inputRef={fileRefs.issued}
@@ -688,6 +862,25 @@ export default function InvoiceImport() {
             summary={summary.issued}
             accept=".xlsx,.xls,.csv,.pdf"
             multiple
+          />
+        </TabsContent>
+
+        <TabsContent value="purchases">
+          <ImportCard
+            title="Registro de Compras del SII"
+            description="Carga el CSV/Excel del Registro de Compras. Crea proveedores faltantes, registra neto, IVA y total, y no duplica documentos del mismo proveedor. Las notas de crédito de compra se registran como rebaja de gasto para el P/L."
+            canEdit={canEdit}
+            loading={loading}
+            inputRef={fileRefs.purchases}
+            onChange={(event) => void handleFileImport("purchases", event)}
+            onFilesSelected={(files) => void importFiles("purchases", files)}
+            pendingIssuedPdfItems={[]}
+            pendingIssuedPdfValidRows={0}
+            pendingIssuedPdfErrors={[]}
+            onAcceptPendingPdfImport={() => undefined}
+            onClearPendingPdfImport={() => undefined}
+            summary={summary.purchases}
+            accept=".xlsx,.xls,.csv"
           />
         </TabsContent>
 
@@ -887,7 +1080,7 @@ function ImportCard({
           <div className="rounded-xl border border-emerald-200 p-4 text-sm">
             <div className="font-medium text-emerald-700">Importación completada: {summary.filename}</div>
             <div className="mt-1 text-muted-foreground">
-              {summary.validRows} válidas de {summary.totalRows}. {summary.insertedRows} insertadas, {summary.updatedRows} actualizadas, {summary.duplicateRows} duplicadas, {summary.rejectedRows} rechazadas, {summary.createdClients} clientes creados.
+              {summary.validRows} válidas de {summary.totalRows}. {summary.insertedRows} insertadas, {summary.updatedRows} actualizadas, {summary.duplicateRows} duplicadas, {summary.rejectedRows} rechazadas, {summary.createdClients} {summary.createdCounterpartyLabel || "clientes"} creados.
             </div>
           </div>
         )}

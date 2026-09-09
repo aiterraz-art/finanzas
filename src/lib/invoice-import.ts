@@ -6,7 +6,7 @@ import {
   normalizeText,
 } from "@/lib/treasury";
 
-export type InvoiceImportSourceKind = "issued" | "receivables";
+export type InvoiceImportSourceKind = "issued" | "receivables" | "purchases";
 
 export type InvoiceImportDetection = {
   kind: InvoiceImportSourceKind | "unknown";
@@ -23,6 +23,7 @@ export type IssuedInvoiceImportRow = {
   monto: number;
   montoNeto?: number | null;
   montoIva?: number | null;
+  montoExento?: number | null;
   descripcion: string | null;
   tipoDocumento: string | null;
   nombreDocumento: string | null;
@@ -42,6 +43,22 @@ export type ReceivableInvoiceImportRow = {
   diasMora?: number | null;
   descripcion?: string | null;
   tipoDocumento?: string | null;
+};
+
+export type PurchaseInvoiceImportRow = {
+  numeroDocumento: string;
+  rut: string | null;
+  terceroNombre: string;
+  fechaEmision: string;
+  monto: number;
+  montoNeto: number | null;
+  montoIva: number | null;
+  montoExento: number | null;
+  tipoDocumento: string | null;
+  nombreDocumento: string | null;
+  descripcion: string | null;
+  tipo: "compra" | "nota_credito_compra";
+  documentoReferencia: string | null;
 };
 
 type RawSheetRow = Record<string, unknown>;
@@ -189,6 +206,17 @@ const normalizeInvoiceDateInput = (value: unknown) => {
   return normalizeDateInput(text);
 };
 
+const normalizeSiiDateInput = (value: unknown) => {
+  const text = sanitizeImportText(value);
+  const slashMatch = text.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/);
+  if (slashMatch) {
+    const [, dd, mm, yyyy] = slashMatch;
+    const year = yyyy.length === 2 ? `20${yyyy}` : yyyy;
+    return `${year}-${mm.padStart(2, "0")}-${dd.padStart(2, "0")}`;
+  }
+  return normalizeInvoiceDateInput(value);
+};
+
 const normalizeSpanishLongDate = (value: string) => {
   const normalized = sanitizeImportText(value)
     .toLowerCase()
@@ -216,7 +244,22 @@ const inferIssuedDocumentType = (values: Array<string | null | undefined>) => {
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
-  return haystack.includes("nota") && haystack.includes("credit") ? "nota_credito" as const : "venta" as const;
+  return haystack.includes("nota") && haystack.includes("credit") || /(^|\s)61(\s|$)/.test(haystack)
+    ? "nota_credito" as const
+    : "venta" as const;
+};
+
+const siiDocumentName = (tipoDocumento: string | null) => {
+  switch (tipoDocumento) {
+    case "33":
+      return "Factura electrónica";
+    case "34":
+      return "Factura no afecta o exenta electrónica";
+    case "61":
+      return "Nota de crédito electrónica";
+    default:
+      return null;
+  }
 };
 
 export const extractReferencedDocumentNumber = (value: unknown) => {
@@ -305,19 +348,23 @@ export const normalizeIssuedInvoiceImportRow = (rawRow: RawSheetRow): IssuedInvo
     sanitizeImportText(
       getValueFromRow(rawRow, "cliente", "razon social", "nombre cliente", "nombre del cliente", "nombre")
     ) || "";
-  const fechaEmision = normalizeInvoiceDateInput(
-    getValueFromRow(rawRow, "fecha emision", "emision", "fecha")
-  );
+  const siiDocumentDate = getValueFromRow(rawRow, "fecha docto");
+  const fechaEmision = siiDocumentDate === undefined
+    ? normalizeInvoiceDateInput(getValueFromRow(rawRow, "fecha emision", "emision", "fecha"))
+    : normalizeSiiDateInput(siiDocumentDate);
   const fechaVencimiento = normalizeInvoiceDateInput(
     getValueFromRow(rawRow, "fecha vencimiento", "vencimiento")
   );
-  const monto = normalizeMoneyInput(
-    getValueFromRow(rawRow, "monto", "monto total", "total", "importe", "saldo")
+  const monto = normalizeInvoiceMoneyValue(
+    getValueFromRow(rawRow, "monto total", "total", "monto", "importe", "saldo")
   );
+  const montoNeto = normalizeInvoiceMoneyValue(getValueFromRow(rawRow, "monto neto", "neto"));
+  const montoIva = normalizeInvoiceMoneyValue(getValueFromRow(rawRow, "monto iva", "iva"));
+  const montoExento = normalizeInvoiceMoneyValue(getValueFromRow(rawRow, "monto exento", "exento"));
   const tipoDocumento =
     sanitizeImportText(getValueFromRow(rawRow, "tipo doc", "tipo documento")) || null;
   const nombreDocumento =
-    sanitizeImportText(getValueFromRow(rawRow, "nombre doc", "nombre documento")) || null;
+    sanitizeImportText(getValueFromRow(rawRow, "nombre doc", "nombre documento")) || siiDocumentName(tipoDocumento);
   const vendedorAsignado =
     sanitizeImportText(getValueFromRow(rawRow, "nombre del vendedor", "vendedor", "seller")) || null;
   const descripcion =
@@ -350,14 +397,53 @@ export const normalizeIssuedInvoiceImportRow = (rawRow: RawSheetRow): IssuedInvo
     fechaEmision,
     fechaVencimiento,
     monto,
-    montoNeto: null,
-    montoIva: null,
+    montoNeto,
+    montoIva,
+    montoExento,
     descripcion,
     tipoDocumento,
     nombreDocumento,
     vendedorAsignado,
     tipo,
     documentoReferencia,
+  };
+};
+
+export const normalizeSiiPurchaseInvoiceImportRow = (rawRow: RawSheetRow): PurchaseInvoiceImportRow | null => {
+  const numeroDocumento = sanitizeImportText(getValueFromRow(rawRow, "folio", "numero documento", "numero")) || "";
+  const terceroNombre = sanitizeImportText(
+    getValueFromRow(rawRow, "razon social", "proveedor", "nombre proveedor", "nombre")
+  ) || "";
+  const fechaEmision = normalizeSiiDateInput(
+    getValueFromRow(rawRow, "fecha docto", "fecha emision", "emision", "fecha")
+  );
+  const tipoDocumento = sanitizeImportText(getValueFromRow(rawRow, "tipo doc", "tipo documento")) || null;
+  const monto = normalizeInvoiceMoneyValue(getValueFromRow(rawRow, "monto total", "monto", "total"));
+  const montoNeto = normalizeInvoiceMoneyValue(getValueFromRow(rawRow, "monto neto", "neto"));
+  const montoIva = normalizeInvoiceMoneyValue(
+    getValueFromRow(rawRow, "monto iva recuperable", "monto iva", "iva")
+  );
+  const montoExento = normalizeInvoiceMoneyValue(getValueFromRow(rawRow, "monto exento", "exento"));
+  const referencia = sanitizeImportText(
+    getValueFromRow(rawRow, "folio docto referencia", "folio referencia", "documento referencia")
+  ) || null;
+
+  if (!numeroDocumento || !terceroNombre || !fechaEmision || !monto) return null;
+
+  return {
+    numeroDocumento,
+    rut: normalizeRut(getValueFromRow(rawRow, "rut proveedor", "rut")),
+    terceroNombre,
+    fechaEmision,
+    monto,
+    montoNeto,
+    montoIva,
+    montoExento,
+    tipoDocumento,
+    nombreDocumento: siiDocumentName(tipoDocumento),
+    descripcion: sanitizeImportText(getValueFromRow(rawRow, "tipo compra", "descripcion", "detalle", "glosa")) || null,
+    tipo: tipoDocumento === "61" ? "nota_credito_compra" : "compra",
+    documentoReferencia: referencia,
   };
 };
 
@@ -423,6 +509,7 @@ export const parseIssuedInvoicePdfText = (rawText: string): IssuedInvoiceImportR
     monto,
     montoNeto: montoNeto ?? null,
     montoIva: montoIva ?? null,
+    montoExento: null,
     descripcion,
     tipoDocumento: tipoDocumentoDetectado,
     nombreDocumento: tipoDocumentoDetectado === "FACTURA ELECTRONICA" ? "Factura Electrónica" : "Nota de Crédito Electrónica",

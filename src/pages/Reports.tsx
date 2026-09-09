@@ -34,6 +34,7 @@ export default function Reports() {
         try {
             const now = new Date();
             const startOfCurrentMonth = startOfMonth(now);
+            const endOfCurrentMonth = endOfMonth(now);
             const startOfPrevMonth = startOfMonth(subMonths(now, 1));
             const endOfPrevMonth = endOfMonth(subMonths(now, 1));
             const sixMonthsAgo = startOfMonth(subMonths(now, 5));
@@ -43,7 +44,9 @@ export default function Reports() {
                 .from('facturas')
                 .select('*')
                 .eq('empresa_id', selectedEmpresaId)
-                .gte('fecha_emision', format(startOfCurrentMonth, 'yyyy-MM-dd'));
+                .gte('fecha_emision', format(startOfCurrentMonth, 'yyyy-MM-dd'))
+                .lte('fecha_emision', format(endOfCurrentMonth, 'yyyy-MM-dd'))
+                .is('archived_at', null);
 
             // 2. Fetch previous month data for comparison
             const { data: prevMonthInvoices } = await supabase
@@ -51,7 +54,8 @@ export default function Reports() {
                 .select('*')
                 .eq('empresa_id', selectedEmpresaId)
                 .gte('fecha_emision', format(startOfPrevMonth, 'yyyy-MM-dd'))
-                .lte('fecha_emision', format(endOfPrevMonth, 'yyyy-MM-dd'));
+                .lte('fecha_emision', format(endOfPrevMonth, 'yyyy-MM-dd'))
+                .is('archived_at', null);
 
             // 3. Fetch all pending for receivables KPI
             const { data: pendingInvoices } = await supabase
@@ -59,36 +63,48 @@ export default function Reports() {
                 .select('monto')
                 .eq('empresa_id', selectedEmpresaId)
                 .eq('tipo', 'venta')
-                .eq('estado', 'pendiente');
+                .in('estado', ['pendiente', 'morosa', 'abonada'])
+                .is('archived_at', null);
 
             // 4. Fetch last 6 months for chart
             const { data: historicalInvoices } = await supabase
                 .from('facturas')
-                .select('tipo, monto, fecha_emision, created_at, estado')
+                .select('tipo, monto, monto_neto, monto_exento, fecha_emision, created_at, estado')
                 .eq('empresa_id', selectedEmpresaId)
                 .gte('fecha_emision', format(sixMonthsAgo, 'yyyy-MM-dd'))
-                .eq('estado', 'pagada');
+                .in('tipo', ['venta', 'compra', 'nota_credito', 'nota_credito_compra'])
+                .is('archived_at', null);
 
             // 5. Fetch recent transactions for details
             const { data: recent } = await supabase
                 .from('facturas')
                 .select('*')
                 .eq('empresa_id', selectedEmpresaId)
+                .is('archived_at', null)
                 .order('fecha_emision', { ascending: false })
                 .limit(20);
 
-            // Calculations
-            const calcInvoices = (list: any[] | null, type: string, status?: string) => {
+            const pnlAmount = (invoice: any) => {
+                const net = invoice.monto_neto == null ? null : Number(invoice.monto_neto);
+                const exempt = invoice.monto_exento == null ? null : Number(invoice.monto_exento);
+                return net !== null || exempt !== null
+                    ? (Number.isFinite(net || 0) ? net || 0 : 0) + (Number.isFinite(exempt || 0) ? exempt || 0 : 0)
+                    : Number(invoice.monto || 0);
+            };
+            const calculatePnl = (list: any[] | null, side: 'income' | 'expense') => {
                 if (!list) return 0;
-                return list
-                    .filter(inv => inv.tipo === type && (!status || inv.estado === status))
-                    .reduce((sum, inv) => sum + Number(inv.monto), 0);
+                return list.reduce((sum, invoice) => {
+                    const isIncome = invoice.tipo === 'venta' || invoice.tipo === 'nota_credito';
+                    if ((side === 'income') !== isIncome) return sum;
+                    const sign = invoice.tipo === 'nota_credito' || invoice.tipo === 'nota_credito_compra' ? -1 : 1;
+                    return sum + sign * pnlAmount(invoice);
+                }, 0);
             };
 
-            const incomeCurr = calcInvoices(currentMonthInvoices, 'venta', 'pagada');
-            const expensesCurr = calcInvoices(currentMonthInvoices, 'compra', 'pagada');
-            const incomePrev = calcInvoices(prevMonthInvoices, 'venta', 'pagada');
-            const expensesPrev = calcInvoices(prevMonthInvoices, 'compra', 'pagada');
+            const incomeCurr = calculatePnl(currentMonthInvoices, 'income');
+            const expensesCurr = calculatePnl(currentMonthInvoices, 'expense');
+            const incomePrev = calculatePnl(prevMonthInvoices, 'income');
+            const expensesPrev = calculatePnl(prevMonthInvoices, 'expense');
 
             const incomeChange = incomePrev === 0 ? 100 : ((incomeCurr - incomePrev) / incomePrev) * 100;
             const expenseChange = expensesPrev === 0 ? 100 : ((expensesCurr - expensesPrev) / expensesPrev) * 100;
@@ -106,11 +122,11 @@ export default function Reports() {
 
             // Top Clients (Current Month)
             const clientGroups: Record<string, { amount: number, count: number }> = {};
-            currentMonthInvoices?.filter(inv => inv.tipo === 'venta').forEach(inv => {
+            currentMonthInvoices?.filter(inv => inv.tipo === 'venta' || inv.tipo === 'nota_credito').forEach(inv => {
                 const name = inv.tercero_nombre || 'S/N';
                 if (!clientGroups[name]) clientGroups[name] = { amount: 0, count: 0 };
-                clientGroups[name].amount += Number(inv.monto);
-                clientGroups[name].count += 1;
+                clientGroups[name].amount += (inv.tipo === 'nota_credito' ? -1 : 1) * pnlAmount(inv);
+                clientGroups[name].count += inv.tipo === 'venta' ? 1 : 0;
             });
 
             const top = Object.entries(clientGroups)
@@ -132,13 +148,8 @@ export default function Reports() {
                     return isSameMonth(invDate, d);
                 }) || [];
 
-                const inc = monthInvoices
-                    .filter(inv => inv.tipo === 'venta')
-                    .reduce((sum, inv) => sum + Number(inv.monto), 0);
-
-                const exp = monthInvoices
-                    .filter(inv => inv.tipo === 'compra')
-                    .reduce((sum, inv) => sum + Number(inv.monto), 0);
+                const inc = calculatePnl(monthInvoices, 'income');
+                const exp = calculatePnl(monthInvoices, 'expense');
 
                 months.push({
                     name: monthName,
@@ -191,8 +202,8 @@ export default function Reports() {
         <div className="container mx-auto py-6 space-y-8">
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                 <div>
-                    <h2 className="text-3xl font-bold tracking-tight">Reportes Financieros</h2>
-                    <p className="text-muted-foreground">Análisis de rendimiento, ingresos y gastos actualizados.</p>
+                    <h2 className="text-3xl font-bold tracking-tight">P/L y Reportes Financieros</h2>
+                    <p className="text-muted-foreground">Resultado por devengo según la fecha de emisión de facturas, independiente del cobro o pago bancario.</p>
                 </div>
                 <div className="flex items-center space-x-2">
                     <Button variant="outline" onClick={fetchReportData} className="gap-2">
@@ -216,7 +227,7 @@ export default function Reports() {
                     <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
                         <Card className="border-l-4 border-l-green-500 shadow-sm hover:shadow-md transition-shadow">
                             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                                <CardTitle className="text-sm font-medium">Ingresos Totales (Mes)</CardTitle>
+                                <CardTitle className="text-sm font-medium">Ingresos netos (Mes)</CardTitle>
                                 <DollarSign className="h-4 w-4 text-green-600" />
                             </CardHeader>
                             <CardContent>
@@ -233,7 +244,7 @@ export default function Reports() {
 
                         <Card className="border-l-4 border-l-red-500 shadow-sm hover:shadow-md transition-shadow">
                             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                                <CardTitle className="text-sm font-medium">Gastos Operativos</CardTitle>
+                                <CardTitle className="text-sm font-medium">Compras y gastos netos</CardTitle>
                                 <DollarSign className="h-4 w-4 text-red-600" />
                             </CardHeader>
                             <CardContent>
@@ -250,7 +261,7 @@ export default function Reports() {
 
                         <Card className="border-l-4 border-l-primary shadow-sm hover:shadow-md transition-shadow">
                             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                                <CardTitle className="text-sm font-medium">Beneficio Neto</CardTitle>
+                                <CardTitle className="text-sm font-medium">Resultado P/L</CardTitle>
                                 <DollarSign className="h-4 w-4 text-primary" />
                             </CardHeader>
                             <CardContent>

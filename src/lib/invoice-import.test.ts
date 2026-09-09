@@ -7,6 +7,7 @@ import {
   parseIssuedInvoicePdfText,
   normalizeIssuedInvoiceImportRow,
   normalizeReceivableInvoiceImportRow,
+  normalizeSiiPurchaseInvoiceImportRow,
 } from "@/lib/invoice-import";
 import { buildObjectsFromWorksheetRows } from "@/lib/treasury";
 
@@ -127,6 +128,41 @@ describe("invoice import helpers", () => {
     expect(parsed).not.toBeNull();
     expect(parsed?.tipo).toBe("nota_credito");
     expect(parsed?.documentoReferencia).toBe("57");
+  });
+
+  it("parses the SII sales register including net, VAT and credit notes", () => {
+    const rows = [
+      ["Nro", "Tipo Doc", "Tipo Venta", "Rut cliente", "Razon Social", "Folio", "Fecha Docto", "Monto Exento", "Monto Neto", "Monto IVA", "Monto total"],
+      ["1", "61", "Del Giro", "76.921.029-6", "Cliente SII", "38", "13/08/2026", "0", "942015", "178983", "1120998"],
+    ];
+
+    const detection = detectIssuedInvoiceWorksheetFormat(rows);
+    const parsed = normalizeIssuedInvoiceImportRow(
+      buildObjectsFromWorksheetRows(rows, detection.headerRowIndex!)[0]
+    );
+
+    expect(parsed).not.toBeNull();
+    expect(parsed?.tipo).toBe("nota_credito");
+    expect(parsed?.montoNeto).toBe(942015);
+    expect(parsed?.montoIva).toBe(178983);
+    expect(parsed?.monto).toBe(1120998);
+  });
+
+  it("parses the SII purchases register and identifies purchase credit notes", () => {
+    const rows = [
+      ["Nro", "Tipo Doc", "Tipo Compra", "RUT Proveedor", "Razon Social", "Folio", "Fecha Docto", "Monto Exento", "Monto Neto", "Monto IVA Recuperable", "Monto Total", "Folio Docto. Referencia"],
+      ["1", "61", "Del Giro", "77.890.021-1", "Proveedor SII", "2994", "01/08/2026", "0", "19990", "3798", "23788", "2990"],
+    ];
+    const parsed = normalizeSiiPurchaseInvoiceImportRow(buildObjectsFromWorksheetRows(rows, 0)[0]);
+
+    expect(parsed).not.toBeNull();
+    expect(parsed?.tipo).toBe("nota_credito_compra");
+    expect(parsed?.rut).toBe("77890021-1");
+    expect(parsed?.fechaEmision).toBe("2026-08-01");
+    expect(parsed?.montoNeto).toBe(19990);
+    expect(parsed?.montoIva).toBe(3798);
+    expect(parsed?.monto).toBe(23788);
+    expect(parsed?.documentoReferencia).toBe("2990");
   });
 
   it("parses the SII credit-note reference format used in uploaded PDFs", () => {
