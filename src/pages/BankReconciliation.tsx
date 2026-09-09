@@ -153,6 +153,7 @@ type QuickExpenseForm = {
   notes: string;
   isRecurring: boolean;
   frequency: "weekly" | "biweekly" | "monthly" | "quarterly" | "annual";
+  accrualMonth: string;
 };
 
 type AdvanceForm = {
@@ -315,6 +316,7 @@ export default function BankReconciliation() {
     notes: "",
     isRecurring: false,
     frequency: "monthly",
+    accrualMonth: new Date().toISOString().slice(0, 7),
   });
   const [savingQuickExpense, setSavingQuickExpense] = useState(false);
   const [quickCapitalForm, setQuickCapitalForm] = useState<QuickCapitalForm>({
@@ -349,6 +351,7 @@ export default function BankReconciliation() {
     [outflowCategories, quickExpenseForm.categoryId]
   );
   const needsRenditionNumber = selectedQuickExpenseCategory?.code === "reimbursements";
+  const needsAccrualMonth = ["payroll", "professional_fees"].includes(selectedQuickExpenseCategory?.code || "");
   const internalTransferCategoryId = useMemo(
     () => categories.find((category) => category.active && category.code === "internal_transfers")?.id || "",
     [categories]
@@ -383,6 +386,7 @@ export default function BankReconciliation() {
       notes: "",
       isRecurring: false,
       frequency: "monthly",
+      accrualMonth: selectedTxn.fecha_movimiento.slice(0, 7),
     });
   }, [selectedTxn]);
 
@@ -1323,6 +1327,10 @@ export default function BankReconciliation() {
       alert("Ingresa el número de rendición para este egreso.");
       return;
     }
+    if (needsAccrualMonth && !/^\d{4}-\d{2}$/.test(quickExpenseForm.accrualMonth)) {
+      alert("Selecciona el mes al que corresponde esta remuneración u honorario.");
+      return;
+    }
 
     setSavingQuickExpense(true);
     try {
@@ -1392,6 +1400,7 @@ export default function BankReconciliation() {
         is_estimated: false,
         due_date: selectedTxn.fecha_movimiento,
         expected_date: selectedTxn.fecha_movimiento,
+        accrual_month: needsAccrualMonth ? `${quickExpenseForm.accrualMonth}-01` : null,
         priority: quickExpenseForm.priority,
         status: "paid" as const,
         notes: commitmentNotes || null,
@@ -3010,6 +3019,17 @@ export default function BankReconciliation() {
                       </SelectContent>
                     </Select>
                   </div>
+                  {needsAccrualMonth && (
+                    <div className="space-y-2">
+                      <Label>Mes que corresponde en P/L</Label>
+                      <Input
+                        type="month"
+                        value={quickExpenseForm.accrualMonth}
+                        onChange={(event) => setQuickExpenseForm((current) => ({ ...current, accrualMonth: event.target.value }))}
+                      />
+                      <p className="text-xs text-muted-foreground">Se reconocerá como gasto de ese mes, aunque el pago bancario sea posterior.</p>
+                    </div>
+                  )}
                   <div className="space-y-2">
                     <Label>Monto</Label>
                     <Input value={formatTreasuryCurrency(Math.abs(selectedTxn.monto), selectedAccount?.moneda || "CLP")} disabled />

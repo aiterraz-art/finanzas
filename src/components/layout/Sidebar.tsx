@@ -11,6 +11,7 @@ import {
     ShieldCheck,
     ClipboardList,
     WalletCards,
+    UsersRound,
     LogOut
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -23,6 +24,7 @@ const navigation = [
     { name: "Flujo de Caja", href: "/cashflow", icon: TrendingUp },
     { name: "Cuentas por pagar", href: "/cuentas-por-pagar", icon: WalletCards },
     { name: "Egresos", href: "/egresos", icon: ReceiptText },
+    { name: "Remuneraciones", href: "/remuneraciones", icon: UsersRound },
     { name: "Rendiciones", href: "/rendiciones", icon: ClipboardList },
     { name: "Clientes", href: "/clientes", icon: Building2 },
     { name: "Importar Facturas", href: "/facturas/importar", icon: BarChart3 },

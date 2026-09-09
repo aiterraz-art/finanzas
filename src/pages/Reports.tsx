@@ -23,14 +23,25 @@ type PnlDocument = {
   estado: string | null;
 };
 
+type PnlPayrollExpense = {
+  id: string;
+  kind: "payroll" | "professional_fees";
+  description: string;
+  counterparty: string | null;
+  amount: number;
+  accrualMonth: string;
+};
+
 type PnlTotals = {
   sales: number;
   salesCreditNotes: number;
   purchases: number;
   purchaseCreditNotes: number;
+  payroll: number;
+  professionalFees: number;
 };
 
-const emptyTotals = (): PnlTotals => ({ sales: 0, salesCreditNotes: 0, purchases: 0, purchaseCreditNotes: 0 });
+const emptyTotals = (): PnlTotals => ({ sales: 0, salesCreditNotes: 0, purchases: 0, purchaseCreditNotes: 0, payroll: 0, professionalFees: 0 });
 const parseLocalDate = (value: string) => new Date(`${value.slice(0, 10)}T12:00:00`);
 
 const documentPnlAmount = (document: PnlDocument) => {
@@ -51,7 +62,7 @@ const addDocumentToTotals = (totals: PnlTotals, document: PnlDocument) => {
 };
 
 const incomeFromTotals = (totals: PnlTotals) => totals.sales - totals.salesCreditNotes;
-const expenseFromTotals = (totals: PnlTotals) => totals.purchases - totals.purchaseCreditNotes;
+const expenseFromTotals = (totals: PnlTotals) => totals.purchases - totals.purchaseCreditNotes + totals.payroll + totals.professionalFees;
 const formatCurrency = (amount: number) => new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", minimumFractionDigits: 0 }).format(amount);
 
 export default function Reports() {
@@ -60,6 +71,7 @@ export default function Reports() {
   const [fromDate, setFromDate] = useState(format(startOfMonth(today), "yyyy-MM-dd"));
   const [toDate, setToDate] = useState(format(today, "yyyy-MM-dd"));
   const [documents, setDocuments] = useState<PnlDocument[]>([]);
+  const [payrollExpenses, setPayrollExpenses] = useState<PnlPayrollExpense[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -72,21 +84,46 @@ export default function Reports() {
     setLoading(true);
     setError(null);
     try {
-      const { data, error: queryError } = await supabase
-        .from("facturas")
-        .select("id, tipo, numero_documento, tercero_nombre, fecha_emision, monto, monto_neto, monto_exento, estado")
-        .eq("empresa_id", selectedEmpresaId)
-        .in("tipo", ["venta", "compra", "nota_credito", "nota_credito_compra"])
-        .gte("fecha_emision", fromDate)
-        .lte("fecha_emision", toDate)
-        .is("archived_at", null)
-        .order("fecha_emision", { ascending: true });
-      if (queryError) throw queryError;
-      setDocuments((data || []) as PnlDocument[]);
+      const [documentsResult, payrollResult] = await Promise.all([
+        supabase
+          .from("facturas")
+          .select("id, tipo, numero_documento, tercero_nombre, fecha_emision, monto, monto_neto, monto_exento, estado")
+          .eq("empresa_id", selectedEmpresaId)
+          .in("tipo", ["venta", "compra", "nota_credito", "nota_credito_compra"])
+          .gte("fecha_emision", fromDate)
+          .lte("fecha_emision", toDate)
+          .is("archived_at", null)
+          .order("fecha_emision", { ascending: true }),
+        supabase
+          .from("cash_commitments")
+          .select("id, description, counterparty, amount, accrual_month, treasury_categories!inner(code)")
+          .eq("empresa_id", selectedEmpresaId)
+          .eq("status", "paid")
+          .eq("direction", "outflow")
+          .in("treasury_categories.code", ["payroll", "professional_fees"])
+          .gte("accrual_month", format(startOfMonth(parseLocalDate(fromDate)), "yyyy-MM-dd"))
+          .lte("accrual_month", format(startOfMonth(parseLocalDate(toDate)), "yyyy-MM-dd"))
+          .is("archived_at", null),
+      ]);
+      if (documentsResult.error) throw documentsResult.error;
+      if (payrollResult.error) throw payrollResult.error;
+      setDocuments((documentsResult.data || []) as PnlDocument[]);
+      setPayrollExpenses((payrollResult.data || []).map((expense: any) => {
+        const category = Array.isArray(expense.treasury_categories) ? expense.treasury_categories[0] : expense.treasury_categories;
+        return {
+          id: expense.id,
+          kind: category?.code === "professional_fees" ? "professional_fees" : "payroll",
+          description: expense.description || "Sin descripción",
+          counterparty: expense.counterparty || null,
+          amount: Number(expense.amount || 0),
+          accrualMonth: expense.accrual_month,
+        };
+      }));
     } catch (loadError: any) {
       console.error("Error loading P/L:", loadError);
       setError(`No se pudo cargar el P/L: ${loadError.message}`);
       setDocuments([]);
+      setPayrollExpenses([]);
     } finally {
       setLoading(false);
     }
@@ -99,8 +136,12 @@ export default function Reports() {
   const totals = useMemo(() => {
     const next = emptyTotals();
     documents.forEach((document) => addDocumentToTotals(next, document));
+    payrollExpenses.forEach((expense) => {
+      if (expense.kind === "payroll") next.payroll += expense.amount;
+      else next.professionalFees += expense.amount;
+    });
     return next;
-  }, [documents]);
+  }, [documents, payrollExpenses]);
 
   const income = incomeFromTotals(totals);
   const expenses = expenseFromTotals(totals);
@@ -118,6 +159,13 @@ export default function Reports() {
       addDocumentToTotals(current, document);
       monthly.set(key, current);
     });
+    payrollExpenses.forEach((expense) => {
+      const key = expense.accrualMonth.slice(0, 7);
+      const current = monthly.get(key) || emptyTotals();
+      if (expense.kind === "payroll") current.payroll += expense.amount;
+      else current.professionalFees += expense.amount;
+      monthly.set(key, current);
+    });
     const rows: Array<{ key: string; label: string; totals: PnlTotals }> = [];
     let cursor = startOfMonth(parseLocalDate(fromDate));
     const lastMonth = startOfMonth(parseLocalDate(toDate));
@@ -127,7 +175,7 @@ export default function Reports() {
       cursor = addMonths(cursor, 1);
     }
     return rows;
-  }, [documents, fromDate, toDate]);
+  }, [documents, fromDate, payrollExpenses, toDate]);
 
   const setCurrentMonth = () => {
     setFromDate(format(startOfMonth(today), "yyyy-MM-dd"));
@@ -146,6 +194,8 @@ export default function Reports() {
       { Concepto: "Ingresos netos", Monto: income },
       { Concepto: "Compras y gastos documentados", Monto: -totals.purchases },
       { Concepto: "Notas de crédito de compra", Monto: totals.purchaseCreditNotes },
+      { Concepto: "Remuneraciones", Monto: -totals.payroll },
+      { Concepto: "Honorarios", Monto: -totals.professionalFees },
       { Concepto: "Gastos netos", Monto: -expenses },
       { Concepto: "Resultado P/L", Monto: result },
     ];
@@ -157,9 +207,17 @@ export default function Reports() {
       "Monto P/L sin IVA": documentPnlAmount(document) * (document.tipo.includes("nota_credito") ? -1 : 1),
       Estado: document.estado || "Sin estado",
     }));
+    const payrollRows = payrollExpenses.map((expense) => ({
+      Mes: expense.accrualMonth.slice(0, 7),
+      Tipo: expense.kind === "payroll" ? "Remuneración" : "Honorario",
+      Beneficiario: expense.counterparty || "Sin beneficiario",
+      Detalle: expense.description,
+      Monto: -expense.amount,
+    }));
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(summaryRows), "P-L");
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(detailRows), "Documentos");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(payrollRows), "Remuneraciones y honorarios");
     XLSX.writeFile(workbook, `PL_${fromDate}_${toDate}.xlsx`);
   };
 
@@ -176,7 +234,7 @@ export default function Reports() {
           <Button variant="outline" onClick={setCurrentMonth}>Este mes</Button>
           <Button variant="outline" onClick={setCurrentYear}>Año actual</Button>
           <Button variant="outline" onClick={() => void loadPnl()}><RefreshCw className="mr-2 h-4 w-4" />Actualizar</Button>
-          <Button onClick={exportToExcel} disabled={documents.length === 0}><Download className="mr-2 h-4 w-4" />Exportar Excel</Button>
+          <Button onClick={exportToExcel} disabled={documents.length + payrollExpenses.length === 0}><Download className="mr-2 h-4 w-4" />Exportar Excel</Button>
         </div>
       </div>
 
@@ -192,7 +250,7 @@ export default function Reports() {
 
       <div className="grid gap-4 md:grid-cols-3">
         <MetricCard label="Ingresos netos" amount={income} description="Ventas menos notas de crédito emitidas." tone="emerald" />
-        <MetricCard label="Gastos netos" amount={expenses} description="Compras menos notas de crédito de proveedores." tone="rose" />
+        <MetricCard label="Gastos netos" amount={expenses} description="Compras, remuneraciones y honorarios, netos de notas de crédito." tone="rose" />
         <Card className={result >= 0 ? "border-l-4 border-l-primary" : "border-l-4 border-l-destructive"}>
           <CardHeader className="pb-2"><CardDescription>Resultado del período</CardDescription><CardTitle className="text-2xl">{formatCurrency(result)}</CardTitle></CardHeader>
           <CardContent className="flex items-center gap-2 text-sm text-muted-foreground">{result >= 0 ? <TrendingUp className="h-4 w-4 text-emerald-600" /> : <TrendingDown className="h-4 w-4 text-destructive" />}Margen {margin.toFixed(1)}%</CardContent>
@@ -208,6 +266,8 @@ export default function Reports() {
             <PnlLine label="Ingresos netos" amount={income} emphasis />
             <PnlLine label="Compras y gastos documentados" amount={-totals.purchases} />
             <PnlLine label="Notas de crédito de compra" amount={totals.purchaseCreditNotes} muted />
+            <PnlLine label="Remuneraciones" amount={-totals.payroll} />
+            <PnlLine label="Honorarios" amount={-totals.professionalFees} />
             <PnlLine label="Gastos netos" amount={-expenses} emphasis />
             <div className="border-t pt-3"><PnlLine label="Resultado P/L" amount={result} emphasis result /></div>
           </CardContent>
@@ -217,9 +277,10 @@ export default function Reports() {
           <CardContent className="space-y-3 text-sm text-muted-foreground">
             <p><strong className="text-foreground">Devengo.</strong> Cada documento entra en el período de su fecha de emisión. Conciliarlo en banco no cambia el resultado.</p>
             <p><strong className="text-foreground">Ingresos.</strong> Facturas de venta menos notas de crédito de venta.</p>
-            <p><strong className="text-foreground">Gastos.</strong> Facturas de compra menos notas de crédito de proveedores.</p>
+            <p><strong className="text-foreground">Gastos.</strong> Facturas de compra menos notas de crédito de proveedores, más remuneraciones y honorarios conciliados.</p>
             <p><strong className="text-foreground">IVA.</strong> Se usa neto + exento; el IVA queda fuera del resultado. Si un documento antiguo no tiene desglose, se usa su total.</p>
-            <p><strong className="text-foreground">No incluido.</strong> Movimientos bancarios, aportes de capital, anticipos y devoluciones no afectan P/L. Las rendiciones y gastos manuales deben respaldarse con su factura de compra para incorporarse.</p>
+            <p><strong className="text-foreground">Devengo de personal.</strong> Remuneraciones y honorarios entran en el mes indicado al conciliarlos, aunque el pago bancario sea otro mes.</p>
+            <p><strong className="text-foreground">No incluido.</strong> Aportes de capital, anticipos y devoluciones no afectan P/L. Las rendiciones y otros gastos manuales deben respaldarse con su factura de compra para incorporarse.</p>
             {legacyDocuments > 0 && <p className="rounded-md bg-amber-50 p-3 text-amber-800">Hay {legacyDocuments} documento(s) sin neto/exento: se calcularon con el monto total.</p>}
           </CardContent>
         </Card>
@@ -229,6 +290,13 @@ export default function Reports() {
         <CardHeader><CardTitle>Resultado mensual</CardTitle><CardDescription>Desglose del período seleccionado.</CardDescription></CardHeader>
         <CardContent className="overflow-x-auto">
           <table className="w-full min-w-[720px] text-sm"><thead className="border-b text-left text-xs uppercase text-muted-foreground"><tr><th className="px-3 py-3">Mes</th><th className="px-3 py-3 text-right">Ingresos netos</th><th className="px-3 py-3 text-right">Gastos netos</th><th className="px-3 py-3 text-right">Resultado</th><th className="px-3 py-3 text-right">Margen</th></tr></thead><tbody>{monthlyRows.map((row) => { const rowIncome = incomeFromTotals(row.totals); const rowExpense = expenseFromTotals(row.totals); const rowResult = rowIncome - rowExpense; return <tr key={row.key} className="border-b last:border-0"><td className="px-3 py-3 capitalize">{row.label}</td><td className="px-3 py-3 text-right">{formatCurrency(rowIncome)}</td><td className="px-3 py-3 text-right">{formatCurrency(rowExpense)}</td><td className={`px-3 py-3 text-right font-semibold ${rowResult >= 0 ? "text-emerald-700" : "text-destructive"}`}>{formatCurrency(rowResult)}</td><td className="px-3 py-3 text-right">{rowIncome > 0 ? `${((rowResult / rowIncome) * 100).toFixed(1)}%` : "—"}</td></tr>; })}</tbody></table>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>Remuneraciones y honorarios incluidos</CardTitle><CardDescription>Se reconocen según el mes de devengo indicado al conciliar el pago.</CardDescription></CardHeader>
+        <CardContent className="overflow-x-auto">
+          <table className="w-full min-w-[700px] text-sm"><thead className="border-b text-left text-xs uppercase text-muted-foreground"><tr><th className="px-3 py-3">Mes P/L</th><th className="px-3 py-3">Tipo</th><th className="px-3 py-3">Beneficiario / detalle</th><th className="px-3 py-3 text-right">Monto</th></tr></thead><tbody>{payrollExpenses.length === 0 ? <tr><td colSpan={4} className="px-3 py-8 text-center text-muted-foreground">No hay remuneraciones u honorarios en este período.</td></tr> : payrollExpenses.map((expense) => <tr key={expense.id} className="border-b last:border-0"><td className="px-3 py-3">{expense.accrualMonth.slice(0, 7)}</td><td className="px-3 py-3">{expense.kind === "payroll" ? "Remuneración" : "Honorario"}</td><td className="px-3 py-3"><div className="font-medium">{expense.counterparty || "Sin beneficiario"}</div><div className="text-xs text-muted-foreground">{expense.description}</div></td><td className="px-3 py-3 text-right font-medium">{formatCurrency(-expense.amount)}</td></tr>)}</tbody></table>
         </CardContent>
       </Card>
 

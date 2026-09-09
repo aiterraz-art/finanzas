@@ -12,6 +12,7 @@ import Rendiciones from "@/pages/Rendiciones";
 import Egresos from "@/pages/Egresos";
 import InvoiceImport from "@/pages/InvoiceImport";
 import Users from "@/pages/Users";
+import PayrollAndFees from "@/pages/PayrollAndFees";
 
 import Login from "@/pages/Login";
 import ResetPassword from "@/pages/ResetPassword";
@@ -69,6 +70,7 @@ function App() {
                 <Route path="cashflow" element={<CashFlow />} />
                 <Route path="flujo-caja" element={<Navigate to="/cashflow" replace />} />
                 <Route path="egresos" element={<Egresos />} />
+                <Route path="remuneraciones" element={<PayrollAndFees />} />
                 <Route path="cheques" element={<Navigate to="/reconciliation" replace />} />
                 <Route path="webpay" element={<Navigate to="/reconciliation" replace />} />
                 <Route path="expenses" element={<Navigate to="/egresos" replace />} />
