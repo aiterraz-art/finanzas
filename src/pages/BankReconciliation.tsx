@@ -102,11 +102,20 @@ type BankMovement = {
     status: string;
     notes: string | null;
   }>;
+  rendition_advances?: Array<{
+    id: string;
+    worker_name: string;
+    rut: string | null;
+    amount: number;
+    remaining_amount: number;
+    status: string;
+    notes: string | null;
+  }>;
 };
 
 type MatchCandidate = {
   id: string;
-  type: "factura" | "rendicion" | "cheque" | "webpay" | "commitment" | "customer";
+  type: "factura" | "rendicion" | "cheque" | "webpay" | "commitment" | "customer" | "rendition_advance";
   label: string;
   subtitle: string;
   amount: number;
@@ -133,7 +142,7 @@ type ImportSummary = {
 const HASH_QUERY_CHUNK = 20;
 const INSERT_CHUNK_SIZE = 200;
 const normalizeInvoiceNumber = (value: unknown) => String(value || "").trim().toLowerCase().replace(/\s+/g, "");
-type InflowMatchSource = "factura" | "cheque" | "webpay" | "anticipo" | "capital" | "transfer";
+type InflowMatchSource = "factura" | "cheque" | "webpay" | "anticipo" | "capital" | "transfer" | "rendition_advance";
 
 type QuickExpenseForm = {
   description: string;
@@ -149,6 +158,13 @@ type QuickExpenseForm = {
 type AdvanceForm = {
   customerId: string;
   customerSearch: string;
+  notes: string;
+};
+
+type RenditionAdvanceForm = {
+  workerName: string;
+  rut: string;
+  issuedAt: string;
   notes: string;
 };
 
@@ -235,6 +251,15 @@ const BANK_MOVEMENT_SELECT = `
     remaining_amount,
     status,
     notes
+  ),
+  rendition_advances (
+    id,
+    worker_name,
+    rut,
+    amount,
+    remaining_amount,
+    status,
+    notes
   )
 `;
 
@@ -269,6 +294,13 @@ export default function BankReconciliation() {
     customerSearch: "",
     notes: "",
   });
+  const [renditionAdvanceForm, setRenditionAdvanceForm] = useState<RenditionAdvanceForm>({
+    workerName: "",
+    rut: "",
+    issuedAt: "",
+    notes: "",
+  });
+  const [savingRenditionAdvance, setSavingRenditionAdvance] = useState(false);
   const [allocateDifferenceAsAdvance, setAllocateDifferenceAsAdvance] = useState(false);
   const [invoiceMismatchDialog, setInvoiceMismatchDialog] = useState<InvoiceMismatchDialogState | null>(null);
   const [loadingCandidates, setLoadingCandidates] = useState(false);
@@ -360,6 +392,12 @@ export default function BankReconciliation() {
       counterparty: "",
       categoryId: defaultCapitalCategoryId,
       notes: selectedTxn.descripcion?.trim() ? `Cartola: ${selectedTxn.descripcion.trim()}` : "",
+    });
+    setRenditionAdvanceForm({
+      workerName: "",
+      rut: "",
+      issuedAt: "",
+      notes: selectedTxn.descripcion?.trim() ? `Devolución según cartola: ${selectedTxn.descripcion.trim()}` : "",
     });
   }, [defaultCapitalCategoryId, selectedTxn]);
 
@@ -524,6 +562,7 @@ export default function BankReconciliation() {
         { data: webpayRows, error: webpayError },
         { data: commitments, error: commitmentsError },
         { data: customers, error: customersError },
+        { data: renditionAdvances, error: renditionAdvancesError },
       ] =
         await Promise.all([
           invoiceQuery.order("fecha_vencimiento", { ascending: true }),
@@ -572,6 +611,15 @@ export default function BankReconciliation() {
                 .eq("estado", "activo")
                 .order("razon_social", { ascending: true })
             : Promise.resolve({ data: [], error: null }),
+          txn.monto >= 0
+            ? supabase
+                .from("rendition_advances")
+                .select("id, worker_name, rut, remaining_amount, issued_at, status, notes")
+                .eq("empresa_id", selectedEmpresaId)
+                .eq("status", "open")
+                .gt("remaining_amount", 0)
+                .order("issued_at", { ascending: true, nullsFirst: true })
+            : Promise.resolve({ data: [], error: null }),
         ]);
 
       if (invoiceError) throw invoiceError;
@@ -581,6 +629,7 @@ export default function BankReconciliation() {
       if (webpayError) throw webpayError;
       if (commitmentsError) throw commitmentsError;
       if (customersError) throw customersError;
+      if (renditionAdvancesError) throw renditionAdvancesError;
 
       const creditNotesByInvoiceId = new Map<string, number>();
       for (const creditNote of creditNotes || []) {
@@ -657,6 +706,19 @@ export default function BankReconciliation() {
             dueDate: row.fecha_abono_esperada || null,
           };
         }),
+        ...((renditionAdvances || []) as any[]).map((advance) => ({
+          id: advance.id,
+          type: "rendition_advance" as const,
+          label: `${advance.worker_name || "Trabajador"} • saldo de rendición`,
+          subtitle: advance.issued_at
+            ? `Anticipo pendiente desde ${formatTreasuryDate(advance.issued_at)}`
+            : "Anticipo pendiente de rendir",
+          amount: Number(advance.remaining_amount || 0),
+          dueDate: advance.issued_at || null,
+          customerName: advance.worker_name || "Trabajador",
+          customerRut: advance.rut || null,
+          status: advance.status || null,
+        })),
         ...((commitments || []) as any[]).map((commitment) => ({
           id: commitment.id,
           type: "commitment" as const,
@@ -753,6 +815,11 @@ export default function BankReconciliation() {
       }
     }
 
+    if (candidate.type === "rendition_advance" && !isAmountMatch(Math.abs(selectedTxn.monto), candidate.amount)) {
+      alert("La devolución debe coincidir con el saldo pendiente del anticipo. Si corresponde a un saldo histórico, regístralo desde esta misma opción.");
+      return;
+    }
+
     setMatchingId(candidate.id);
     try {
       if (candidate.type === "customer") {
@@ -801,9 +868,11 @@ export default function BankReconciliation() {
                     ? "commitment"
                     : candidate.type === "customer"
                       ? "advance"
+                      : candidate.type === "rendition_advance"
+                        ? "rendition_advance"
                   : "factura",
           numero_documento:
-            candidate.type === "cheque" || candidate.type === "webpay" || candidate.type === "commitment" || candidate.type === "customer"
+            candidate.type === "cheque" || candidate.type === "webpay" || candidate.type === "commitment" || candidate.type === "customer" || candidate.type === "rendition_advance"
               ? candidate.label
               : candidate.type === "factura"
                 ? candidate.label
@@ -857,6 +926,19 @@ export default function BankReconciliation() {
         if (error) throw error;
       } else if (candidate.type === "customer") {
         setAdvanceForm({ customerId: "none", customerSearch: "", notes: "" });
+      } else if (candidate.type === "rendition_advance") {
+        const { error } = await supabase
+          .from("rendition_advances")
+          .update({
+            remaining_amount: 0,
+            return_movement_id: selectedTxn.id,
+            returned_at: selectedTxn.fecha_movimiento,
+            status: "settled",
+          })
+          .eq("id", candidate.id)
+          .eq("empresa_id", selectedEmpresaId)
+          .eq("status", "open");
+        if (error) throw error;
       }
 
       setSelectedTxn(null);
@@ -975,7 +1057,8 @@ export default function BankReconciliation() {
     const linkedWebpay = readFirstLinkedRow(txn.webpay_liquidaciones);
     const linkedCommitment = readFirstLinkedRow(txn.cash_commitments);
     const linkedAdvance = readFirstLinkedRow(txn.customer_advances);
-    if (payments.length === 0 && !linkedCheque && !linkedWebpay && !linkedCommitment && !linkedAdvance) return false;
+    const linkedRenditionAdvance = readFirstLinkedRow(txn.rendition_advances);
+    if (payments.length === 0 && !linkedCheque && !linkedWebpay && !linkedCommitment && !linkedAdvance && !linkedRenditionAdvance) return false;
 
     try {
       const facturaIds = payments.map((payment) => payment.factura_id).filter(Boolean) as string[];
@@ -1049,6 +1132,20 @@ export default function BankReconciliation() {
             status: "cancelled",
           })
           .eq("id", linkedAdvance.id)
+          .eq("empresa_id", selectedEmpresaId);
+        if (error) throw error;
+      }
+
+      if (linkedRenditionAdvance) {
+        const { error } = await supabase
+          .from("rendition_advances")
+          .update({
+            remaining_amount: linkedRenditionAdvance.amount,
+            return_movement_id: null,
+            returned_at: null,
+            status: "open",
+          })
+          .eq("id", linkedRenditionAdvance.id)
           .eq("empresa_id", selectedEmpresaId);
         if (error) throw error;
       }
@@ -1361,6 +1458,69 @@ export default function BankReconciliation() {
       alert(`No se pudo registrar la conciliación rápida: ${error.message}`);
     } finally {
       setSavingQuickExpense(false);
+    }
+  };
+
+  const handleCreateRenditionAdvanceReturn = async () => {
+    if (!selectedEmpresaId || !selectedTxn || selectedTxn.monto < 0 || !canEdit) return;
+    const workerName = renditionAdvanceForm.workerName.trim();
+    if (!workerName) {
+      alert("Indica el nombre del trabajador que devolvió el saldo.");
+      return;
+    }
+
+    setSavingRenditionAdvance(true);
+    try {
+      const amount = Math.abs(selectedTxn.monto);
+      const { data: advance, error: advanceError } = await supabase
+        .from("rendition_advances")
+        .insert({
+          empresa_id: selectedEmpresaId,
+          return_movement_id: selectedTxn.id,
+          worker_name: workerName,
+          rut: renditionAdvanceForm.rut.trim() || null,
+          amount,
+          remaining_amount: 0,
+          currency: selectedAccount?.moneda || "CLP",
+          issued_at: renditionAdvanceForm.issuedAt || null,
+          returned_at: selectedTxn.fecha_movimiento,
+          status: "settled",
+          notes: renditionAdvanceForm.notes.trim() || null,
+          created_by: user?.id || null,
+        })
+        .select("id")
+        .single();
+      if (advanceError) throw advanceError;
+
+      const { error: movementError } = await supabase
+        .from("movimientos_banco")
+        .update({
+          estado: "conciliado",
+          tipo_conciliacion: "rendition_advance",
+          numero_documento: `Devolución saldo rendición • ${workerName}`,
+          comentario_tesoreria: `Saldo devuelto por trabajador${renditionAdvanceForm.issuedAt ? ` • anticipo entregado el ${renditionAdvanceForm.issuedAt}` : ""}`,
+        })
+        .eq("id", selectedTxn.id)
+        .eq("empresa_id", selectedEmpresaId);
+      if (movementError) {
+        await supabase
+          .from("rendition_advances")
+          .update({ status: "cancelled", return_movement_id: null, returned_at: null })
+          .eq("id", advance.id)
+          .eq("empresa_id", selectedEmpresaId);
+        throw movementError;
+      }
+
+      setSelectedTxn(null);
+      setCandidates([]);
+      setRenditionAdvanceForm({ workerName: "", rut: "", issuedAt: "", notes: "" });
+      await fetchTransactions();
+      await refreshPositions();
+    } catch (error: any) {
+      console.error("Error registering rendition advance return:", error);
+      alert(`No se pudo registrar la devolución de rendición: ${error.message}`);
+    } finally {
+      setSavingRenditionAdvance(false);
     }
   };
 
@@ -1756,6 +1916,7 @@ export default function BankReconciliation() {
     const webpayInfo = readFirstLinkedRow(selectedTxn.webpay_liquidaciones);
     const commitmentInfo = readFirstLinkedRow(selectedTxn.cash_commitments);
     const advanceInfo = readFirstLinkedRow(selectedTxn.customer_advances);
+    const renditionAdvanceInfo = readFirstLinkedRow(selectedTxn.rendition_advances);
 
     const paymentLines = activePayments.map((payment) => {
       const factura = readFirstLinkedRow(payment.facturas);
@@ -1817,6 +1978,15 @@ export default function BankReconciliation() {
       });
     }
 
+    if (renditionAdvanceInfo) {
+      paymentLines.push({
+        id: renditionAdvanceInfo.id,
+        title: `${renditionAdvanceInfo.worker_name || "Trabajador"}${renditionAdvanceInfo.rut ? ` • ${renditionAdvanceInfo.rut}` : ""}`,
+        subtitle: "Devolución de saldo de rendición",
+        amount: Number(renditionAdvanceInfo.amount || 0),
+      });
+    }
+
     const reconciliationTypeLabel =
       selectedTxn.tipo_conciliacion === "factura"
         ? activePayments.length > 1
@@ -1838,6 +2008,8 @@ export default function BankReconciliation() {
                   : "Egreso / compromiso"
                 : selectedTxn.tipo_conciliacion === "advance"
                   ? "Anticipo cliente"
+                  : selectedTxn.tipo_conciliacion === "rendition_advance"
+                    ? "Devolución de rendición"
                   : "Conciliación";
 
     return {
@@ -2553,6 +2725,7 @@ export default function BankReconciliation() {
                     <SelectItem value="cheque">Cheque</SelectItem>
                     <SelectItem value="webpay">WebPay</SelectItem>
                     <SelectItem value="anticipo">Anticipo cliente</SelectItem>
+                    <SelectItem value="rendition_advance">Devolución de rendición</SelectItem>
                     <SelectItem value="capital">Aporte de capital</SelectItem>
                     <SelectItem value="transfer">Traspaso interno</SelectItem>
                   </SelectContent>
@@ -2564,6 +2737,8 @@ export default function BankReconciliation() {
                         ? "Se mostrarán solo los cheques disponibles para conciliar. Al aceptar pasarán a cobrados."
                       : selectedInflowSource === "webpay"
                         ? "Se mostrarán solo pagos WebPay pendientes de abono."
+                        : selectedInflowSource === "rendition_advance"
+                          ? "Aplica la devolución al saldo pendiente de un trabajador o registra un saldo histórico para conciliar este abono sin afectar el P/L."
                         : selectedInflowSource === "capital"
                           ? "Registra este ingreso como aporte de capital y quedará conciliado de inmediato."
                           : selectedInflowSource === "transfer"
@@ -2571,20 +2746,83 @@ export default function BankReconciliation() {
                           : "Selecciona el cliente para dejar el ingreso completo como anticipo."}
                 </div>
               </div>
-                {(selectedInflowSource === "factura" || selectedInflowSource === "anticipo") && (
+                {(selectedInflowSource === "factura" || selectedInflowSource === "anticipo" || selectedInflowSource === "rendition_advance") && (
                   <div className="mt-4 space-y-2">
-                    <Label>{selectedInflowSource === "factura" ? "Buscar factura" : "Buscar cliente"}</Label>
+                    <Label>
+                      {selectedInflowSource === "factura"
+                        ? "Buscar factura"
+                        : selectedInflowSource === "rendition_advance"
+                          ? "Buscar saldo pendiente"
+                          : "Buscar cliente"}
+                    </Label>
                     <Input
                       value={candidateSearchTerm}
                       onChange={(event) => setCandidateSearchTerm(event.target.value)}
                       placeholder={
                         selectedInflowSource === "factura"
                           ? "Filtra por razón social o número de factura"
-                          : "Filtra por razón social o RUT"
+                          : selectedInflowSource === "rendition_advance"
+                            ? "Filtra por trabajador o RUT"
+                            : "Filtra por razón social o RUT"
                       }
                     />
                   </div>
                 )}
+              </div>
+            )}
+
+            {!loadingCandidates && selectedTxn && selectedTxn.monto >= 0 && selectedInflowSource === "rendition_advance" && (
+              <div className="rounded-xl border border-dashed p-4">
+                <div className="mb-4">
+                  <div className="font-medium">Registrar saldo histórico de rendición</div>
+                  <div className="text-sm text-muted-foreground">
+                    Úsalo cuando el egreso original ya fue conciliado con la rendición y solo falta registrar la devolución del saldo. Este registro no genera ingreso ni gasto.
+                  </div>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>Trabajador</Label>
+                    <Input
+                      value={renditionAdvanceForm.workerName}
+                      onChange={(event) => setRenditionAdvanceForm((current) => ({ ...current, workerName: event.target.value }))}
+                      placeholder="Nombre del trabajador"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>RUT (opcional)</Label>
+                    <Input
+                      value={renditionAdvanceForm.rut}
+                      onChange={(event) => setRenditionAdvanceForm((current) => ({ ...current, rut: event.target.value }))}
+                      placeholder="12.345.678-9"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Fecha del anticipo original (opcional)</Label>
+                    <Input
+                      type="date"
+                      value={renditionAdvanceForm.issuedAt}
+                      onChange={(event) => setRenditionAdvanceForm((current) => ({ ...current, issuedAt: event.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Monto devuelto</Label>
+                    <Input value={formatTreasuryCurrency(Math.abs(selectedTxn.monto), selectedAccount?.moneda || "CLP")} disabled />
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <Label>Nota</Label>
+                    <Textarea
+                      value={renditionAdvanceForm.notes}
+                      onChange={(event) => setRenditionAdvanceForm((current) => ({ ...current, notes: event.target.value }))}
+                      placeholder="Ej.: saldo no rendido de transferencia previa"
+                    />
+                  </div>
+                </div>
+                <div className="mt-4 flex justify-end">
+                  <Button onClick={() => void handleCreateRenditionAdvanceReturn()} disabled={!canEdit || savingRenditionAdvance}>
+                    {savingRenditionAdvance ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
+                    Registrar saldo y conciliar devolución
+                  </Button>
+                </div>
               </div>
             )}
 
@@ -2963,6 +3201,8 @@ export default function BankReconciliation() {
                       ? "No hay cheques disponibles para este ingreso."
                       : selectedInflowSource === "webpay"
                         ? "No hay liquidaciones WebPay pendientes para este ingreso."
+                        : selectedInflowSource === "rendition_advance"
+                          ? "No hay saldos de rendición pendientes. Puedes registrar el saldo histórico arriba."
                         : "No hay clientes disponibles para dejar el anticipo."
                   : "No se encontraron candidatos para este movimiento."}
               </div>
@@ -3000,6 +3240,8 @@ export default function BankReconciliation() {
                               ? "Cheque"
                               : candidate.type === "webpay"
                                 ? "WebPay"
+                                : candidate.type === "rendition_advance"
+                                  ? "Saldo rendición"
                                 : candidate.type === "customer"
                                   ? "Anticipo"
                                   : "Compromiso"}
