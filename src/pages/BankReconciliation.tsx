@@ -501,10 +501,10 @@ export default function BankReconciliation() {
             .in("estado", ["pendiente", "morosa", "abonada", "pagada"])
         : supabase
             .from("facturas")
-            .select("id, numero_documento, tercero_nombre, monto, fecha_vencimiento")
+            .select("id, numero_documento, tercero_nombre, monto, fecha_vencimiento, estado, facturas_pagos(monto_aplicado, estado)")
             .eq("empresa_id", selectedEmpresaId)
             .eq("tipo", "compra")
-            .in("estado", ["pendiente", "morosa"]);
+            .in("estado", ["pendiente", "morosa", "abonada"]);
 
       const creditNotesQuery = txn.monto >= 0
         ? supabase
@@ -606,13 +606,18 @@ export default function BankReconciliation() {
             0
           );
           const amountDifference = Number(Math.abs(absAmount - remainingAmount).toFixed(2));
-          const isSuggested = txn.monto >= 0 && isAmountMatch(absAmount, remainingAmount);
+          const isSuggested = isAmountMatch(absAmount, remainingAmount);
 
           return {
             id: invoice.id,
             type: "factura" as const,
             label: `${invoice.tercero_nombre || "Sin tercero"} • ${invoice.numero_documento || "Sin folio"}`,
-            subtitle: invoice.estado === "pagada" ? "Factura pagada (vincular histórico)" : "Factura abierta",
+            subtitle:
+              invoice.estado === "pagada"
+                ? "Factura pagada (vincular histórico)"
+                : txn.monto < 0
+                  ? "Factura por pagar"
+                  : "Factura abierta",
             amount: remainingAmount,
             dueDate: invoice.fecha_vencimiento || null,
             invoiceNumber: invoice.numero_documento || null,
@@ -2901,18 +2906,18 @@ export default function BankReconciliation() {
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
                       <div className="font-medium">{candidate.label}</div>
-                      {selectedTxn && selectedTxn.monto >= 0 && candidate.type === "factura" && candidate.isSuggested && (
+                      {selectedTxn && candidate.type === "factura" && candidate.isSuggested && (
                         <Badge variant="secondary" className="bg-emerald-100 text-emerald-800 hover:bg-emerald-100">
-                          Sugerida por monto
+                          {selectedTxn.monto < 0 ? "Coincide con el egreso" : "Sugerida por monto"}
                         </Badge>
                       )}
                     </div>
                     <div className="text-sm text-muted-foreground">
                       {candidate.subtitle}
                       {candidate.dueDate ? ` • vence ${formatTreasuryDate(candidate.dueDate)}` : ""}
-                      {selectedTxn && selectedTxn.monto >= 0 && candidate.type === "factura" && candidate.amountDifference !== undefined
+                      {selectedTxn && candidate.type === "factura" && candidate.amountDifference !== undefined
                         ? candidate.isSuggested
-                          ? " • coincide exacto con el ingreso"
+                          ? ` • coincide exacto con el ${selectedTxn.monto < 0 ? "egreso" : "ingreso"}`
                           : ` • diferencia ${formatTreasuryCurrency(candidate.amountDifference, selectedAccount?.moneda || "CLP")}`
                         : ""}
                     </div>
