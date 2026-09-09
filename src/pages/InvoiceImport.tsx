@@ -118,6 +118,53 @@ const inferReceivableDueDate = (row: ReceivableInvoiceImportRow) => {
 const matchText = (value: unknown) => normalizeText(value).toLowerCase();
 const normalizeDocumentNumber = (value: unknown) => matchText(value).replace(/\s+/g, "");
 
+const parseDelimitedRows = (text: string, delimiter: string) => {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let value = "";
+  let quoted = false;
+  const normalizedText = text.replace(/^\uFEFF/, "");
+
+  for (let index = 0; index < normalizedText.length; index += 1) {
+    const character = normalizedText[index];
+    if (character === '"') {
+      if (quoted && normalizedText[index + 1] === '"') {
+        value += '"';
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (character === delimiter && !quoted) {
+      row.push(value);
+      value = "";
+    } else if ((character === "\n" || character === "\r") && !quoted) {
+      if (character === "\r" && normalizedText[index + 1] === "\n") index += 1;
+      row.push(value);
+      if (row.some((cell) => cell !== "")) rows.push(row);
+      row = [];
+      value = "";
+    } else {
+      value += character;
+    }
+  }
+
+  row.push(value);
+  if (row.some((cell) => cell !== "")) rows.push(row);
+  return rows;
+};
+
+const readSpreadsheetRows = async (file: File) => {
+  if (file.name.toLowerCase().endsWith(".csv")) {
+    const text = await file.text();
+    const firstLine = text.split(/\r?\n/, 1)[0] || "";
+    const delimiter = (firstLine.match(/;/g)?.length || 0) >= (firstLine.match(/,/g)?.length || 0) ? ";" : ",";
+    return parseDelimitedRows(text, delimiter) as unknown[][];
+  }
+
+  const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
+  return XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: "", raw: true });
+};
+
 export default function InvoiceImport() {
   const { selectedEmpresaId, selectedRole } = useCompany();
   const { user } = useAuth();
@@ -387,8 +434,7 @@ export default function InvoiceImport() {
   };
 
   const processIssuedSpreadsheetImport = async (file: File) => {
-    const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
-    const rows = XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: "", raw: true });
+    const rows = await readSpreadsheetRows(file);
     const detection = detectIssuedInvoiceWorksheetFormat(rows);
     if (detection.kind !== "issued" || detection.headerRowIndex === null) {
       throw new Error(detection.reason || "No se detectó un layout compatible de facturas emitidas.");
@@ -485,8 +531,7 @@ export default function InvoiceImport() {
   };
 
   const processSiiPurchaseImport = async (file: File) => {
-    const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
-    const rows = XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: "", raw: true });
+    const rows = await readSpreadsheetRows(file);
     const headers = (rows[0] || []).map((value) => String(value).toLowerCase());
     if (!headers.some((header) => header.includes("rut proveedor")) || !headers.some((header) => header.includes("monto iva recuperable"))) {
       throw new Error("El archivo no corresponde al Registro de Compras del SII.");
@@ -499,7 +544,7 @@ export default function InvoiceImport() {
     const { createdCount, byRut, byName } = await ensurePurchaseSuppliers(validRows, support.terceros);
     const existingByKey = new Map<string, InvoiceRow>();
     for (const invoice of support.invoices) {
-      const key = [invoice.tipo, normalizeRut(invoice.rut) || matchText(invoice.tercero_nombre), normalizeDocumentNumber(invoice.numero_documento)].join("|");
+      const key = [invoice.tipo, invoice.tercero_id || "", normalizeDocumentNumber(invoice.numero_documento)].join("|");
       existingByKey.set(key, invoice);
     }
 
@@ -512,7 +557,7 @@ export default function InvoiceImport() {
         (row.rut && byRut.get(normalizeRut(row.rut) || "")) ||
         byName.get(matchText(row.terceroNombre));
       if (!supplier) throw new Error(`No se encontró el proveedor ${row.terceroNombre} después de crearlo.`);
-      const key = [row.tipo, normalizeRut(row.rut) || matchText(row.terceroNombre), normalizeDocumentNumber(row.numeroDocumento)].join("|");
+      const key = [row.tipo, supplier.id, normalizeDocumentNumber(row.numeroDocumento)].join("|");
       if (seenKeys.has(key)) {
         duplicateRows += 1;
         continue;
@@ -543,13 +588,8 @@ export default function InvoiceImport() {
       };
       const existing = existingByKey.get(key);
       if (existing) {
-        const { error } = await supabase
-          .from("facturas")
-          .update(payload)
-          .eq("id", existing.id)
-          .eq("empresa_id", selectedEmpresaId);
-        if (error) throw new Error(`No se pudo actualizar la compra ${row.numeroDocumento}: ${error.message}`);
-        updatedRows += 1;
+        duplicateRows += 1;
+        continue;
       } else {
         const { error } = await supabase.from("facturas").insert(payload);
         if (error) throw new Error(`No se pudo insertar la compra ${row.numeroDocumento}: ${error.message}`);
@@ -632,8 +672,7 @@ export default function InvoiceImport() {
   };
 
   const processReceivablesImport = async (file: File) => {
-    const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
-    const rows = XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[workbook.SheetNames[0]], { header: 1, defval: "", raw: true });
+    const rows = await readSpreadsheetRows(file);
     const detection = detectReceivablesWorksheetFormat(rows);
     if (detection.kind !== "receivables" || detection.headerRowIndex === null) {
       throw new Error(detection.reason || "No se detectó un layout compatible de facturas pendientes.");
@@ -1092,7 +1131,7 @@ function ImportCard({
           <div className="rounded-xl border border-emerald-200 p-4 text-sm">
             <div className="font-medium text-emerald-700">Importación completada: {summary.filename}</div>
             <div className="mt-1 text-muted-foreground">
-              {summary.validRows} válidas de {summary.totalRows}. {summary.insertedRows} insertadas, {summary.updatedRows} actualizadas, {summary.duplicateRows} duplicadas, {summary.rejectedRows} rechazadas, {summary.createdClients} {summary.createdCounterpartyLabel || "clientes"} creados.
+              {summary.validRows} válidas de {summary.totalRows}. {summary.insertedRows} insertadas, {summary.updatedRows} actualizadas, {summary.duplicateRows} omitidas por ya existir, {summary.rejectedRows} rechazadas, {summary.createdClients} {summary.createdCounterpartyLabel || "clientes"} creados.
             </div>
           </div>
         )}
