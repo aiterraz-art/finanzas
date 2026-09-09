@@ -1697,9 +1697,9 @@ export default function BankReconciliation() {
     const filteredBySupplier = selectedOutflowSupplierKey
       ? filteredBySource.filter(
           (candidate) =>
-            candidate.type !== "factura" ||
-            candidate.supplierId === selectedOutflowSupplierKey ||
-            candidate.customerName?.trim().toLocaleLowerCase() === selectedOutflowSupplierKey
+            candidate.type === "factura" &&
+            (candidate.supplierId === selectedOutflowSupplierKey ||
+              candidate.customerName?.trim().toLocaleLowerCase() === selectedOutflowSupplierKey)
         )
       : filteredBySource;
     if (!candidateSearchTerm.trim()) return filteredBySupplier;
