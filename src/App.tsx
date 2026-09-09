@@ -62,6 +62,7 @@ function App() {
                 <Route path="cuentas-por-pagar" element={<Proveedores />} />
                 <Route path="proveedores/:id" element={<TerceroDetalle />} />
                 <Route path="reports" element={<Reports />} />
+                <Route path="pnl" element={<Reports />} />
                 <Route path="settings" element={<Settings />} />
                 <Route path="reconciliation" element={<BankReconciliation />} />
                 <Route path="banco" element={<Navigate to="/reconciliation" replace />} />

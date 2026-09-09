@@ -1,447 +1,257 @@
-import { useState, useEffect } from "react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { TrendingUp, TrendingDown, DollarSign, Loader2, Calendar, FileDown, ArrowUpRight, ArrowDownRight } from "lucide-react";
-import { supabase } from "@/lib/supabase";
-import { format, startOfMonth, endOfMonth, subMonths, isSameMonth } from "date-fns";
+import { useEffect, useMemo, useState } from "react";
+import { addMonths, format, isAfter, startOfMonth } from "date-fns";
 import { es } from "date-fns/locale";
 import * as XLSX from "xlsx";
+import { CalendarDays, Download, FileText, Loader2, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { useCompany } from "@/contexts/CompanyContext";
+import { supabase } from "@/lib/supabase";
+
+type PnlDocumentType = "venta" | "compra" | "nota_credito" | "nota_credito_compra";
+
+type PnlDocument = {
+  id: string;
+  tipo: PnlDocumentType;
+  numero_documento: string | null;
+  tercero_nombre: string | null;
+  fecha_emision: string | null;
+  monto: number | null;
+  monto_neto: number | null;
+  monto_exento: number | null;
+  estado: string | null;
+};
+
+type PnlTotals = {
+  sales: number;
+  salesCreditNotes: number;
+  purchases: number;
+  purchaseCreditNotes: number;
+};
+
+const emptyTotals = (): PnlTotals => ({ sales: 0, salesCreditNotes: 0, purchases: 0, purchaseCreditNotes: 0 });
+const parseLocalDate = (value: string) => new Date(`${value.slice(0, 10)}T12:00:00`);
+
+const documentPnlAmount = (document: PnlDocument) => {
+  const net = document.monto_neto == null ? null : Number(document.monto_neto);
+  const exempt = document.monto_exento == null ? null : Number(document.monto_exento);
+  if (net !== null || exempt !== null) {
+    return (Number.isFinite(net || 0) ? net || 0 : 0) + (Number.isFinite(exempt || 0) ? exempt || 0 : 0);
+  }
+  return Number(document.monto || 0);
+};
+
+const addDocumentToTotals = (totals: PnlTotals, document: PnlDocument) => {
+  const amount = documentPnlAmount(document);
+  if (document.tipo === "venta") totals.sales += amount;
+  if (document.tipo === "nota_credito") totals.salesCreditNotes += amount;
+  if (document.tipo === "compra") totals.purchases += amount;
+  if (document.tipo === "nota_credito_compra") totals.purchaseCreditNotes += amount;
+};
+
+const incomeFromTotals = (totals: PnlTotals) => totals.sales - totals.salesCreditNotes;
+const expenseFromTotals = (totals: PnlTotals) => totals.purchases - totals.purchaseCreditNotes;
+const formatCurrency = (amount: number) => new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", minimumFractionDigits: 0 }).format(amount);
 
 export default function Reports() {
-    const { selectedEmpresaId } = useCompany();
-    const [loading, setLoading] = useState(true);
-    const [stats, setStats] = useState({
-        monthlyIncome: 0,
-        monthlyExpenses: 0,
-        netProfit: 0,
-        pendingReceivables: 0,
-        incomeChange: 0,
-        expenseChange: 0
-    });
-    const [topClients, setTopClients] = useState<any[]>([]);
-    const [monthlyData, setMonthlyData] = useState<any[]>([]);
-    const [recentTransactions, setRecentTransactions] = useState<any[]>([]);
+  const { selectedEmpresaId } = useCompany();
+  const today = new Date();
+  const [fromDate, setFromDate] = useState(format(startOfMonth(today), "yyyy-MM-dd"));
+  const [toDate, setToDate] = useState(format(today, "yyyy-MM-dd"));
+  const [documents, setDocuments] = useState<PnlDocument[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-    useEffect(() => {
-        if (selectedEmpresaId) fetchReportData();
-    }, [selectedEmpresaId]);
-
-    const fetchReportData = async () => {
-        if (!selectedEmpresaId) return;
-        setLoading(true);
-        try {
-            const now = new Date();
-            const startOfCurrentMonth = startOfMonth(now);
-            const endOfCurrentMonth = endOfMonth(now);
-            const startOfPrevMonth = startOfMonth(subMonths(now, 1));
-            const endOfPrevMonth = endOfMonth(subMonths(now, 1));
-            const sixMonthsAgo = startOfMonth(subMonths(now, 5));
-
-            // 1. Fetch current month invoices
-            const { data: currentMonthInvoices } = await supabase
-                .from('facturas')
-                .select('*')
-                .eq('empresa_id', selectedEmpresaId)
-                .gte('fecha_emision', format(startOfCurrentMonth, 'yyyy-MM-dd'))
-                .lte('fecha_emision', format(endOfCurrentMonth, 'yyyy-MM-dd'))
-                .is('archived_at', null);
-
-            // 2. Fetch previous month data for comparison
-            const { data: prevMonthInvoices } = await supabase
-                .from('facturas')
-                .select('*')
-                .eq('empresa_id', selectedEmpresaId)
-                .gte('fecha_emision', format(startOfPrevMonth, 'yyyy-MM-dd'))
-                .lte('fecha_emision', format(endOfPrevMonth, 'yyyy-MM-dd'))
-                .is('archived_at', null);
-
-            // 3. Fetch all pending for receivables KPI
-            const { data: pendingInvoices } = await supabase
-                .from('facturas')
-                .select('monto')
-                .eq('empresa_id', selectedEmpresaId)
-                .eq('tipo', 'venta')
-                .in('estado', ['pendiente', 'morosa', 'abonada'])
-                .is('archived_at', null);
-
-            // 4. Fetch last 6 months for chart
-            const { data: historicalInvoices } = await supabase
-                .from('facturas')
-                .select('tipo, monto, monto_neto, monto_exento, fecha_emision, created_at, estado')
-                .eq('empresa_id', selectedEmpresaId)
-                .gte('fecha_emision', format(sixMonthsAgo, 'yyyy-MM-dd'))
-                .in('tipo', ['venta', 'compra', 'nota_credito', 'nota_credito_compra'])
-                .is('archived_at', null);
-
-            // 5. Fetch recent transactions for details
-            const { data: recent } = await supabase
-                .from('facturas')
-                .select('*')
-                .eq('empresa_id', selectedEmpresaId)
-                .is('archived_at', null)
-                .order('fecha_emision', { ascending: false })
-                .limit(20);
-
-            const pnlAmount = (invoice: any) => {
-                const net = invoice.monto_neto == null ? null : Number(invoice.monto_neto);
-                const exempt = invoice.monto_exento == null ? null : Number(invoice.monto_exento);
-                return net !== null || exempt !== null
-                    ? (Number.isFinite(net || 0) ? net || 0 : 0) + (Number.isFinite(exempt || 0) ? exempt || 0 : 0)
-                    : Number(invoice.monto || 0);
-            };
-            const calculatePnl = (list: any[] | null, side: 'income' | 'expense') => {
-                if (!list) return 0;
-                return list.reduce((sum, invoice) => {
-                    const isIncome = invoice.tipo === 'venta' || invoice.tipo === 'nota_credito';
-                    if ((side === 'income') !== isIncome) return sum;
-                    const sign = invoice.tipo === 'nota_credito' || invoice.tipo === 'nota_credito_compra' ? -1 : 1;
-                    return sum + sign * pnlAmount(invoice);
-                }, 0);
-            };
-
-            const incomeCurr = calculatePnl(currentMonthInvoices, 'income');
-            const expensesCurr = calculatePnl(currentMonthInvoices, 'expense');
-            const incomePrev = calculatePnl(prevMonthInvoices, 'income');
-            const expensesPrev = calculatePnl(prevMonthInvoices, 'expense');
-
-            const incomeChange = incomePrev === 0 ? 100 : ((incomeCurr - incomePrev) / incomePrev) * 100;
-            const expenseChange = expensesPrev === 0 ? 100 : ((expensesCurr - expensesPrev) / expensesPrev) * 100;
-
-            const totalPending = (pendingInvoices || []).reduce((sum, inv) => sum + Number(inv.monto), 0);
-
-            setStats({
-                monthlyIncome: incomeCurr,
-                monthlyExpenses: expensesCurr,
-                netProfit: incomeCurr - expensesCurr,
-                pendingReceivables: totalPending,
-                incomeChange,
-                expenseChange
-            });
-
-            // Top Clients (Current Month)
-            const clientGroups: Record<string, { amount: number, count: number }> = {};
-            currentMonthInvoices?.filter(inv => inv.tipo === 'venta' || inv.tipo === 'nota_credito').forEach(inv => {
-                const name = inv.tercero_nombre || 'S/N';
-                if (!clientGroups[name]) clientGroups[name] = { amount: 0, count: 0 };
-                clientGroups[name].amount += (inv.tipo === 'nota_credito' ? -1 : 1) * pnlAmount(inv);
-                clientGroups[name].count += inv.tipo === 'venta' ? 1 : 0;
-            });
-
-            const top = Object.entries(clientGroups)
-                .map(([name, data]) => ({ name, ...data }))
-                .sort((a, b) => b.amount - a.amount)
-                .slice(0, 5);
-
-            setTopClients(top);
-            setRecentTransactions(recent || []);
-
-            // Process Monthly Data for Chart
-            const months = [];
-            for (let i = 5; i >= 0; i--) {
-                const d = subMonths(now, i);
-                const monthName = format(d, 'MMM', { locale: es });
-
-                const monthInvoices = historicalInvoices?.filter(inv => {
-                    const invDate = new Date((inv.fecha_emision || inv.created_at).split('T')[0] + 'T12:00:00');
-                    return isSameMonth(invDate, d);
-                }) || [];
-
-                const inc = calculatePnl(monthInvoices, 'income');
-                const exp = calculatePnl(monthInvoices, 'expense');
-
-                months.push({
-                    name: monthName,
-                    income: inc,
-                    expenses: exp
-                });
-            }
-            setMonthlyData(months);
-
-        } catch (error) {
-            console.error("Error loading report data:", error);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const exportToExcel = () => {
-        const data = recentTransactions.map(inv => ({
-            Fecha: format(new Date((inv.fecha_emision || inv.created_at).split('T')[0] + 'T12:00:00'), 'dd/MM/yyyy'),
-            Tipo: inv.tipo === 'venta' ? 'Ingreso' : 'Egreso',
-            Estado: inv.estado,
-            Tercero: inv.tercero_nombre,
-            Monto: inv.monto,
-            Glosa: inv.glosa
-        }));
-
-        const ws = XLSX.utils.json_to_sheet(data);
-        const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, "Transacciones");
-        XLSX.writeFile(wb, `Reporte_Financiero_${format(new Date(), 'yyyyMMdd')}.xlsx`);
-    };
-
-    const formatCurrency = (amount: number) => {
-        return new Intl.NumberFormat('es-CL', {
-            style: 'currency',
-            currency: 'CLP',
-            minimumFractionDigits: 0
-        }).format(amount);
-    };
-
-    if (loading) {
-        return (
-            <div className="flex h-[80vh] items-center justify-center">
-                <Loader2 className="w-8 h-8 animate-spin text-primary" />
-            </div>
-        );
+  const loadPnl = async () => {
+    if (!selectedEmpresaId || !fromDate || !toDate) return;
+    if (fromDate > toDate) {
+      setError("La fecha de inicio no puede ser posterior a la fecha de término.");
+      return;
     }
+    setLoading(true);
+    setError(null);
+    try {
+      const { data, error: queryError } = await supabase
+        .from("facturas")
+        .select("id, tipo, numero_documento, tercero_nombre, fecha_emision, monto, monto_neto, monto_exento, estado")
+        .eq("empresa_id", selectedEmpresaId)
+        .in("tipo", ["venta", "compra", "nota_credito", "nota_credito_compra"])
+        .gte("fecha_emision", fromDate)
+        .lte("fecha_emision", toDate)
+        .is("archived_at", null)
+        .order("fecha_emision", { ascending: true });
+      if (queryError) throw queryError;
+      setDocuments((data || []) as PnlDocument[]);
+    } catch (loadError: any) {
+      console.error("Error loading P/L:", loadError);
+      setError(`No se pudo cargar el P/L: ${loadError.message}`);
+      setDocuments([]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-    return (
-        <div className="container mx-auto py-6 space-y-8">
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                <div>
-                    <h2 className="text-3xl font-bold tracking-tight">P/L y Reportes Financieros</h2>
-                    <p className="text-muted-foreground">Resultado por devengo según la fecha de emisión de facturas, independiente del cobro o pago bancario.</p>
-                </div>
-                <div className="flex items-center space-x-2">
-                    <Button variant="outline" onClick={fetchReportData} className="gap-2">
-                        <Calendar className="w-4 h-4" />
-                        Actualizar
-                    </Button>
-                    <Button variant="default" onClick={exportToExcel} className="gap-2">
-                        <FileDown className="w-4 h-4" />
-                        Exportar Excel
-                    </Button>
-                </div>
-            </div>
+  useEffect(() => {
+    void loadPnl();
+  }, [selectedEmpresaId]);
 
-            <Tabs defaultValue="overview" className="space-y-4">
-                <TabsList className="bg-muted/50 p-1">
-                    <TabsTrigger value="overview">Resumen General</TabsTrigger>
-                    <TabsTrigger value="details">Detalle de Transacciones</TabsTrigger>
-                </TabsList>
+  const totals = useMemo(() => {
+    const next = emptyTotals();
+    documents.forEach((document) => addDocumentToTotals(next, document));
+    return next;
+  }, [documents]);
 
-                <TabsContent value="overview" className="space-y-4">
-                    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-                        <Card className="border-l-4 border-l-green-500 shadow-sm hover:shadow-md transition-shadow">
-                            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                                <CardTitle className="text-sm font-medium">Ingresos netos (Mes)</CardTitle>
-                                <DollarSign className="h-4 w-4 text-green-600" />
-                            </CardHeader>
-                            <CardContent>
-                                <div className="text-2xl font-bold">{formatCurrency(stats.monthlyIncome)}</div>
-                                <p className={cn(
-                                    "text-xs flex items-center mt-1",
-                                    stats.incomeChange >= 0 ? "text-green-600" : "text-red-500"
-                                )}>
-                                    <TrendingUp className={cn("h-3 w-3 mr-1", stats.incomeChange < 0 && "rotate-180")} />
-                                    {Math.abs(stats.incomeChange).toFixed(1)}% vs mes anterior
-                                </p>
-                            </CardContent>
-                        </Card>
+  const income = incomeFromTotals(totals);
+  const expenses = expenseFromTotals(totals);
+  const result = income - expenses;
+  const margin = income > 0 ? (result / income) * 100 : 0;
+  const legacyDocuments = documents.filter((document) => document.monto_neto == null && document.monto_exento == null).length;
 
-                        <Card className="border-l-4 border-l-red-500 shadow-sm hover:shadow-md transition-shadow">
-                            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                                <CardTitle className="text-sm font-medium">Compras y gastos netos</CardTitle>
-                                <DollarSign className="h-4 w-4 text-red-600" />
-                            </CardHeader>
-                            <CardContent>
-                                <div className="text-2xl font-bold">{formatCurrency(stats.monthlyExpenses)}</div>
-                                <p className={cn(
-                                    "text-xs flex items-center mt-1",
-                                    stats.expenseChange <= 0 ? "text-green-600" : "text-red-500"
-                                )}>
-                                    <TrendingDown className={cn("h-3 w-3 mr-1", stats.expenseChange > 0 && "rotate-180")} />
-                                    {Math.abs(stats.expenseChange).toFixed(1)}% vs mes anterior
-                                </p>
-                            </CardContent>
-                        </Card>
+  const monthlyRows = useMemo(() => {
+    if (!fromDate || !toDate) return [];
+    const monthly = new Map<string, PnlTotals>();
+    documents.forEach((document) => {
+      if (!document.fecha_emision) return;
+      const key = format(parseLocalDate(document.fecha_emision), "yyyy-MM");
+      const current = monthly.get(key) || emptyTotals();
+      addDocumentToTotals(current, document);
+      monthly.set(key, current);
+    });
+    const rows: Array<{ key: string; label: string; totals: PnlTotals }> = [];
+    let cursor = startOfMonth(parseLocalDate(fromDate));
+    const lastMonth = startOfMonth(parseLocalDate(toDate));
+    while (!isAfter(cursor, lastMonth)) {
+      const key = format(cursor, "yyyy-MM");
+      rows.push({ key, label: format(cursor, "MMMM yyyy", { locale: es }), totals: monthly.get(key) || emptyTotals() });
+      cursor = addMonths(cursor, 1);
+    }
+    return rows;
+  }, [documents, fromDate, toDate]);
 
-                        <Card className="border-l-4 border-l-primary shadow-sm hover:shadow-md transition-shadow">
-                            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                                <CardTitle className="text-sm font-medium">Resultado P/L</CardTitle>
-                                <DollarSign className="h-4 w-4 text-primary" />
-                            </CardHeader>
-                            <CardContent>
-                                <div className="text-2xl font-bold">{formatCurrency(stats.netProfit)}</div>
-                                <p className="text-xs text-muted-foreground flex items-center mt-1">
-                                    <TrendingUp className="h-3 w-3 mr-1" />
-                                    {stats.monthlyIncome > 0 ? ((stats.netProfit / stats.monthlyIncome) * 100).toFixed(1) : 0}% de margen
-                                </p>
-                            </CardContent>
-                        </Card>
+  const setCurrentMonth = () => {
+    setFromDate(format(startOfMonth(today), "yyyy-MM-dd"));
+    setToDate(format(today, "yyyy-MM-dd"));
+  };
 
-                        <Card className="border-l-4 border-l-amber-500 shadow-sm hover:shadow-md transition-shadow">
-                            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                                <CardTitle className="text-sm font-medium">Por Cobrar (Pendiente)</CardTitle>
-                                <DollarSign className="h-4 w-4 text-amber-600" />
-                            </CardHeader>
-                            <CardContent>
-                                <div className="text-2xl font-bold">{formatCurrency(stats.pendingReceivables)}</div>
-                                <p className="text-xs text-amber-600 mt-1 font-medium">
-                                    Activo circulante en calle
-                                </p>
-                            </CardContent>
-                        </Card>
-                    </div>
+  const setCurrentYear = () => {
+    setFromDate(format(new Date(today.getFullYear(), 0, 1), "yyyy-MM-dd"));
+    setToDate(format(today, "yyyy-MM-dd"));
+  };
 
-                    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-7">
-                        <Card className="col-span-4 shadow-sm">
-                            <CardHeader>
-                                <CardTitle>Rendimiento Mensual (Últimos 6 meses)</CardTitle>
-                                <CardDescription>Comparativa de ingresos vs gastos.</CardDescription>
-                            </CardHeader>
-                            <CardContent>
-                                <div className="h-[250px] w-full flex items-end gap-2 pb-6 pt-10 px-2 border-b border-l relative">
-                                    {monthlyData.map((d, i) => {
-                                        const maxVal = Math.max(...monthlyData.map(x => Math.max(x.income || 0, x.expenses || 0))) || 1;
-                                        return (
-                                            <div key={i} className="flex-1 flex flex-col items-center gap-1 group">
-                                                <div className="flex gap-1 items-end h-full w-full justify-center">
-                                                    {/* Bar Income */}
-                                                    <div
-                                                        className="w-4 bg-green-500 rounded-t-sm transition-all hover:brightness-110 relative"
-                                                        style={{ height: d.income > 0 ? `${(d.income / maxVal) * 100}%` : '2px' }}
-                                                    >
-                                                        <div className="absolute -top-6 left-1/2 -translate-x-1/2 bg-popover text-popover-foreground text-[10px] px-1 py-0.5 rounded shadow opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10">
-                                                            {formatCurrency(d.income)}
-                                                        </div>
-                                                    </div>
-                                                    {/* Bar Expenses */}
-                                                    <div
-                                                        className="w-4 bg-red-400 rounded-t-sm transition-all hover:brightness-110 relative"
-                                                        style={{ height: d.expenses > 0 ? `${(d.expenses / maxVal) * 100}%` : '2px' }}
-                                                    >
-                                                        <div className="absolute -top-6 left-1/2 -translate-x-1/2 bg-popover text-popover-foreground text-[10px] px-1 py-0.5 rounded shadow opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10">
-                                                            {formatCurrency(d.expenses)}
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                                <span className="text-[10px] font-medium text-muted-foreground uppercase">{d.name}</span>
-                                            </div>
-                                        );
-                                    })}
-                                    {/* Leyenda */}
-                                    <div className="absolute top-2 right-2 flex gap-4 text-xs">
-                                        <div className="flex items-center gap-1"><div className="w-2 h-2 bg-green-500 rounded"></div> Ingresos</div>
-                                        <div className="flex items-center gap-1"><div className="w-2 h-2 bg-red-400 rounded"></div> Gastos</div>
-                                    </div>
-                                </div>
-                            </CardContent>
-                        </Card>
+  const exportToExcel = () => {
+    const summaryRows = [
+      { Concepto: "Ventas", Monto: totals.sales },
+      { Concepto: "(-) Notas de crédito de venta", Monto: -totals.salesCreditNotes },
+      { Concepto: "Ingresos netos", Monto: income },
+      { Concepto: "Compras y gastos documentados", Monto: -totals.purchases },
+      { Concepto: "Notas de crédito de compra", Monto: totals.purchaseCreditNotes },
+      { Concepto: "Gastos netos", Monto: -expenses },
+      { Concepto: "Resultado P/L", Monto: result },
+    ];
+    const detailRows = documents.map((document) => ({
+      Fecha: document.fecha_emision ? format(parseLocalDate(document.fecha_emision), "dd/MM/yyyy") : "Sin fecha",
+      Tipo: document.tipo === "venta" ? "Venta" : document.tipo === "compra" ? "Compra" : document.tipo === "nota_credito" ? "NC venta" : "NC compra",
+      Tercero: document.tercero_nombre || "Sin tercero",
+      Folio: document.numero_documento || "Sin folio",
+      "Monto P/L sin IVA": documentPnlAmount(document) * (document.tipo.includes("nota_credito") ? -1 : 1),
+      Estado: document.estado || "Sin estado",
+    }));
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(summaryRows), "P-L");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(detailRows), "Documentos");
+    XLSX.writeFile(workbook, `PL_${fromDate}_${toDate}.xlsx`);
+  };
 
-                        <Card className="col-span-3 shadow-sm">
-                            <CardHeader>
-                                <CardTitle>Top Clientes (Mes)</CardTitle>
-                                <CardDescription>Clientes con mayor facturación este mes.</CardDescription>
-                            </CardHeader>
-                            <CardContent>
-                                <div className="space-y-6">
-                                    {topClients.length === 0 ? (
-                                        <div className="flex flex-col items-center justify-center py-10 text-muted-foreground">
-                                            <p className="text-sm italic">Sin datos este mes.</p>
-                                        </div>
-                                    ) : (
-                                        topClients.map((client, i) => (
-                                            <div key={i} className="flex items-center group transition-colors">
-                                                <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-xs ring-2 ring-primary/5 group-hover:ring-primary/20 transition-all">
-                                                    {i + 1}
-                                                </div>
-                                                <div className="ml-4 space-y-1">
-                                                    <p className="text-sm font-semibold leading-none">{client.name}</p>
-                                                    <p className="text-xs text-muted-foreground">{client.count} Trabajos registrados</p>
-                                                </div>
-                                                <div className="ml-auto font-bold text-slate-900">{formatCurrency(client.amount)}</div>
-                                            </div>
-                                        ))
-                                    )}
-                                </div>
-                                {topClients.length > 0 && (
-                                    <Button variant="ghost" className="w-full mt-6 text-xs text-primary" asChild>
-                                        <a href="/clientes">Ver todos los clientes</a>
-                                    </Button>
-                                )}
-                            </CardContent>
-                        </Card>
-                    </div>
-                </TabsContent>
+  if (loading) return <div className="flex h-[70vh] items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div>;
 
-                <TabsContent value="details">
-                    <Card>
-                        <CardHeader className="flex flex-row items-center justify-between">
-                            <div>
-                                <CardTitle>Historial Reciente de Transacciones</CardTitle>
-                                <CardDescription>Listado detallado de las últimas 20 facturas y gastos.</CardDescription>
-                            </div>
-                        </CardHeader>
-                        <CardContent>
-                            <div className="relative overflow-x-auto border rounded-lg">
-                                <table className="w-full text-sm text-left">
-                                    <thead className="text-xs uppercase bg-muted/50 border-b">
-                                        <tr>
-                                            <th className="px-4 py-3">Fecha</th>
-                                            <th className="px-4 py-3">Tipo</th>
-                                            <th className="px-4 py-3">Tercero</th>
-                                            <th className="px-4 py-3 text-right">Monto</th>
-                                            <th className="px-4 py-3">Estado</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="divide-y">
-                                        {recentTransactions.length === 0 ? (
-                                            <tr>
-                                                <td colSpan={5} className="px-4 py-10 text-center text-muted-foreground">
-                                                    No hay transacciones registradas.
-                                                </td>
-                                            </tr>
-                                        ) : (
-                                            recentTransactions.map((inv) => (
-                                                <tr key={inv.id} className="hover:bg-muted/50 transition-colors">
-                                                    <td className="px-4 py-3 whitespace-nowrap">
-                                                        {format(new Date((inv.fecha_emision || inv.created_at).split('T')[0] + 'T12:00:00'), 'dd MMM yyyy', { locale: es })}
-                                                    </td>
-                                                    <td className="px-4 py-3">
-                                                        <div className="flex items-center gap-1">
-                                                            {inv.tipo === 'venta' ? (
-                                                                <ArrowUpRight className="w-3 h-3 text-green-500" />
-                                                            ) : (
-                                                                <ArrowDownRight className="w-3 h-3 text-red-500" />
-                                                            )}
-                                                            <span className={inv.tipo === 'venta' ? 'text-green-600' : 'text-red-500 font-medium'}>
-                                                                {inv.tipo === 'venta' ? 'Venta' : 'Compra'}
-                                                            </span>
-                                                        </div>
-                                                    </td>
-                                                    <td className="px-4 py-3 font-medium">
-                                                        {inv.tercero_nombre || 'S/N'}
-                                                    </td>
-                                                    <td className="px-4 py-3 text-right font-bold">
-                                                        {formatCurrency(inv.monto)}
-                                                    </td>
-                                                    <td className="px-4 py-3">
-                                                        <span className={cn(
-                                                            "px-2 py-0.5 rounded-full text-[10px] uppercase font-bold",
-                                                            inv.estado === 'pagada' ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"
-                                                        )}>
-                                                            {inv.estado}
-                                                        </span>
-                                                    </td>
-                                                </tr>
-                                            ))
-                                        )}
-                                    </tbody>
-                                </table>
-                            </div>
-                        </CardContent>
-                    </Card>
-                </TabsContent>
-            </Tabs>
+  return (
+    <div className="container mx-auto space-y-6 py-6">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">P/L · Estado de Resultados</h1>
+          <p className="mt-1 text-muted-foreground">Resultado por devengo: reconoce los documentos por su fecha de emisión, no por la fecha de cobro o pago.</p>
         </div>
-    );
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={setCurrentMonth}>Este mes</Button>
+          <Button variant="outline" onClick={setCurrentYear}>Año actual</Button>
+          <Button variant="outline" onClick={() => void loadPnl()}><RefreshCw className="mr-2 h-4 w-4" />Actualizar</Button>
+          <Button onClick={exportToExcel} disabled={documents.length === 0}><Download className="mr-2 h-4 w-4" />Exportar Excel</Button>
+        </div>
+      </div>
+
+      <Card>
+        <CardContent className="grid gap-4 pt-6 md:grid-cols-[1fr_1fr_auto]">
+          <div className="space-y-2"><label className="text-sm font-medium" htmlFor="pnl-from">Desde</label><Input id="pnl-from" type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} /></div>
+          <div className="space-y-2"><label className="text-sm font-medium" htmlFor="pnl-to">Hasta</label><Input id="pnl-to" type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} /></div>
+          <div className="flex items-end"><Button className="w-full" onClick={() => void loadPnl()}><CalendarDays className="mr-2 h-4 w-4" />Aplicar período</Button></div>
+        </CardContent>
+      </Card>
+
+      {error && <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">{error}</div>}
+
+      <div className="grid gap-4 md:grid-cols-3">
+        <MetricCard label="Ingresos netos" amount={income} description="Ventas menos notas de crédito emitidas." tone="emerald" />
+        <MetricCard label="Gastos netos" amount={expenses} description="Compras menos notas de crédito de proveedores." tone="rose" />
+        <Card className={result >= 0 ? "border-l-4 border-l-primary" : "border-l-4 border-l-destructive"}>
+          <CardHeader className="pb-2"><CardDescription>Resultado del período</CardDescription><CardTitle className="text-2xl">{formatCurrency(result)}</CardTitle></CardHeader>
+          <CardContent className="flex items-center gap-2 text-sm text-muted-foreground">{result >= 0 ? <TrendingUp className="h-4 w-4 text-emerald-600" /> : <TrendingDown className="h-4 w-4 text-destructive" />}Margen {margin.toFixed(1)}%</CardContent>
+        </Card>
+      </div>
+
+      <div className="grid gap-6 lg:grid-cols-[1.15fr_1fr]">
+        <Card>
+          <CardHeader><CardTitle>Estado de resultados</CardTitle><CardDescription>Montos sin IVA cuando el documento contiene neto y exento.</CardDescription></CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            <PnlLine label="Ventas" amount={totals.sales} />
+            <PnlLine label="Notas de crédito de venta" amount={-totals.salesCreditNotes} muted />
+            <PnlLine label="Ingresos netos" amount={income} emphasis />
+            <PnlLine label="Compras y gastos documentados" amount={-totals.purchases} />
+            <PnlLine label="Notas de crédito de compra" amount={totals.purchaseCreditNotes} muted />
+            <PnlLine label="Gastos netos" amount={-expenses} emphasis />
+            <div className="border-t pt-3"><PnlLine label="Resultado P/L" amount={result} emphasis result /></div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader><CardTitle>Cómo se calcula</CardTitle><CardDescription>Alcance de este módulo.</CardDescription></CardHeader>
+          <CardContent className="space-y-3 text-sm text-muted-foreground">
+            <p><strong className="text-foreground">Devengo.</strong> Cada documento entra en el período de su fecha de emisión. Conciliarlo en banco no cambia el resultado.</p>
+            <p><strong className="text-foreground">Ingresos.</strong> Facturas de venta menos notas de crédito de venta.</p>
+            <p><strong className="text-foreground">Gastos.</strong> Facturas de compra menos notas de crédito de proveedores.</p>
+            <p><strong className="text-foreground">IVA.</strong> Se usa neto + exento; el IVA queda fuera del resultado. Si un documento antiguo no tiene desglose, se usa su total.</p>
+            <p><strong className="text-foreground">No incluido.</strong> Movimientos bancarios, aportes de capital, anticipos y devoluciones no afectan P/L. Las rendiciones y gastos manuales deben respaldarse con su factura de compra para incorporarse.</p>
+            {legacyDocuments > 0 && <p className="rounded-md bg-amber-50 p-3 text-amber-800">Hay {legacyDocuments} documento(s) sin neto/exento: se calcularon con el monto total.</p>}
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card>
+        <CardHeader><CardTitle>Resultado mensual</CardTitle><CardDescription>Desglose del período seleccionado.</CardDescription></CardHeader>
+        <CardContent className="overflow-x-auto">
+          <table className="w-full min-w-[720px] text-sm"><thead className="border-b text-left text-xs uppercase text-muted-foreground"><tr><th className="px-3 py-3">Mes</th><th className="px-3 py-3 text-right">Ingresos netos</th><th className="px-3 py-3 text-right">Gastos netos</th><th className="px-3 py-3 text-right">Resultado</th><th className="px-3 py-3 text-right">Margen</th></tr></thead><tbody>{monthlyRows.map((row) => { const rowIncome = incomeFromTotals(row.totals); const rowExpense = expenseFromTotals(row.totals); const rowResult = rowIncome - rowExpense; return <tr key={row.key} className="border-b last:border-0"><td className="px-3 py-3 capitalize">{row.label}</td><td className="px-3 py-3 text-right">{formatCurrency(rowIncome)}</td><td className="px-3 py-3 text-right">{formatCurrency(rowExpense)}</td><td className={`px-3 py-3 text-right font-semibold ${rowResult >= 0 ? "text-emerald-700" : "text-destructive"}`}>{formatCurrency(rowResult)}</td><td className="px-3 py-3 text-right">{rowIncome > 0 ? `${((rowResult / rowIncome) * 100).toFixed(1)}%` : "—"}</td></tr>; })}</tbody></table>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle className="flex items-center gap-2"><FileText className="h-5 w-5" />Documentos incluidos</CardTitle><CardDescription>{documents.length} documento(s) incluidos en el período.</CardDescription></CardHeader>
+        <CardContent className="overflow-x-auto">
+          <table className="w-full min-w-[850px] text-sm"><thead className="border-b text-left text-xs uppercase text-muted-foreground"><tr><th className="px-3 py-3">Fecha</th><th className="px-3 py-3">Tipo</th><th className="px-3 py-3">Tercero</th><th className="px-3 py-3">Folio</th><th className="px-3 py-3">Estado</th><th className="px-3 py-3 text-right">Monto P/L</th></tr></thead><tbody>{documents.length === 0 ? <tr><td colSpan={6} className="px-3 py-10 text-center text-muted-foreground">No hay documentos para este período.</td></tr> : documents.map((document) => <tr key={document.id} className="border-b last:border-0"><td className="px-3 py-3">{document.fecha_emision ? format(parseLocalDate(document.fecha_emision), "dd MMM yyyy", { locale: es }) : "Sin fecha"}</td><td className="px-3 py-3"><DocumentTypeLabel type={document.tipo} /></td><td className="px-3 py-3">{document.tercero_nombre || "Sin tercero"}</td><td className="px-3 py-3">{document.numero_documento || "Sin folio"}</td><td className="px-3 py-3 capitalize">{document.estado || "Sin estado"}</td><td className="px-3 py-3 text-right font-medium">{formatCurrency(documentPnlAmount(document) * (document.tipo.includes("nota_credito") ? -1 : 1))}</td></tr>)}</tbody></table>
+        </CardContent>
+      </Card>
+    </div>
+  );
 }
 
-// Helper para classes
-function cn(...classes: any[]) {
-    return classes.filter(Boolean).join(' ');
+function MetricCard({ label, amount, description, tone }: { label: string; amount: number; description: string; tone: "emerald" | "rose" }) {
+  return <Card className={tone === "emerald" ? "border-l-4 border-l-emerald-500" : "border-l-4 border-l-rose-500"}><CardHeader className="pb-2"><CardDescription>{label}</CardDescription><CardTitle className="text-2xl">{formatCurrency(amount)}</CardTitle></CardHeader><CardContent className="text-sm text-muted-foreground">{description}</CardContent></Card>;
+}
+
+function PnlLine({ label, amount, emphasis = false, muted = false, result = false }: { label: string; amount: number; emphasis?: boolean; muted?: boolean; result?: boolean }) {
+  return <div className={`flex items-center justify-between ${emphasis ? "font-semibold" : ""} ${muted ? "text-muted-foreground" : ""} ${result ? (amount >= 0 ? "text-emerald-700" : "text-destructive") : ""}`}><span>{label}</span><span>{formatCurrency(amount)}</span></div>;
+}
+
+function DocumentTypeLabel({ type }: { type: PnlDocumentType }) {
+  const labels: Record<PnlDocumentType, string> = { venta: "Venta", compra: "Compra", nota_credito: "NC venta", nota_credito_compra: "NC compra" };
+  const colors: Record<PnlDocumentType, string> = { venta: "bg-emerald-100 text-emerald-800", compra: "bg-rose-100 text-rose-800", nota_credito: "bg-amber-100 text-amber-800", nota_credito_compra: "bg-sky-100 text-sky-800" };
+  return <span className={`rounded-full px-2 py-1 text-xs font-medium ${colors[type]}`}>{labels[type]}</span>;
 }

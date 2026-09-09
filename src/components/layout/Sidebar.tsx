@@ -27,7 +27,7 @@ const navigation = [
     { name: "Clientes", href: "/clientes", icon: Building2 },
     { name: "Importar Facturas", href: "/facturas/importar", icon: BarChart3 },
     { name: "Proveedores", href: "/proveedores", icon: Truck },
-    { name: "Reportes", href: "/reports", icon: BarChart3 },
+    { name: "P/L", href: "/pnl", icon: BarChart3 },
 ];
 
 export function Sidebar() {
