@@ -8,16 +8,8 @@ import Proveedores from "@/pages/Proveedores";
 import BankReconciliation from "@/pages/BankReconciliation";
 import TerceroDetalle from "@/pages/TerceroDetalle";
 import CashFlow from "@/pages/CashFlow";
-import Collections from "@/pages/Collections";
-import Budgets from "@/pages/Budgets";
-import ReconciliationAudit from "@/pages/ReconciliationAudit";
 import Rendiciones from "@/pages/Rendiciones";
 import Egresos from "@/pages/Egresos";
-import Cheques from "@/pages/Cheques";
-import WebPay from "@/pages/WebPay";
-
-import ManualInvoiceEntry from "@/pages/ManualInvoiceEntry";
-import InvoicesList from "@/pages/InvoicesList";
 import InvoiceImport from "@/pages/InvoiceImport";
 import Users from "@/pages/Users";
 
@@ -76,19 +68,19 @@ function App() {
                 <Route path="cashflow" element={<CashFlow />} />
                 <Route path="flujo-caja" element={<Navigate to="/cashflow" replace />} />
                 <Route path="egresos" element={<Egresos />} />
-                <Route path="cheques" element={<Cheques />} />
-                <Route path="webpay" element={<WebPay />} />
+                <Route path="cheques" element={<Navigate to="/reconciliation" replace />} />
+                <Route path="webpay" element={<Navigate to="/reconciliation" replace />} />
                 <Route path="expenses" element={<Navigate to="/egresos" replace />} />
-                <Route path="collections" element={<Collections />} />
-                <Route path="budgets" element={<Budgets />} />
-                <Route path="audit" element={<ReconciliationAudit />} />
+                <Route path="collections" element={<Navigate to="/clientes" replace />} />
+                <Route path="budgets" element={<Navigate to="/reports" replace />} />
+                <Route path="audit" element={<Navigate to="/reconciliation" replace />} />
                 <Route path="rendiciones" element={<Rendiciones />} />
                 <Route path="rendiciones/print/:id" element={<RendicionPrint />} />
-                <Route path="facturas" element={<InvoicesList />} />
+                <Route path="facturas" element={<Navigate to="/clientes" replace />} />
                 <Route path="facturas/importar" element={<InvoiceImport />} />
                 <Route path="invoice-import" element={<InvoiceImport />} />
-                <Route path="invoices/new" element={<ManualInvoiceEntry />} />
-                <Route path="facturas/nueva" element={<ManualInvoiceEntry />} />
+                <Route path="invoices/new" element={<Navigate to="/clientes" replace />} />
+                <Route path="facturas/nueva" element={<Navigate to="/clientes" replace />} />
                 <Route element={<AdminRoute />}>
                   <Route path="users" element={<Users />} />
                   <Route path="empresas" element={<Navigate to="/users" replace />} />

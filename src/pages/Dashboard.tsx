@@ -153,9 +153,9 @@ export default function Dashboard() {
             </Link>
           </Button>
           <Button variant="outline" asChild className="gap-2">
-            <Link to="/facturas/nueva">
+            <Link to="/clientes">
               <Plus className="h-4 w-4" />
-              Nueva Factura
+              Nueva factura de venta
             </Link>
           </Button>
         </div>
@@ -215,9 +215,9 @@ export default function Dashboard() {
       <div className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle>Cobranzas Abiertas</CardTitle>
+            <CardTitle>Facturas de venta abiertas</CardTitle>
             <Button variant="ghost" size="sm" asChild>
-              <Link to="/collections">Ver pipeline</Link>
+              <Link to="/clientes">Ver clientes</Link>
             </Button>
           </CardHeader>
           <CardContent className="space-y-4">

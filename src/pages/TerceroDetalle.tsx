@@ -644,8 +644,8 @@ export default function TerceroDetalle() {
             <Trash2 className="h-4 w-4" /> Inactivar
           </Button>
 
-          <Button onClick={() => navigate("/facturas/nueva")}>
-            <Plus className="mr-2 h-4 w-4" /> Ingresar factura manual
+          <Button onClick={() => navigate(entityLabel === "cliente" ? "/clientes" : "/proveedores")}>
+            <Plus className="mr-2 h-4 w-4" /> Ingresar factura
           </Button>
         </div>
       </div>

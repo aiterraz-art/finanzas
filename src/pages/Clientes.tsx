@@ -291,13 +291,10 @@ export default function Clientes() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Clientes y Cobranzas</h1>
           <p className="mt-1 text-muted-foreground">
-            Riesgo de cobro, promesas vigentes y creación de facturas de venta con metadata de tesorería.
+            Gestión de clientes y facturas de venta con su información de tesorería.
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" asChild>
-            <Link to="/collections">Abrir pipeline</Link>
-          </Button>
           <Button variant="outline" asChild>
             <Link to="/facturas/importar">Importar base</Link>
           </Button>

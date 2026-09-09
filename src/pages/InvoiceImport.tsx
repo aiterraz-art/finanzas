@@ -877,10 +877,10 @@ export default function InvoiceImport() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" asChild>
-            <Link to="/facturas">Ver Facturas</Link>
+            <Link to="/clientes">Ver clientes</Link>
           </Button>
           <Button variant="outline" asChild>
-            <Link to="/collections">Ver Cobranzas</Link>
+            <Link to="/proveedores">Ver proveedores</Link>
           </Button>
           <Button variant="outline" onClick={() => setSummary({ issued: null, receivables: null, purchases: null })}>
             <RefreshCcw className="mr-2 h-4 w-4" />
