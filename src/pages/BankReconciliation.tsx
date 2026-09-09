@@ -1679,6 +1679,14 @@ export default function BankReconciliation() {
     };
   }, [transactions]);
 
+  const selectedOutflowSupplierKey = useMemo(() => {
+    if (!selectedTxn || selectedTxn.monto >= 0) return null;
+    const selectedInvoice = candidates.find(
+      (candidate) => candidate.type === "factura" && selectedInvoiceMatches[candidate.id]
+    );
+    return selectedInvoice?.supplierId || selectedInvoice?.customerName?.trim().toLocaleLowerCase() || null;
+  }, [candidates, selectedInvoiceMatches, selectedTxn]);
+
   const searchableCandidates = useMemo(() => {
     const filteredBySource =
       selectedTxn && selectedTxn.monto >= 0
@@ -1686,12 +1694,20 @@ export default function BankReconciliation() {
           ? []
           : candidates.filter((candidate) => candidate.type === selectedInflowSource)
         : candidates;
-    if (!candidateSearchTerm.trim()) return filteredBySource;
+    const filteredBySupplier = selectedOutflowSupplierKey
+      ? filteredBySource.filter(
+          (candidate) =>
+            candidate.type !== "factura" ||
+            candidate.supplierId === selectedOutflowSupplierKey ||
+            candidate.customerName?.trim().toLocaleLowerCase() === selectedOutflowSupplierKey
+        )
+      : filteredBySource;
+    if (!candidateSearchTerm.trim()) return filteredBySupplier;
     const normalized = candidateSearchTerm.toLowerCase();
-    return filteredBySource.filter((candidate) =>
+    return filteredBySupplier.filter((candidate) =>
       `${candidate.label} ${candidate.subtitle}`.toLowerCase().includes(normalized)
     );
-  }, [candidateSearchTerm, candidates, selectedInflowSource, selectedTxn]);
+  }, [candidateSearchTerm, candidates, selectedInflowSource, selectedOutflowSupplierKey, selectedTxn]);
 
   const transferCandidates = useMemo(() => {
     if (!selectedTxn) return [];
