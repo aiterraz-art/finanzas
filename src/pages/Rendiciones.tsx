@@ -45,6 +45,7 @@ type Trabajador = {
 
 type Rendicion = {
   id: string;
+  source: "rendicion" | "bank_reconciliation";
   fecha: string | null;
   tercero_id: string | null;
   tercero_nombre: string | null;
@@ -56,6 +57,7 @@ type Rendicion = {
   planned_cash_date: string | null;
   treasury_priority: "critical" | "high" | "normal" | "deferrable" | null;
   preferred_bank_account_id: string | null;
+  created_at: string | null;
 };
 
 const today = new Date().toISOString().split("T")[0];
@@ -115,13 +117,48 @@ export default function Rendiciones() {
     if (!selectedEmpresaId) return;
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from("rendiciones")
-        .select("id, fecha, tercero_id, tercero_nombre, descripcion, monto_total, estado, archivos_urls, treasury_category_id, planned_cash_date, treasury_priority, preferred_bank_account_id")
-        .eq("empresa_id", selectedEmpresaId)
-        .order("created_at", { ascending: false });
-      if (error) throw error;
-      setRendiciones((data || []) as Rendicion[]);
+      const [nativeResult, bankResult] = await Promise.all([
+        supabase
+          .from("rendiciones")
+          .select("id, fecha, tercero_id, tercero_nombre, descripcion, monto_total, estado, archivos_urls, treasury_category_id, planned_cash_date, treasury_priority, preferred_bank_account_id, created_at")
+          .eq("empresa_id", selectedEmpresaId),
+        supabase
+          .from("cash_commitments")
+          .select("id, counterparty, description, amount, status, category_id, expected_date, due_date, priority, bank_account_id, created_at, treasury_categories!inner(code)")
+          .eq("empresa_id", selectedEmpresaId)
+          .eq("treasury_categories.code", "reimbursements")
+          .neq("status", "cancelled")
+          .is("archived_at", null),
+      ]);
+      if (nativeResult.error) throw nativeResult.error;
+      if (bankResult.error) throw bankResult.error;
+
+      const nativeRendiciones: Rendicion[] = (nativeResult.data || []).map((rendicion: any) => ({
+        ...rendicion,
+        source: "rendicion",
+      }));
+      const bankRendiciones: Rendicion[] = (bankResult.data || []).map((commitment: any) => ({
+        id: commitment.id,
+        source: "bank_reconciliation",
+        fecha: commitment.due_date || commitment.expected_date || null,
+        tercero_id: null,
+        tercero_nombre: commitment.counterparty || "Rendición conciliada desde banco",
+        descripcion: commitment.description || "Rendición conciliada desde banco",
+        monto_total: Number(commitment.amount || 0),
+        estado: commitment.status === "paid" ? "pagado" : "pendiente",
+        archivos_urls: null,
+        treasury_category_id: commitment.category_id || null,
+        planned_cash_date: commitment.expected_date || commitment.due_date || null,
+        treasury_priority: commitment.priority || "high",
+        preferred_bank_account_id: commitment.bank_account_id || null,
+        created_at: commitment.created_at || null,
+      }));
+
+      setRendiciones(
+        [...nativeRendiciones, ...bankRendiciones].sort((left, right) =>
+          String(right.created_at || right.fecha || "").localeCompare(String(left.created_at || left.fecha || ""))
+        )
+      );
     } catch (error) {
       console.error("Error fetching rendiciones:", error);
     } finally {
@@ -277,16 +314,28 @@ export default function Rendiciones() {
     if (!selectedEmpresaId || !editingRendicion) return;
     setSavingTreasury(true);
     try {
-      const { error } = await supabase
-        .from("rendiciones")
-        .update({
-          treasury_category_id: editForm.categoryId || null,
-          planned_cash_date: editForm.plannedCashDate || null,
-          treasury_priority: editForm.priority,
-          preferred_bank_account_id: editForm.preferredBankAccountId === "none" ? null : editForm.preferredBankAccountId,
-        })
-        .eq("id", editingRendicion.id)
-        .eq("empresa_id", selectedEmpresaId);
+      const isBankRendition = editingRendicion.source === "bank_reconciliation";
+      const { error } = isBankRendition
+        ? await supabase
+            .from("cash_commitments")
+            .update({
+              category_id: editForm.categoryId || null,
+              expected_date: editForm.plannedCashDate || null,
+              priority: editForm.priority,
+              bank_account_id: editForm.preferredBankAccountId === "none" ? null : editForm.preferredBankAccountId,
+            })
+            .eq("id", editingRendicion.id)
+            .eq("empresa_id", selectedEmpresaId)
+        : await supabase
+            .from("rendiciones")
+            .update({
+              treasury_category_id: editForm.categoryId || null,
+              planned_cash_date: editForm.plannedCashDate || null,
+              treasury_priority: editForm.priority,
+              preferred_bank_account_id: editForm.preferredBankAccountId === "none" ? null : editForm.preferredBankAccountId,
+            })
+            .eq("id", editingRendicion.id)
+            .eq("empresa_id", selectedEmpresaId);
       if (error) throw error;
       setEditingRendicion(null);
       await fetchRendiciones();
@@ -344,7 +393,7 @@ export default function Rendiciones() {
       )}
 
       <div className="grid gap-4 md:grid-cols-3">
-        <SummaryCard title="Rendiciones registradas" value={String(rendiciones.length)} description="Histórico visible" />
+        <SummaryCard title="Rendiciones registradas" value={String(rendiciones.length)} description="Directas y conciliadas desde banco" />
         <SummaryCard title="Pendiente de pago" value={formatTreasuryCurrency(totals.pending)} description="Estado pendiente" />
         <SummaryCard title="Impacto próximos 7 días" value={formatTreasuryCurrency(totals.dueSoon)} description="Según planned cash date" tone="warning" />
       </div>
@@ -352,7 +401,7 @@ export default function Rendiciones() {
       <Card>
         <CardHeader>
           <CardTitle>Listado de rendiciones</CardTitle>
-          <CardDescription>Incluye categoría, prioridad, fecha esperada de pago y cuenta sugerida.</CardDescription>
+          <CardDescription>Incluye rendiciones creadas en este módulo y las conciliadas desde Banco con categoría Reembolsos.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {loading && rendiciones.length === 0 && <Loader2 className="h-5 w-5 animate-spin text-primary" />}
@@ -367,6 +416,9 @@ export default function Rendiciones() {
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Badge variant="outline">{rendicion.estado}</Badge>
+                  {rendicion.source === "bank_reconciliation" && (
+                    <Badge variant="secondary">Conciliada desde banco</Badge>
+                  )}
                   <Badge variant="outline" className={cn("capitalize", PRIORITY_BADGE_CLASSES[rendicion.treasury_priority || "high"])}>
                     {PRIORITY_LABELS[rendicion.treasury_priority || "high"]}
                   </Badge>
