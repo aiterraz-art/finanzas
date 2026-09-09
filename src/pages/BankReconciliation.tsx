@@ -116,6 +116,7 @@ type MatchCandidate = {
   customerId?: string | null;
   customerName?: string | null;
   customerRut?: string | null;
+  supplierId?: string | null;
   amountDifference?: number;
   isSuggested?: boolean;
 };
@@ -495,13 +496,13 @@ export default function BankReconciliation() {
       const invoiceQuery = txn.monto >= 0
         ? supabase
             .from("facturas")
-            .select("id, numero_documento, tercero_nombre, monto, fecha_vencimiento, estado, facturas_pagos(monto_aplicado, estado)")
+            .select("id, tercero_id, numero_documento, tercero_nombre, monto, fecha_vencimiento, estado, facturas_pagos(monto_aplicado, estado)")
             .eq("empresa_id", selectedEmpresaId)
             .eq("tipo", "venta")
             .in("estado", ["pendiente", "morosa", "abonada", "pagada"])
         : supabase
             .from("facturas")
-            .select("id, numero_documento, tercero_nombre, monto, fecha_vencimiento, estado, facturas_pagos(monto_aplicado, estado)")
+            .select("id, tercero_id, numero_documento, tercero_nombre, monto, fecha_vencimiento, estado, facturas_pagos(monto_aplicado, estado)")
             .eq("empresa_id", selectedEmpresaId)
             .eq("tipo", "compra")
             .in("estado", ["pendiente", "morosa", "abonada"]);
@@ -622,6 +623,7 @@ export default function BankReconciliation() {
             dueDate: invoice.fecha_vencimiento || null,
             invoiceNumber: invoice.numero_documento || null,
             customerName: invoice.tercero_nombre || null,
+            supplierId: invoice.tercero_id || null,
             status: invoice.estado || null,
             amountDifference,
             isSuggested,
@@ -724,6 +726,11 @@ export default function BankReconciliation() {
 
   const handleMatch = async (candidate: MatchCandidate) => {
     if (!selectedEmpresaId || !selectedTxn) return;
+
+    if (candidate.type === "factura" && selectedTxn.monto < 0 && Math.abs(selectedTxn.monto) - candidate.amount > 0.01) {
+      alert("El egreso supera el saldo de esta factura. Selecciona esta y otras facturas del mismo proveedor para completar el pago.");
+      return;
+    }
 
     if (candidate.type === "factura" && selectedTxn.monto >= 0) {
       const bankAmount = Math.abs(selectedTxn.monto);
@@ -1717,9 +1724,13 @@ export default function BankReconciliation() {
   );
 
   const selectedInvoiceDifference = useMemo(() => {
-    if (!selectedTxn || selectedTxn.monto < 0) return 0;
+    if (!selectedTxn) return 0;
     return Math.abs(selectedTxn.monto) - selectedInvoiceTotal;
   }, [selectedInvoiceTotal, selectedTxn]);
+
+  const isInvoiceMultiSelection = Boolean(
+    selectedTxn && (selectedTxn.monto < 0 || selectedInflowSource === "factura")
+  );
 
   const selectedTxnReview = useMemo(() => {
     if (!selectedTxn) return null;
@@ -1865,6 +1876,17 @@ export default function BankReconciliation() {
   }, [advanceForm.customerId, allocateDifferenceAsAdvance, customerAdvanceCandidates, selectedInvoiceCandidates]);
 
   const toggleInvoiceCandidate = (candidate: MatchCandidate) => {
+    if ((selectedTxn?.monto ?? 0) < 0 && !selectedInvoiceMatches[candidate.id]) {
+      const selectedSupplier = selectedInvoiceCandidates[0];
+      const selectedSupplierKey = selectedSupplier?.supplierId || selectedSupplier?.customerName?.trim().toLocaleLowerCase();
+      const candidateSupplierKey = candidate.supplierId || candidate.customerName?.trim().toLocaleLowerCase();
+
+      if (selectedSupplierKey && candidateSupplierKey !== selectedSupplierKey) {
+        alert("Para este egreso solo puedes seleccionar facturas del mismo proveedor.");
+        return;
+      }
+    }
+
     setSelectedInvoiceMatches((current) => {
       if (current[candidate.id]) {
         const next = { ...current };
@@ -1872,7 +1894,7 @@ export default function BankReconciliation() {
         return next;
       }
 
-      const bankAmount = selectedTxn && selectedTxn.monto >= 0 ? Math.abs(selectedTxn.monto) : candidate.amount;
+      const bankAmount = selectedTxn ? Math.abs(selectedTxn.monto) : candidate.amount;
       const alreadyApplied = candidates.reduce((sum, currentCandidate) => {
         if (currentCandidate.type !== "factura" || currentCandidate.id === candidate.id) return sum;
         const selection = current[currentCandidate.id];
@@ -1907,7 +1929,7 @@ export default function BankReconciliation() {
         };
       }
 
-      const bankAmount = selectedTxn && selectedTxn.monto >= 0 ? Math.abs(selectedTxn.monto) : candidateAmount;
+      const bankAmount = selectedTxn ? Math.abs(selectedTxn.monto) : candidateAmount;
       const alreadyApplied = candidates.reduce((sum, candidate) => {
         if (candidate.type !== "factura" || candidate.id === candidateId) return sum;
         const selection = current[candidate.id];
@@ -1940,7 +1962,7 @@ export default function BankReconciliation() {
   };
 
   const handleMatchSelectedInvoices = async (allowSimpleAdjustment = false) => {
-    if (!selectedEmpresaId || !selectedTxn || selectedTxn.monto < 0) return;
+    if (!selectedEmpresaId || !selectedTxn) return;
     const selectedInvoices = candidates.filter(
       (candidate) => candidate.type === "factura" && selectedInvoiceMatches[candidate.id]
     );
@@ -1965,11 +1987,21 @@ export default function BankReconciliation() {
       return;
     }
 
+    if (selectedTxn.monto < 0) {
+      const supplierKeys = new Set(
+        payloads.map((item) => item.candidate.supplierId || item.candidate.customerName?.trim().toLocaleLowerCase())
+      );
+      if (supplierKeys.size !== 1 || Array.from(supplierKeys).some((supplierKey) => !supplierKey)) {
+        alert("Para conciliar un egreso selecciona únicamente facturas del mismo proveedor.");
+        return;
+      }
+    }
+
     const totalApplied = payloads.reduce((sum, item) => sum + item.amount, 0);
     const bankAmount = Math.abs(selectedTxn.monto);
     const difference = bankAmount - totalApplied;
-    const canSimpleAdjust = Math.abs(difference) <= 10;
-    const canAllocateAdvance = difference > 0.01 && allocateDifferenceAsAdvance;
+    const canSimpleAdjust = selectedTxn.monto >= 0 && Math.abs(difference) <= 10;
+    const canAllocateAdvance = selectedTxn.monto >= 0 && difference > 0.01 && allocateDifferenceAsAdvance;
     if (canAllocateAdvance && advanceForm.customerId === "none") {
       alert("Selecciona el cliente para dejar la diferencia como anticipo.");
       return;
@@ -2784,20 +2816,31 @@ export default function BankReconciliation() {
             )}
 
             {loadingCandidates && <Loader2 className="h-5 w-5 animate-spin text-primary" />}
-            {!loadingCandidates && selectedTxn && selectedTxn.monto >= 0 && selectedInflowSource === "factura" && (
+            {!loadingCandidates && isInvoiceMultiSelection && (
               <div className="rounded-xl border bg-muted/20 p-4">
                 <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                   <div>
-                    <div className="font-medium">Facturas seleccionadas</div>
-                    <div className="text-sm text-muted-foreground">
-                      Total aplicado: {formatTreasuryCurrency(selectedInvoiceTotal, selectedAccount?.moneda || "CLP")} de {formatTreasuryCurrency(Math.abs(selectedTxn.monto), selectedAccount?.moneda || "CLP")}
+                    <div className="font-medium">
+                      {(selectedTxn?.monto ?? 0) < 0 ? "Facturas seleccionadas para pago" : "Facturas seleccionadas"}
                     </div>
+                    <div className="text-sm text-muted-foreground">
+                      Total aplicado: {formatTreasuryCurrency(selectedInvoiceTotal, selectedAccount?.moneda || "CLP")} de {formatTreasuryCurrency(Math.abs(selectedTxn?.monto ?? 0), selectedAccount?.moneda || "CLP")}
+                    </div>
+                    {(selectedTxn?.monto ?? 0) < 0 && (
+                      <div className="mt-1 text-xs text-sky-700">
+                        {Math.abs(selectedInvoiceDifference) <= 0.01
+                          ? "El total coincide con el egreso."
+                          : selectedInvoiceDifference > 0
+                            ? `Faltan ${formatTreasuryCurrency(selectedInvoiceDifference, selectedAccount?.moneda || "CLP")} por asignar. Selecciona más facturas de este proveedor.`
+                            : `El total excede el egreso en ${formatTreasuryCurrency(Math.abs(selectedInvoiceDifference), selectedAccount?.moneda || "CLP")}. Ajusta los montos aplicados.`}
+                      </div>
+                    )}
                     {canApplySimpleInvoiceAdjustment && (
                       <div className="mt-1 text-xs text-amber-700">
                         Diferencia menor a $10 detectada: {formatTreasuryCurrency(selectedInvoiceDifference, selectedAccount?.moneda || "CLP")}.
                       </div>
                     )}
-                    {!canApplySimpleInvoiceAdjustment && selectedInvoiceDifference > 0.01 && (
+                    {(selectedTxn?.monto ?? 0) >= 0 && !canApplySimpleInvoiceAdjustment && selectedInvoiceDifference > 0.01 && (
                       <div className="mt-1 text-xs text-sky-700">
                         Puedes dejar la diferencia como anticipo del cliente: {formatTreasuryCurrency(selectedInvoiceDifference, selectedAccount?.moneda || "CLP")}.
                       </div>
@@ -2814,13 +2857,21 @@ export default function BankReconciliation() {
                         Ajuste sencillo
                       </Button>
                     )}
-                    <Button onClick={() => void handleMatchSelectedInvoices()} disabled={!canEdit || matchingId === "multi-factura" || selectedInvoiceCandidates.length === 0}>
+                    <Button
+                      onClick={() => void handleMatchSelectedInvoices()}
+                      disabled={
+                        !canEdit ||
+                        matchingId === "multi-factura" ||
+                        selectedInvoiceCandidates.length === 0 ||
+                        ((selectedTxn?.monto ?? 0) < 0 && Math.abs(selectedInvoiceDifference) > 0.01)
+                      }
+                    >
                       {matchingId === "multi-factura" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
                       Conciliar facturas seleccionadas
                     </Button>
                   </div>
                 </div>
-                {!canApplySimpleInvoiceAdjustment && selectedInvoiceDifference > 0.01 && (
+                {(selectedTxn?.monto ?? 0) >= 0 && !canApplySimpleInvoiceAdjustment && selectedInvoiceDifference > 0.01 && (
                   <div className="mt-4 grid gap-3 rounded-lg border bg-background p-3 md:grid-cols-2">
                     <Label className="flex items-center gap-2 md:col-span-2">
                       <input
@@ -2939,7 +2990,7 @@ export default function BankReconciliation() {
                       </div>
                     </div>
                   </div>
-                {selectedTxn && selectedTxn.monto >= 0 && selectedInflowSource === "factura" && candidate.type === "factura" ? (
+                {isInvoiceMultiSelection && candidate.type === "factura" ? (
                   <div className="mt-3 space-y-3 rounded-lg border bg-background p-3">
                     <Label className="flex items-center gap-2">
                       <input
@@ -2947,7 +2998,7 @@ export default function BankReconciliation() {
                         checked={Boolean(selectedInvoiceMatches[candidate.id])}
                         onChange={() => toggleInvoiceCandidate(candidate)}
                       />
-                      Seleccionar esta factura
+                      {(selectedTxn?.monto ?? 0) < 0 ? "Agregar esta factura al pago" : "Seleccionar esta factura"}
                     </Label>
                     {selectedInvoiceMatches[candidate.id] && (
                       <div className="grid gap-3 md:grid-cols-[220px_1fr]">

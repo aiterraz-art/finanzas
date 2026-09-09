@@ -117,6 +117,7 @@ const inferReceivableDueDate = (row: ReceivableInvoiceImportRow) => {
 
 const matchText = (value: unknown) => normalizeText(value).toLowerCase();
 const normalizeDocumentNumber = (value: unknown) => matchText(value).replace(/\s+/g, "");
+const normalizeRutKey = (value: unknown) => normalizeText(value).toUpperCase().replace(/[^0-9K]/g, "");
 
 const parseDelimitedRows = (text: string, delimiter: string) => {
   const rows: string[][] = [];
@@ -255,15 +256,16 @@ export default function InvoiceImport() {
     const clientByRut = new Map<string, ClientRow>();
     const clientByName = new Map<string, ClientRow>();
     for (const client of clients) {
-      if (client.rut) clientByRut.set(normalizeRut(client.rut) || "", client);
+      if (client.rut) clientByRut.set(normalizeRutKey(client.rut), client);
       clientByName.set(matchText(client.razon_social), client);
     }
 
     const missing = new Map<string, { razon_social: string; rut: string | null }>();
     for (const row of rows) {
       const rut = normalizeRut(row.rut);
+      const rutKey = normalizeRutKey(row.rut);
       const nameKey = matchText(row.terceroNombre);
-      if ((rut && clientByRut.has(rut)) || clientByName.has(nameKey)) continue;
+      if ((rutKey && clientByRut.has(rutKey)) || clientByName.has(nameKey)) continue;
       missing.set(rut || nameKey, { razon_social: row.terceroNombre, rut });
     }
 
@@ -308,7 +310,7 @@ export default function InvoiceImport() {
     const clientByRut = new Map<string, ClientRow>();
     const clientByName = new Map<string, ClientRow>();
     for (const client of clients) {
-      if (client.rut) clientByRut.set(normalizeRut(client.rut) || "", client);
+      if (client.rut) clientByRut.set(normalizeRutKey(client.rut), client);
       clientByName.set(matchText(client.razon_social), client);
     }
 
@@ -335,7 +337,7 @@ export default function InvoiceImport() {
       );
       return (
         matches.find((invoice) => client?.id && invoice.tercero_id === client.id) ||
-        matches.find((invoice) => row.rut && normalizeRut(invoice.rut) === normalizeRut(row.rut)) ||
+        matches.find((invoice) => row.rut && normalizeRutKey(invoice.rut) === normalizeRutKey(row.rut)) ||
         matches.find((invoice) => matchText(invoice.tercero_nombre) === matchText(row.terceroNombre)) ||
         matches[0] ||
         null
@@ -358,7 +360,7 @@ export default function InvoiceImport() {
       seenKeys.add(key);
 
       const client =
-        (row.rut && clientByRut.get(normalizeRut(row.rut) || "")) ||
+        (row.rut && clientByRut.get(normalizeRutKey(row.rut))) ||
         clientByName.get(matchText(row.terceroNombre)) ||
         null;
       const dueDate = row.fechaVencimiento || row.fechaEmision;
@@ -486,14 +488,14 @@ export default function InvoiceImport() {
     const byRut = new Map<string, SupplierRow>();
     const byName = new Map<string, SupplierRow>();
     for (const tercero of terceros) {
-      if (tercero.rut) byRut.set(normalizeRut(tercero.rut) || "", tercero);
+      if (tercero.rut) byRut.set(normalizeRutKey(tercero.rut), tercero);
       byName.set(matchText(tercero.razon_social), tercero);
     }
 
     let createdCount = 0;
     for (const row of rows) {
       const existing =
-        (row.rut && byRut.get(normalizeRut(row.rut) || "")) ||
+        (row.rut && byRut.get(normalizeRutKey(row.rut))) ||
         byName.get(matchText(row.terceroNombre));
       if (existing) {
         if (existing.tipo === "cliente") {
@@ -522,7 +524,7 @@ export default function InvoiceImport() {
         .single();
       if (error) throw new Error(`No se pudo crear el proveedor ${row.terceroNombre}: ${error.message}`);
       const supplier = data as SupplierRow;
-      if (supplier.rut) byRut.set(normalizeRut(supplier.rut) || "", supplier);
+      if (supplier.rut) byRut.set(normalizeRutKey(supplier.rut), supplier);
       byName.set(matchText(supplier.razon_social), supplier);
       createdCount += 1;
     }
@@ -554,7 +556,7 @@ export default function InvoiceImport() {
     const seenKeys = new Set<string>();
     for (const row of validRows) {
       const supplier =
-        (row.rut && byRut.get(normalizeRut(row.rut) || "")) ||
+        (row.rut && byRut.get(normalizeRutKey(row.rut))) ||
         byName.get(matchText(row.terceroNombre));
       if (!supplier) throw new Error(`No se encontró el proveedor ${row.terceroNombre} después de crearlo.`);
       const key = [row.tipo, supplier.id, normalizeDocumentNumber(row.numeroDocumento)].join("|");
@@ -688,7 +690,7 @@ export default function InvoiceImport() {
     const clientByRut = new Map<string, ClientRow>();
     const clientByName = new Map<string, ClientRow>();
     for (const client of clients) {
-      if (client.rut) clientByRut.set(normalizeRut(client.rut) || "", client);
+      if (client.rut) clientByRut.set(normalizeRutKey(client.rut), client);
       clientByName.set(matchText(client.razon_social), client);
     }
 
@@ -728,7 +730,7 @@ export default function InvoiceImport() {
       seenKeys.add(key);
 
       const client =
-        (row.rut && clientByRut.get(normalizeRut(row.rut) || "")) ||
+        (row.rut && clientByRut.get(normalizeRutKey(row.rut))) ||
         clientByName.get(matchText(row.terceroNombre)) ||
         null;
       const emissionDate = row.fechaEmision || inferReceivableEmissionDate(row);
