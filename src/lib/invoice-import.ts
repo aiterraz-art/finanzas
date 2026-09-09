@@ -376,6 +376,7 @@ export const normalizeIssuedInvoiceImportRow = (rawRow: RawSheetRow): IssuedInvo
           getValueFromRow(
             rawRow,
             "factura asociada",
+            "folio docto referencia",
             "folio referencia",
             "documento referencia",
             "numero documento referencia",

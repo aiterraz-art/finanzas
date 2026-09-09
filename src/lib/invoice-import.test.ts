@@ -132,8 +132,8 @@ describe("invoice import helpers", () => {
 
   it("parses the SII sales register including net, VAT and credit notes", () => {
     const rows = [
-      ["Nro", "Tipo Doc", "Tipo Venta", "Rut cliente", "Razon Social", "Folio", "Fecha Docto", "Monto Exento", "Monto Neto", "Monto IVA", "Monto total"],
-      ["1", "61", "Del Giro", "76.921.029-6", "Cliente SII", "38", "13/08/2026", "0", "942015", "178983", "1120998"],
+      ["Nro", "Tipo Doc", "Tipo Venta", "Rut cliente", "Razon Social", "Folio", "Fecha Docto", "Monto Exento", "Monto Neto", "Monto IVA", "Monto total", "Folio Docto. Referencia"],
+      ["1", "61", "Del Giro", "76.921.029-6", "Cliente SII", "38", "13/08/2026", "0", "942015", "178983", "1120998", "61"],
     ];
 
     const detection = detectIssuedInvoiceWorksheetFormat(rows);
@@ -146,6 +146,7 @@ describe("invoice import helpers", () => {
     expect(parsed?.montoNeto).toBe(942015);
     expect(parsed?.montoIva).toBe(178983);
     expect(parsed?.monto).toBe(1120998);
+    expect(parsed?.documentoReferencia).toBe("61");
   });
 
   it("parses the SII purchases register and identifies purchase credit notes", () => {

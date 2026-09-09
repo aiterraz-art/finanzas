@@ -279,6 +279,22 @@ export default function InvoiceImport() {
       if (!existingInvoiceByKey.has(key)) existingInvoiceByKey.set(key, invoice);
     }
 
+    const findReferencedInvoice = (row: IssuedInvoiceImportRow, client: ClientRow | null) => {
+      if (row.tipo !== "nota_credito" || !row.documentoReferencia) return null;
+      const matches = Array.from(existingInvoiceByKey.values()).filter(
+        (invoice) =>
+          invoice.tipo === "venta" &&
+          normalizeDocumentNumber(invoice.numero_documento) === normalizeDocumentNumber(row.documentoReferencia)
+      );
+      return (
+        matches.find((invoice) => client?.id && invoice.tercero_id === client.id) ||
+        matches.find((invoice) => row.rut && normalizeRut(invoice.rut) === normalizeRut(row.rut)) ||
+        matches.find((invoice) => matchText(invoice.tercero_nombre) === matchText(row.terceroNombre)) ||
+        matches[0] ||
+        null
+      );
+    };
+
     const seenKeys = new Set<string>();
     let duplicateRows = 0;
     let insertedRows = 0;
@@ -303,6 +319,7 @@ export default function InvoiceImport() {
         row.tipo === "nota_credito" && row.documentoReferencia
           ? [row.descripcion, `Factura asociada: ${row.documentoReferencia}`].filter(Boolean).join(" | ")
           : row.descripcion;
+      const referencedInvoice = findReferencedInvoice(row, client);
       const basePayload = {
         empresa_id: selectedEmpresaId,
         tipo: row.tipo,
@@ -317,6 +334,7 @@ export default function InvoiceImport() {
         monto_iva: row.montoIva ?? null,
         monto_exento: row.montoExento ?? (row.montoNeto === 0 ? row.monto : null),
         origen_importacion: "sii_ventas",
+        ...(referencedInvoice ? { factura_referencia_id: referencedInvoice.id } : {}),
         descripcion: descriptionWithReference,
         tipo_documento: row.tipoDocumento,
         nombre_documento: row.nombreDocumento,
@@ -338,6 +356,7 @@ export default function InvoiceImport() {
             ...(row.montoIva != null ? { monto_iva: row.montoIva } : {}),
             ...(row.montoExento != null || row.montoNeto === 0 ? { monto_exento: row.montoExento ?? row.monto } : {}),
             ...(row.montoNeto != null || row.montoIva != null ? { origen_importacion: "sii_ventas" } : {}),
+            ...(referencedInvoice ? { factura_referencia_id: referencedInvoice.id } : {}),
           })
           .eq("id", existing.id)
           .eq("empresa_id", selectedEmpresaId);
