@@ -590,8 +590,27 @@ export default function InvoiceImport() {
       };
       const existing = existingByKey.get(key);
       if (existing) {
-        duplicateRows += 1;
-        continue;
+        // La compra ya estaba cargada (normalmente a mano, sin desglose de IVA). El registro
+        // del SII es la fuente del neto/IVA/exento, asi que se rellena sin tocar monto,
+        // estado ni fechas, que pueden venir corregidos a mano.
+        const breakdown = {
+          ...(row.montoNeto != null ? { monto_neto: row.montoNeto } : {}),
+          ...(row.montoIva != null ? { monto_iva: row.montoIva } : {}),
+          ...(row.montoExento != null ? { monto_exento: row.montoExento } : {}),
+          ...(row.tipoDocumento ? { tipo_documento: row.tipoDocumento } : {}),
+          ...(row.nombreDocumento ? { nombre_documento: row.nombreDocumento } : {}),
+        };
+        if (Object.keys(breakdown).length === 0) {
+          duplicateRows += 1;
+          continue;
+        }
+        const { error } = await supabase
+          .from("facturas")
+          .update({ ...breakdown, origen_importacion: "sii_compras" })
+          .eq("id", existing.id)
+          .eq("empresa_id", selectedEmpresaId);
+        if (error) throw new Error(`No se pudo actualizar la compra ${row.numeroDocumento}: ${error.message}`);
+        updatedRows += 1;
       } else {
         const { error } = await supabase.from("facturas").insert(payload);
         if (error) throw new Error(`No se pudo insertar la compra ${row.numeroDocumento}: ${error.message}`);
