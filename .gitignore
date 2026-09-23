@@ -24,3 +24,5 @@ dist-ssr
 *.sw?
 .env
 create_admin.js
+.claude/settings.local.json
+tmp/

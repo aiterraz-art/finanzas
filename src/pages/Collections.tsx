@@ -63,6 +63,17 @@ const quickMessage = (invoice: CollectionPipelineItem) =>
   `Hola ${invoice.terceroNombre}, seguimos la factura ${invoice.numeroDocumento || ""} por ${formatTreasuryCurrency(invoice.amount)}. ` +
   `Necesitamos confirmar fecha de pago${invoice.promisedPaymentDate ? ` comprometida para ${formatTreasuryDate(invoice.promisedPaymentDate)}` : ""}.`;
 
+type CreditNoteRow = {
+  id: string;
+  tipo: string;
+  numero_documento: string | null;
+  tercero_nombre: string | null;
+  descripcion: string | null;
+  monto: number | null;
+  estado: string | null;
+  factura_referencia_id?: string | null;
+};
+
 const IMPORT_CHUNK_SIZE = 100;
 
 const chunkArray = <T,>(items: T[], chunkSize: number) => {
@@ -118,19 +129,32 @@ export default function Collections() {
     }
 
     const loadCreditNoteAmounts = async () => {
-      const { data, error: fetchError } = await supabase
-        .from("facturas")
-        .select("id, tipo, numero_documento, tercero_nombre, descripcion, monto, estado")
-        .eq("empresa_id", selectedEmpresaId)
-        .in("tipo", ["venta", "nota_credito"]);
+      const baseColumns = "id, tipo, numero_documento, tercero_nombre, descripcion, monto, estado";
+      const fetchCreditNotes = (columns: string) =>
+        supabase
+          .from("facturas")
+          .select(columns)
+          .eq("empresa_id", selectedEmpresaId)
+          .in("tipo", ["venta", "nota_credito"]);
+
+      let { data, error: fetchError } = await fetchCreditNotes(`${baseColumns}, factura_referencia_id`);
+      // Si la base aun no tiene la columna de referencia, se cae al calce por descripcion.
+      const supportsReference = !fetchError;
+      if (fetchError) {
+        ({ data, error: fetchError } = await fetchCreditNotes(baseColumns));
+      }
       if (fetchError) {
         console.error("Error loading credit notes for collections:", fetchError);
         return;
       }
 
-      const invoices = (data || []).filter((row) => row.tipo === "venta");
+      const rows = (data || []) as unknown as CreditNoteRow[];
+      const invoices = rows.filter((row) => row.tipo === "venta");
       const amounts = new Map<string, number>();
-      for (const creditNote of (data || []).filter((row) => row.tipo === "nota_credito" && row.estado !== "archivada")) {
+      for (const creditNote of rows.filter((row) => row.tipo === "nota_credito" && row.estado !== "archivada")) {
+        // get_collection_pipeline ya descuenta las notas vinculadas por factura_referencia_id:
+        // volver a restarlas aqui duplicaba el descuento y sacaba la factura de la cartera.
+        if (supportsReference && creditNote.factura_referencia_id) continue;
         const invoice = invoices.find(
           (candidate) =>
             normalizeInvoiceNumber(candidate.numero_documento) === normalizeInvoiceNumber(extractReferencedDocumentNumber(creditNote.descripcion)) &&

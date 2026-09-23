@@ -25,7 +25,7 @@ type PnlDocument = {
 
 type PnlPayrollExpense = {
   id: string;
-  kind: "payroll" | "professional_fees";
+  kind: "payroll" | "professional_fees" | "reimbursements";
   description: string;
   counterparty: string | null;
   amount: number;
@@ -39,9 +39,10 @@ type PnlTotals = {
   purchaseCreditNotes: number;
   payroll: number;
   professionalFees: number;
+  reimbursements: number;
 };
 
-const emptyTotals = (): PnlTotals => ({ sales: 0, salesCreditNotes: 0, purchases: 0, purchaseCreditNotes: 0, payroll: 0, professionalFees: 0 });
+const emptyTotals = (): PnlTotals => ({ sales: 0, salesCreditNotes: 0, purchases: 0, purchaseCreditNotes: 0, payroll: 0, professionalFees: 0, reimbursements: 0 });
 const parseLocalDate = (value: string) => new Date(`${value.slice(0, 10)}T12:00:00`);
 
 const documentPnlAmount = (document: PnlDocument) => {
@@ -62,7 +63,7 @@ const addDocumentToTotals = (totals: PnlTotals, document: PnlDocument) => {
 };
 
 const incomeFromTotals = (totals: PnlTotals) => totals.sales - totals.salesCreditNotes;
-const expenseFromTotals = (totals: PnlTotals) => totals.purchases - totals.purchaseCreditNotes + totals.payroll + totals.professionalFees;
+const expenseFromTotals = (totals: PnlTotals) => totals.purchases - totals.purchaseCreditNotes + totals.payroll + totals.professionalFees + totals.reimbursements;
 const formatCurrency = (amount: number) => new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", minimumFractionDigits: 0 }).format(amount);
 
 export default function Reports() {
@@ -96,11 +97,11 @@ export default function Reports() {
           .order("fecha_emision", { ascending: true }),
         supabase
           .from("cash_commitments")
-          .select("id, description, counterparty, amount, accrual_month, treasury_categories!inner(code)")
+          .select("id, movimiento_banco_id, description, counterparty, amount, accrual_month, treasury_categories!inner(code)")
           .eq("empresa_id", selectedEmpresaId)
           .eq("status", "paid")
           .eq("direction", "outflow")
-          .in("treasury_categories.code", ["payroll", "professional_fees"])
+          .in("treasury_categories.code", ["payroll", "professional_fees", "reimbursements"])
           .gte("accrual_month", format(startOfMonth(parseLocalDate(fromDate)), "yyyy-MM-dd"))
           .lte("accrual_month", format(startOfMonth(parseLocalDate(toDate)), "yyyy-MM-dd"))
           .is("archived_at", null),
@@ -108,11 +109,28 @@ export default function Reports() {
       if (documentsResult.error) throw documentsResult.error;
       if (payrollResult.error) throw payrollResult.error;
       setDocuments((documentsResult.data || []) as PnlDocument[]);
-      setPayrollExpenses((payrollResult.data || []).map((expense: any) => {
+      const commitmentRows = payrollResult.data || [];
+      const movementIds = commitmentRows.map((expense: any) => expense.movimiento_banco_id).filter(Boolean);
+      const { data: linkedPayments, error: linkedPaymentsError } = movementIds.length > 0
+        ? await supabase
+            .from("facturas_pagos")
+            .select("movimiento_banco_id, factura_id")
+            .eq("empresa_id", selectedEmpresaId)
+            .eq("estado", "aplicado")
+            .in("movimiento_banco_id", movementIds)
+        : { data: [], error: null };
+      if (linkedPaymentsError) throw linkedPaymentsError;
+      const movementsCoveredByInvoice = new Set(
+        (linkedPayments || []).filter((payment: any) => payment.factura_id).map((payment: any) => payment.movimiento_banco_id)
+      );
+
+      setPayrollExpenses(commitmentRows
+        .filter((expense: any) => !movementsCoveredByInvoice.has(expense.movimiento_banco_id))
+        .map((expense: any) => {
         const category = Array.isArray(expense.treasury_categories) ? expense.treasury_categories[0] : expense.treasury_categories;
         return {
           id: expense.id,
-          kind: category?.code === "professional_fees" ? "professional_fees" : "payroll",
+          kind: category?.code === "professional_fees" ? "professional_fees" : category?.code === "reimbursements" ? "reimbursements" : "payroll",
           description: expense.description || "Sin descripción",
           counterparty: expense.counterparty || null,
           amount: Number(expense.amount || 0),
@@ -138,7 +156,8 @@ export default function Reports() {
     documents.forEach((document) => addDocumentToTotals(next, document));
     payrollExpenses.forEach((expense) => {
       if (expense.kind === "payroll") next.payroll += expense.amount;
-      else next.professionalFees += expense.amount;
+      else if (expense.kind === "professional_fees") next.professionalFees += expense.amount;
+      else next.reimbursements += expense.amount;
     });
     return next;
   }, [documents, payrollExpenses]);
@@ -163,7 +182,8 @@ export default function Reports() {
       const key = expense.accrualMonth.slice(0, 7);
       const current = monthly.get(key) || emptyTotals();
       if (expense.kind === "payroll") current.payroll += expense.amount;
-      else current.professionalFees += expense.amount;
+      else if (expense.kind === "professional_fees") current.professionalFees += expense.amount;
+      else current.reimbursements += expense.amount;
       monthly.set(key, current);
     });
     const rows: Array<{ key: string; label: string; totals: PnlTotals }> = [];
@@ -196,6 +216,7 @@ export default function Reports() {
       { Concepto: "Notas de crédito de compra", Monto: totals.purchaseCreditNotes },
       { Concepto: "Remuneraciones", Monto: -totals.payroll },
       { Concepto: "Honorarios", Monto: -totals.professionalFees },
+      { Concepto: "Rendiciones sin factura asociada", Monto: -totals.reimbursements },
       { Concepto: "Gastos netos", Monto: -expenses },
       { Concepto: "Resultado P/L", Monto: result },
     ];
@@ -209,7 +230,7 @@ export default function Reports() {
     }));
     const payrollRows = payrollExpenses.map((expense) => ({
       Mes: expense.accrualMonth.slice(0, 7),
-      Tipo: expense.kind === "payroll" ? "Remuneración" : "Honorario",
+      Tipo: expense.kind === "payroll" ? "Remuneración" : expense.kind === "professional_fees" ? "Honorario" : "Rendición",
       Beneficiario: expense.counterparty || "Sin beneficiario",
       Detalle: expense.description,
       Monto: -expense.amount,
@@ -250,7 +271,7 @@ export default function Reports() {
 
       <div className="grid gap-4 md:grid-cols-3">
         <MetricCard label="Ingresos netos" amount={income} description="Ventas menos notas de crédito emitidas." tone="emerald" />
-        <MetricCard label="Gastos netos" amount={expenses} description="Compras, remuneraciones y honorarios, netos de notas de crédito." tone="rose" />
+        <MetricCard label="Gastos netos" amount={expenses} description="Compras, rendiciones, remuneraciones y honorarios, netos de notas de crédito." tone="rose" />
         <Card className={result >= 0 ? "border-l-4 border-l-primary" : "border-l-4 border-l-destructive"}>
           <CardHeader className="pb-2"><CardDescription>Resultado del período</CardDescription><CardTitle className="text-2xl">{formatCurrency(result)}</CardTitle></CardHeader>
           <CardContent className="flex items-center gap-2 text-sm text-muted-foreground">{result >= 0 ? <TrendingUp className="h-4 w-4 text-emerald-600" /> : <TrendingDown className="h-4 w-4 text-destructive" />}Margen {margin.toFixed(1)}%</CardContent>
@@ -268,6 +289,7 @@ export default function Reports() {
             <PnlLine label="Notas de crédito de compra" amount={totals.purchaseCreditNotes} muted />
             <PnlLine label="Remuneraciones" amount={-totals.payroll} />
             <PnlLine label="Honorarios" amount={-totals.professionalFees} />
+            <PnlLine label="Rendiciones sin factura asociada" amount={-totals.reimbursements} />
             <PnlLine label="Gastos netos" amount={-expenses} emphasis />
             <div className="border-t pt-3"><PnlLine label="Resultado P/L" amount={result} emphasis result /></div>
           </CardContent>
@@ -277,10 +299,11 @@ export default function Reports() {
           <CardContent className="space-y-3 text-sm text-muted-foreground">
             <p><strong className="text-foreground">Devengo.</strong> Cada documento entra en el período de su fecha de emisión. Conciliarlo en banco no cambia el resultado.</p>
             <p><strong className="text-foreground">Ingresos.</strong> Facturas de venta menos notas de crédito de venta.</p>
-            <p><strong className="text-foreground">Gastos.</strong> Facturas de compra menos notas de crédito de proveedores, más remuneraciones y honorarios conciliados.</p>
+            <p><strong className="text-foreground">Gastos.</strong> Facturas de compra menos notas de crédito de proveedores, más rendiciones, remuneraciones y honorarios conciliados.</p>
             <p><strong className="text-foreground">IVA.</strong> Se usa neto + exento; el IVA queda fuera del resultado. Si un documento antiguo no tiene desglose, se usa su total.</p>
             <p><strong className="text-foreground">Devengo de personal.</strong> Remuneraciones y honorarios entran en el mes indicado al conciliarlos, aunque el pago bancario sea otro mes.</p>
-            <p><strong className="text-foreground">No incluido.</strong> Aportes de capital, anticipos y devoluciones no afectan P/L. Las rendiciones y otros gastos manuales deben respaldarse con su factura de compra para incorporarse.</p>
+            <p><strong className="text-foreground">Rendiciones.</strong> Se incluyen cuando no tienen un pago vinculado a una factura de compra; así una rendición respaldada por factura no se duplica.</p>
+            <p><strong className="text-foreground">No incluido.</strong> Aportes de capital, anticipos y devoluciones no afectan P/L. Otros gastos manuales deben respaldarse con su factura de compra para incorporarse.</p>
             {legacyDocuments > 0 && <p className="rounded-md bg-amber-50 p-3 text-amber-800">Hay {legacyDocuments} documento(s) sin neto/exento: se calcularon con el monto total.</p>}
           </CardContent>
         </Card>
@@ -294,9 +317,9 @@ export default function Reports() {
       </Card>
 
       <Card>
-        <CardHeader><CardTitle>Remuneraciones y honorarios incluidos</CardTitle><CardDescription>Se reconocen según el mes de devengo indicado al conciliar el pago.</CardDescription></CardHeader>
+        <CardHeader><CardTitle>Rendiciones, remuneraciones y honorarios incluidos</CardTitle><CardDescription>Se reconocen según el mes de devengo indicado al conciliar el pago.</CardDescription></CardHeader>
         <CardContent className="overflow-x-auto">
-          <table className="w-full min-w-[700px] text-sm"><thead className="border-b text-left text-xs uppercase text-muted-foreground"><tr><th className="px-3 py-3">Mes P/L</th><th className="px-3 py-3">Tipo</th><th className="px-3 py-3">Beneficiario / detalle</th><th className="px-3 py-3 text-right">Monto</th></tr></thead><tbody>{payrollExpenses.length === 0 ? <tr><td colSpan={4} className="px-3 py-8 text-center text-muted-foreground">No hay remuneraciones u honorarios en este período.</td></tr> : payrollExpenses.map((expense) => <tr key={expense.id} className="border-b last:border-0"><td className="px-3 py-3">{expense.accrualMonth.slice(0, 7)}</td><td className="px-3 py-3">{expense.kind === "payroll" ? "Remuneración" : "Honorario"}</td><td className="px-3 py-3"><div className="font-medium">{expense.counterparty || "Sin beneficiario"}</div><div className="text-xs text-muted-foreground">{expense.description}</div></td><td className="px-3 py-3 text-right font-medium">{formatCurrency(-expense.amount)}</td></tr>)}</tbody></table>
+          <table className="w-full min-w-[700px] text-sm"><thead className="border-b text-left text-xs uppercase text-muted-foreground"><tr><th className="px-3 py-3">Mes P/L</th><th className="px-3 py-3">Tipo</th><th className="px-3 py-3">Beneficiario / detalle</th><th className="px-3 py-3 text-right">Monto</th></tr></thead><tbody>{payrollExpenses.length === 0 ? <tr><td colSpan={4} className="px-3 py-8 text-center text-muted-foreground">No hay rendiciones, remuneraciones u honorarios en este período.</td></tr> : payrollExpenses.map((expense) => <tr key={expense.id} className="border-b last:border-0"><td className="px-3 py-3">{expense.accrualMonth.slice(0, 7)}</td><td className="px-3 py-3">{expense.kind === "payroll" ? "Remuneración" : expense.kind === "professional_fees" ? "Honorario" : "Rendición"}</td><td className="px-3 py-3"><div className="font-medium">{expense.counterparty || "Sin beneficiario"}</div><div className="text-xs text-muted-foreground">{expense.description}</div></td><td className="px-3 py-3 text-right font-medium">{formatCurrency(-expense.amount)}</td></tr>)}</tbody></table>
         </CardContent>
       </Card>
 

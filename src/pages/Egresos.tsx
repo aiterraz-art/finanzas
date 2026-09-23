@@ -562,7 +562,7 @@ export default function Egresos() {
             .from("terceros")
             .select("id, rut, razon_social, email, telefono, direccion, cargo")
             .eq("empresa_id", selectedEmpresaId)
-            .eq("tipo", "proveedor")
+            .in("tipo", ["proveedor", "ambos"])
             .eq("estado", "activo")
             .or("es_trabajador.is.null,es_trabajador.eq.false")
             .order("razon_social", { ascending: true }),
@@ -614,7 +614,7 @@ export default function Egresos() {
           .from("terceros")
           .select("id, rut, razon_social, email, telefono, direccion, cargo")
           .eq("empresa_id", selectedEmpresaId)
-          .eq("tipo", "proveedor")
+          .in("tipo", ["proveedor", "ambos"])
           .eq("estado", "activo")
           .or("es_trabajador.is.null,es_trabajador.eq.false")
           .order("razon_social", { ascending: true }),

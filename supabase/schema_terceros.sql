@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS gestion_laboratorio.terceros (
     updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- Vincular facturas a terceros vía RUT (o ID si se prefiere, usaremos RUT por simplicidad con n8n)
+-- Vincular facturas a terceros vía RUT (o ID si se prefiere, usaremos RUT por simplicidad)
 ALTER TABLE gestion_laboratorio.facturas 
 ADD COLUMN IF NOT EXISTS tercero_id UUID REFERENCES gestion_laboratorio.terceros(id);
 

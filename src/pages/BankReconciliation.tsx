@@ -351,7 +351,7 @@ export default function BankReconciliation() {
     [outflowCategories, quickExpenseForm.categoryId]
   );
   const needsRenditionNumber = selectedQuickExpenseCategory?.code === "reimbursements";
-  const needsAccrualMonth = ["payroll", "professional_fees"].includes(selectedQuickExpenseCategory?.code || "");
+  const needsAccrualMonth = ["payroll", "professional_fees", "reimbursements"].includes(selectedQuickExpenseCategory?.code || "");
   const internalTransferCategoryId = useMemo(
     () => categories.find((category) => category.active && category.code === "internal_transfers")?.id || "",
     [categories]
@@ -611,7 +611,7 @@ export default function BankReconciliation() {
                 .from("terceros")
                 .select("id, razon_social, rut")
                 .eq("empresa_id", selectedEmpresaId)
-                .eq("tipo", "cliente")
+                .in("tipo", ["cliente", "ambos"])
                 .eq("estado", "activo")
                 .order("razon_social", { ascending: true })
             : Promise.resolve({ data: [], error: null }),
@@ -1328,7 +1328,7 @@ export default function BankReconciliation() {
       return;
     }
     if (needsAccrualMonth && !/^\d{4}-\d{2}$/.test(quickExpenseForm.accrualMonth)) {
-      alert("Selecciona el mes al que corresponde esta remuneración u honorario.");
+      alert("Selecciona el mes al que corresponde este gasto para el P/L.");
       return;
     }
 

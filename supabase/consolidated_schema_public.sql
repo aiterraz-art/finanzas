@@ -1,6 +1,6 @@
 -- ESQUEMA CONSOLIDADO (ESQUEMA PUBLIC)
 -- Ejecuta este script para asegurar que todas las tablas existan en 'public'
--- Esto soluciona los problemas de visibilidad en n8n y errores de esquema.
+-- Esto soluciona problemas de visibilidad y errores de esquema.
 
 -- 1. Asegurar que las tablas existan en PUBLIC
 -- Si están en gestion_laboratorio, moverlas. Si no existen, crearlas.

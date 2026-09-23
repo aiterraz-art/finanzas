@@ -1,4 +1,4 @@
--- Internal automation queue for collection reminders (replaces external n8n webhook)
+-- Internal automation queue for collection reminders
 CREATE TABLE IF NOT EXISTS public.collection_reminders (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

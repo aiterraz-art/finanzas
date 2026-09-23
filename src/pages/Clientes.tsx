@@ -93,7 +93,7 @@ export default function Clientes() {
         .from("terceros")
         .select("id, rut, razon_social, email, telefono, direccion, plazo_pago_dias")
         .eq("empresa_id", selectedEmpresaId)
-        .eq("tipo", "cliente")
+        .in("tipo", ["cliente", "ambos"])
         .eq("estado", "activo")
         .order("razon_social", { ascending: true });
       if (error) throw error;
