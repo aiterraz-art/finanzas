@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { addDays, format } from "date-fns";
-import { HandCoins, Loader2, Plus, Search } from "lucide-react";
+import * as XLSX from "xlsx";
+import { FileSpreadsheet, FileText, HandCoins, Loader2, Plus, Search } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -41,9 +42,21 @@ type Cliente = {
 };
 
 const today = new Date().toISOString().split("T")[0];
+const INVOICE_EXPORT_COLUMNS = [
+  "Cliente",
+  "RUT",
+  "Documento",
+  "Vencimiento",
+  "Días de mora",
+  "Monto",
+  "Fecha comprometida",
+  "Última gestión",
+  "Próxima acción",
+];
+
 
 export default function Clientes() {
-  const { selectedEmpresaId, selectedRole } = useCompany();
+  const { selectedEmpresa, selectedEmpresaId, selectedRole } = useCompany();
   const { user } = useAuth();
   const canEdit = canEditTreasury(selectedRole);
   const [clientes, setClientes] = useState<Cliente[]>([]);
@@ -55,6 +68,7 @@ export default function Clientes() {
   const [isSavingInvoice, setIsSavingInvoice] = useState(false);
   const [promiseTarget, setPromiseTarget] = useState<any | null>(null);
   const [savingPromise, setSavingPromise] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
   const [newClienteData, setNewClienteData] = useState({
     rut: "",
     razon_social: "",
@@ -160,6 +174,104 @@ export default function Clientes() {
       { outstanding: 0, promised: 0, risk: 0 }
     );
   }, [groupedClients]);
+
+  // Cobranzas pendientes: solo los clientes con saldo, respetando el buscador.
+  const pendingClients = useMemo(
+    () => groupedClients.filter((cliente) => cliente.outstanding > 0.009),
+    [groupedClients]
+  );
+
+  const exportSubtitle = `${selectedEmpresa?.nombre || "Empresa"} · al ${formatTreasuryDate(today)}${searchQuery.trim() ? ` · filtro "${searchQuery.trim()}"` : ""}`;
+  const exportFilename = `Cobranzas_pendientes_${today}`;
+
+  const invoiceExportRows = useMemo(
+    () =>
+      pendingClients.flatMap((cliente) =>
+        cliente.invoices.map((invoice) => [
+          cliente.razon_social,
+          cliente.rut,
+          invoice.numeroDocumento || "Sin folio",
+          invoice.dueDate ? formatTreasuryDate(invoice.dueDate) : "",
+          invoice.daysOverdue,
+          invoice.amount,
+          invoice.promisedPaymentDate ? formatTreasuryDate(invoice.promisedPaymentDate) : "",
+          invoice.lastContactAt ? formatTreasuryDate(invoice.lastContactAt) : "Sin gestión",
+          invoice.suggestedNextAction,
+        ])
+      ),
+    [pendingClients]
+  );
+
+  const handleExportExcel = () => {
+    if (pendingClients.length === 0) return;
+    const workbook = XLSX.utils.book_new();
+
+    const summarySheet = XLSX.utils.aoa_to_sheet([
+      ["Cobranzas pendientes de clientes"],
+      [exportSubtitle],
+      [],
+      ["Cliente", "RUT", "Facturas", "Monto por cobrar", "Promesas activas", "Mayor mora (días)"],
+      ...pendingClients.map((cliente) => [
+        cliente.razon_social,
+        cliente.rut,
+        cliente.invoices.length,
+        cliente.outstanding,
+        cliente.activePromises,
+        cliente.highestOverdue,
+      ]),
+      ["Total", "", invoiceExportRows.length, totals.outstanding, "", ""],
+    ]);
+    summarySheet["!cols"] = [{ wch: 46 }, { wch: 14 }, { wch: 10 }, { wch: 18 }, { wch: 17 }, { wch: 18 }];
+    XLSX.utils.book_append_sheet(workbook, summarySheet, "Resumen por cliente");
+
+    const detailSheet = XLSX.utils.aoa_to_sheet([
+      INVOICE_EXPORT_COLUMNS,
+      ...invoiceExportRows,
+      ["Total", "", "", "", "", totals.outstanding, "", "", ""],
+    ]);
+    detailSheet["!cols"] = [{ wch: 46 }, { wch: 14 }, { wch: 12 }, { wch: 13 }, { wch: 12 }, { wch: 15 }, { wch: 18 }, { wch: 15 }, { wch: 26 }];
+    XLSX.utils.book_append_sheet(workbook, detailSheet, "Facturas");
+
+    XLSX.writeFile(workbook, `${exportFilename}.xlsx`);
+  };
+
+  const handleExportPdf = async () => {
+    if (pendingClients.length === 0) return;
+    setExportingPdf(true);
+    try {
+      const [{ jsPDF }, { autoTable }] = await Promise.all([import("jspdf"), import("jspdf-autotable")]);
+      const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+      doc.setFontSize(15);
+      doc.text("Cobranzas pendientes de clientes", 40, 44);
+      doc.setFontSize(9);
+      doc.setTextColor(110);
+      doc.text(exportSubtitle, 40, 60);
+      doc.text(
+        `${pendingClients.length} cliente(s) · ${invoiceExportRows.length} factura(s) · Total ${formatTreasuryCurrency(totals.outstanding)}`,
+        40,
+        73
+      );
+      autoTable(doc, {
+        startY: 88,
+        head: [INVOICE_EXPORT_COLUMNS],
+        body: invoiceExportRows.map((row) =>
+          row.map((cell, index) => (index === 5 ? formatTreasuryCurrency(Number(cell)) : String(cell)))
+        ),
+        foot: [["Total", "", "", "", "", formatTreasuryCurrency(totals.outstanding), "", "", ""]],
+        styles: { fontSize: 8, cellPadding: 4, overflow: "linebreak" },
+        headStyles: { fillColor: [15, 23, 42] },
+        footStyles: { fillColor: [241, 245, 249], textColor: [15, 23, 42], fontStyle: "bold" },
+        columnStyles: { 4: { halign: "right" }, 5: { halign: "right" } },
+        margin: { left: 40, right: 40 },
+      });
+      doc.save(`${exportFilename}.pdf`);
+    } catch (error) {
+      console.error("Error exporting collections to PDF:", error);
+      alert("No se pudo generar el PDF.");
+    } finally {
+      setExportingPdf(false);
+    }
+  };
 
   const salesCategoryId = treasuryCategories.find((category) => category.code === "sales")?.id ?? null;
 
@@ -294,9 +406,17 @@ export default function Clientes() {
             Gestión de clientes y facturas de venta con su información de tesorería.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" asChild>
             <Link to="/facturas/importar">Importar base</Link>
+          </Button>
+          <Button variant="outline" onClick={handleExportExcel} disabled={pendingClients.length === 0}>
+            <FileSpreadsheet className="mr-2 h-4 w-4" />
+            Excel
+          </Button>
+          <Button variant="outline" onClick={handleExportPdf} disabled={pendingClients.length === 0 || exportingPdf}>
+            {exportingPdf ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}
+            PDF
           </Button>
           <Button onClick={() => setIsNewInvoiceOpen(true)} disabled={!canEdit}>
             <Plus className="mr-2 h-4 w-4" />
