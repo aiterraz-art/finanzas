@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { addMonths, format, isAfter, startOfMonth } from "date-fns";
+import { addMonths, endOfMonth, format, isAfter, startOfMonth } from "date-fns";
 import { es } from "date-fns/locale";
 import * as XLSX from "xlsx";
-import { CalendarDays, Download, FileText, Loader2, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
+import { Download, FileText, Loader2, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -69,17 +69,23 @@ const formatCurrency = (amount: number) => new Intl.NumberFormat("es-CL", { styl
 export default function Reports() {
   const { selectedEmpresaId } = useCompany();
   const today = new Date();
-  const [fromDate, setFromDate] = useState(format(startOfMonth(today), "yyyy-MM-dd"));
-  const [toDate, setToDate] = useState(format(today, "yyyy-MM-dd"));
+  const [fromMonth, setFromMonth] = useState(format(today, "yyyy-MM"));
+  const [toMonth, setToMonth] = useState(format(today, "yyyy-MM"));
+  // El P/L se lee por mes completo: las remuneraciones y rendiciones se devengan
+  // al mes, asi que un rango a mitad de mes mezclaba un mes entero de personal
+  // con unos pocos dias de facturas.
+  const fromDate = `${fromMonth}-01`;
+  const toDate = format(endOfMonth(parseLocalDate(`${toMonth}-01`)), "yyyy-MM-dd");
   const [documents, setDocuments] = useState<PnlDocument[]>([]);
   const [payrollExpenses, setPayrollExpenses] = useState<PnlPayrollExpense[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const loadPnl = async () => {
-    if (!selectedEmpresaId || !fromDate || !toDate) return;
-    if (fromDate > toDate) {
-      setError("La fecha de inicio no puede ser posterior a la fecha de término.");
+    if (!selectedEmpresaId) return;
+    if (!/^\d{4}-\d{2}$/.test(fromMonth) || !/^\d{4}-\d{2}$/.test(toMonth)) return;
+    if (fromMonth > toMonth) {
+      setError("El mes de inicio no puede ser posterior al mes de término.");
       return;
     }
     setLoading(true);
@@ -149,7 +155,7 @@ export default function Reports() {
 
   useEffect(() => {
     void loadPnl();
-  }, [selectedEmpresaId]);
+  }, [selectedEmpresaId, fromMonth, toMonth]);
 
   const totals = useMemo(() => {
     const next = emptyTotals();
@@ -198,13 +204,13 @@ export default function Reports() {
   }, [documents, fromDate, payrollExpenses, toDate]);
 
   const setCurrentMonth = () => {
-    setFromDate(format(startOfMonth(today), "yyyy-MM-dd"));
-    setToDate(format(today, "yyyy-MM-dd"));
+    setFromMonth(format(today, "yyyy-MM"));
+    setToMonth(format(today, "yyyy-MM"));
   };
 
   const setCurrentYear = () => {
-    setFromDate(format(new Date(today.getFullYear(), 0, 1), "yyyy-MM-dd"));
-    setToDate(format(today, "yyyy-MM-dd"));
+    setFromMonth(format(new Date(today.getFullYear(), 0, 1), "yyyy-MM"));
+    setToMonth(format(today, "yyyy-MM"));
   };
 
   const exportToExcel = () => {
@@ -239,7 +245,7 @@ export default function Reports() {
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(summaryRows), "P-L");
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(detailRows), "Documentos");
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(payrollRows), "Remuneraciones y honorarios");
-    XLSX.writeFile(workbook, `PL_${fromDate}_${toDate}.xlsx`);
+    XLSX.writeFile(workbook, `PL_${fromMonth}_${toMonth}.xlsx`);
   };
 
   if (loading) return <div className="flex h-[70vh] items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div>;
@@ -260,10 +266,9 @@ export default function Reports() {
       </div>
 
       <Card>
-        <CardContent className="grid gap-4 pt-6 md:grid-cols-[1fr_1fr_auto]">
-          <div className="space-y-2"><label className="text-sm font-medium" htmlFor="pnl-from">Desde</label><Input id="pnl-from" type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} /></div>
-          <div className="space-y-2"><label className="text-sm font-medium" htmlFor="pnl-to">Hasta</label><Input id="pnl-to" type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} /></div>
-          <div className="flex items-end"><Button className="w-full" onClick={() => void loadPnl()}><CalendarDays className="mr-2 h-4 w-4" />Aplicar período</Button></div>
+        <CardContent className="grid gap-4 pt-6 md:grid-cols-2">
+          <div className="space-y-2"><label className="text-sm font-medium" htmlFor="pnl-from">Desde el mes</label><Input id="pnl-from" type="month" value={fromMonth} onChange={(event) => setFromMonth(event.target.value)} /></div>
+          <div className="space-y-2"><label className="text-sm font-medium" htmlFor="pnl-to">Hasta el mes</label><Input id="pnl-to" type="month" value={toMonth} onChange={(event) => setToMonth(event.target.value)} /></div>
         </CardContent>
       </Card>
 
