@@ -27,6 +27,7 @@ import {
   formatTreasuryDateTime,
   getConfidenceClasses,
   getConfidenceLabel,
+  normalizeRut,
 } from "@/lib/treasury";
 import { useCollectionPipeline, useTreasuryCategories } from "@/hooks/useTreasury";
 import { cn } from "@/lib/utils";
@@ -284,15 +285,38 @@ export default function Clientes() {
 
     setIsSavingCliente(true);
     try {
-      const cleanRut = newClienteData.rut.replace(/\./g, "").replace(/-/g, "").toUpperCase();
-      const { error } = await supabase.from("terceros").insert({
-        empresa_id: selectedEmpresaId,
-        ...newClienteData,
-        rut: cleanRut,
-        tipo: "cliente",
-        estado: "activo",
-      });
-      if (error) throw error;
+      const cleanRut = normalizeRut(newClienteData.rut) || newClienteData.rut.trim();
+      const { data: existingTercero, error: existingError } = await supabase
+        .from("terceros")
+        .select("id, tipo")
+        .eq("empresa_id", selectedEmpresaId)
+        .eq("rut", cleanRut)
+        .maybeSingle();
+      if (existingError) throw existingError;
+
+      if (existingTercero) {
+        if (existingTercero.tipo === "proveedor") {
+          const { error } = await supabase
+            .from("terceros")
+            .update({ tipo: "ambos", estado: "activo" })
+            .eq("id", existingTercero.id)
+            .eq("empresa_id", selectedEmpresaId);
+          if (error) throw error;
+          alert("El RUT ya existía como proveedor y ahora también quedó habilitado como cliente.");
+        } else {
+          alert("Este RUT ya está registrado como cliente.");
+          return;
+        }
+      } else {
+        const { error } = await supabase.from("terceros").insert({
+          empresa_id: selectedEmpresaId,
+          ...newClienteData,
+          rut: cleanRut,
+          tipo: "cliente",
+          estado: "activo",
+        });
+        if (error) throw error;
+      }
 
       setIsNewClienteOpen(false);
       setNewClienteData({ rut: "", razon_social: "", email: "", telefono: "", direccion: "", plazo_pago_dias: 30 });

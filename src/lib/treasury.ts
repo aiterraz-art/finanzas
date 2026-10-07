@@ -464,9 +464,14 @@ const normalizeImportHeaderToken = (value: unknown) =>
 const rowContainsPatterns = (tokens: string[], patterns: string[]) =>
   tokens.some((token) => patterns.some((pattern) => token.includes(pattern)));
 
+// Formato canónico 12345678-9 (sin puntos, con guion, K mayúscula). La base aplica la
+// misma regla con public.normalize_rut, así que ambos lados deben coincidir.
 export const normalizeRut = (value: unknown) => {
   const text = normalizeText(value).replace(/\./g, "").toUpperCase();
-  return text || null;
+  if (!text) return null;
+  if (!/^[0-9\s]+-?\s*[0-9K]$/.test(text)) return text;
+  const compact = text.replace(/[^0-9K]/g, "");
+  return `${compact.slice(0, -1)}-${compact.slice(-1)}`;
 };
 
 export const detectWorksheetImportFormat = (rows: unknown[][]): WorksheetImportDetection => {

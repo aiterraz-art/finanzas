@@ -9,6 +9,7 @@ import {
   normalizeChequeImportRow,
   normalizeDateInput,
   normalizeMoneyInput,
+  normalizeRut,
 } from "@/lib/treasury";
 
 describe("treasury helpers", () => {
@@ -221,5 +222,13 @@ describe("treasury helpers", () => {
     expect(canEditTreasury("viewer")).toBe(false);
     expect(canEditTreasury("manager")).toBe(true);
     expect(canEditTreasury("admin")).toBe(true);
+  });
+
+  it("normalizes RUTs to a single canonical format", () => {
+    expect(normalizeRut("78.490.030-4")).toBe("78490030-4");
+    expect(normalizeRut("784900304")).toBe("78490030-4");
+    expect(normalizeRut("76458595k")).toBe("76458595-K");
+    expect(normalizeRut(" 5.642.862 - 3 ")).toBe("5642862-3");
+    expect(normalizeRut("")).toBeNull();
   });
 });

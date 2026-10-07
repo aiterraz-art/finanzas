@@ -42,6 +42,7 @@ import {
   canEditTreasury,
   formatTreasuryCurrency,
   formatTreasuryDate,
+  normalizeRut,
 } from "@/lib/treasury";
 import type { CashCommitment, PaymentQueueItem, TreasuryPriority } from "@/lib/treasury";
 import { cn } from "@/lib/utils";
@@ -711,7 +712,7 @@ export default function Egresos() {
         .from("terceros")
         .insert({
           empresa_id: selectedEmpresaId,
-          rut: providerForm.rut.trim(),
+          rut: normalizeRut(providerForm.rut) || providerForm.rut.trim(),
           razon_social: providerForm.razonSocial.trim(),
           email: providerForm.email.trim() || null,
           telefono: providerForm.telefono.trim() || null,
@@ -754,7 +755,7 @@ export default function Egresos() {
         .from("terceros")
         .insert({
           empresa_id: selectedEmpresaId,
-          rut: workerForm.rut.trim(),
+          rut: normalizeRut(workerForm.rut) || workerForm.rut.trim(),
           razon_social: workerForm.razonSocial.trim(),
           cargo: workerForm.cargo.trim() || null,
           email: workerForm.email.trim() || null,

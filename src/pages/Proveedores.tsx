@@ -32,6 +32,7 @@ import {
   canEditTreasury,
   formatTreasuryCurrency,
   formatTreasuryDate,
+  normalizeRut,
 } from "@/lib/treasury";
 import { cn } from "@/lib/utils";
 
@@ -412,13 +413,12 @@ export default function Proveedores() {
 
     setIsSavingProv(true);
     try {
-      const cleanRut = newProvData.rut.replace(/\./g, "").replace(/-/g, "").toUpperCase();
-      const candidateRuts = Array.from(new Set([cleanRut, newProvData.rut.trim().toUpperCase()]));
+      const cleanRut = normalizeRut(newProvData.rut) || newProvData.rut.trim();
       const { data: existingTercero, error: existingError } = await supabase
         .from("terceros")
         .select("id, tipo")
         .eq("empresa_id", selectedEmpresaId)
-        .in("rut", candidateRuts)
+        .eq("rut", cleanRut)
         .maybeSingle();
       if (existingError) throw existingError;
 
