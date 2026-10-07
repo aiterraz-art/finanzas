@@ -6,6 +6,7 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
+  Sparkles,
   Upload,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -44,6 +45,7 @@ import { useBankAccountPositions, useBankAccounts, useTreasuryCategories } from 
 import { cn } from "@/lib/utils";
 import type { TreasuryPriority } from "@/lib/treasury";
 import { extractReferencedDocumentNumber } from "@/lib/invoice-import";
+import { buildAutoMatchSuggestions, type AutoMatchCandidateType } from "@/lib/autoReconciliation";
 
 type BankMovement = {
   id: string;
@@ -129,6 +131,15 @@ type MatchCandidate = {
   amountDifference?: number;
   isSuggested?: boolean;
 };
+
+type AutoPoolCandidate = MatchCandidate & {
+  type: AutoMatchCandidateType;
+  key: string;
+  direction: "inflow" | "outflow";
+  dates: Array<string | null>;
+};
+
+const AUTO_MATCH_WINDOW_OPTIONS = [3, 7, 15, 30];
 
 type ImportSummary = {
   inserted: number;
@@ -268,6 +279,33 @@ const readFirstLinkedRow = <T,>(value: T[] | T | null | undefined) => (Array.isA
 const getActivePayments = (txn: BankMovement) => (txn.facturas_pagos || []).filter((payment) => payment.estado !== "revertido");
 const isAmountMatch = (left: number, right: number) => Math.abs(left - right) <= 0.01;
 
+const buildCreditNotesByInvoiceId = (invoices: any[], creditNotes: any[]) => {
+  const creditNotesByInvoiceId = new Map<string, number>();
+  for (const creditNote of creditNotes) {
+    const referencedInvoice = invoices.find(
+      (invoice: any) =>
+        normalizeInvoiceNumber(invoice.numero_documento) === normalizeInvoiceNumber(extractReferencedDocumentNumber(creditNote.descripcion)) &&
+        (!creditNote.tercero_nombre || invoice.tercero_nombre === creditNote.tercero_nombre)
+    );
+    if (!referencedInvoice) continue;
+    creditNotesByInvoiceId.set(
+      referencedInvoice.id,
+      (creditNotesByInvoiceId.get(referencedInvoice.id) || 0) + Number(creditNote.monto || 0)
+    );
+  }
+  return creditNotesByInvoiceId;
+};
+
+const getInvoiceRemainingAmount = (invoice: any, creditNotesByInvoiceId: Map<string, number>) =>
+  Math.max(
+    Number(invoice.monto || 0) -
+      ((invoice.facturas_pagos || []) as any[])
+        .filter((payment) => payment.estado === "aplicado")
+        .reduce((sum, payment) => sum + Number(payment.monto_aplicado || 0), 0) -
+      (creditNotesByInvoiceId.get(invoice.id) || 0),
+    0
+  );
+
 export default function BankReconciliation() {
   const { selectedEmpresaId, selectedRole } = useCompany();
   const { user } = useAuth();
@@ -327,6 +365,13 @@ export default function BankReconciliation() {
   const [savingQuickCapital, setSavingQuickCapital] = useState(false);
   const [transferMode, setTransferMode] = useState(false);
   const [transferCounterpartId, setTransferCounterpartId] = useState("");
+  const [autoPool, setAutoPool] = useState<AutoPoolCandidate[]>([]);
+  const [loadingAutoPool, setLoadingAutoPool] = useState(false);
+  const [autoMaxDays, setAutoMaxDays] = useState(7);
+  const [autoChoices, setAutoChoices] = useState<Record<string, string>>({});
+  const [autoChecked, setAutoChecked] = useState<Record<string, boolean>>({});
+  const [autoProgress, setAutoProgress] = useState<{ done: number; total: number } | null>(null);
+  const autoPoolRequestRef = useRef(0);
 
   const { data: bankAccounts, refresh: refreshBankAccounts } = useBankAccounts(selectedEmpresaId);
   const { data: bankPositions, refresh: refreshPositions } = useBankAccountPositions(selectedEmpresaId);
@@ -371,6 +416,19 @@ export default function BankReconciliation() {
       setTransactions([]);
       setLatestImport(null);
     }
+  }, [selectedEmpresaId, selectedAccountId]);
+
+  useEffect(() => {
+    if (selectedEmpresaId && selectedAccountId && canEdit) {
+      void fetchAutoPool();
+    } else {
+      setAutoPool([]);
+    }
+  }, [transactions]);
+
+  useEffect(() => {
+    setAutoChoices({});
+    setAutoChecked({});
   }, [selectedEmpresaId, selectedAccountId]);
 
   useEffect(() => {
@@ -635,30 +693,11 @@ export default function BankReconciliation() {
       if (customersError) throw customersError;
       if (renditionAdvancesError) throw renditionAdvancesError;
 
-      const creditNotesByInvoiceId = new Map<string, number>();
-      for (const creditNote of creditNotes || []) {
-        const referencedInvoice = (invoices || []).find(
-          (invoice: any) =>
-            normalizeInvoiceNumber(invoice.numero_documento) === normalizeInvoiceNumber(extractReferencedDocumentNumber(creditNote.descripcion)) &&
-            (!creditNote.tercero_nombre || invoice.tercero_nombre === creditNote.tercero_nombre)
-        );
-        if (!referencedInvoice) continue;
-        creditNotesByInvoiceId.set(
-          referencedInvoice.id,
-          (creditNotesByInvoiceId.get(referencedInvoice.id) || 0) + Number(creditNote.monto || 0)
-        );
-      }
+      const creditNotesByInvoiceId = buildCreditNotesByInvoiceId(invoices || [], creditNotes || []);
 
       const nextCandidates: MatchCandidate[] = [
         ...(invoices || []).map((invoice: any) => {
-          const remainingAmount = Math.max(
-            Number(invoice.monto || 0) -
-              ((invoice.facturas_pagos || []) as any[])
-                .filter((payment) => payment.estado === "aplicado")
-                .reduce((sum, payment) => sum + Number(payment.monto_aplicado || 0), 0) -
-              (creditNotesByInvoiceId.get(invoice.id) || 0),
-            0
-          );
+          const remainingAmount = getInvoiceRemainingAmount(invoice, creditNotesByInvoiceId);
           const amountDifference = Number(Math.abs(absAmount - remainingAmount).toFixed(2));
           const isSuggested = isAmountMatch(absAmount, remainingAmount);
 
@@ -790,6 +829,264 @@ export default function BankReconciliation() {
     }
   };
 
+  const fetchAutoPool = async () => {
+    if (!selectedEmpresaId || !selectedAccountId) return;
+    const requestId = ++autoPoolRequestRef.current;
+    setLoadingAutoPool(true);
+    try {
+      const [
+        { data: invoices, error: invoiceError },
+        { data: creditNotes, error: creditNotesError },
+        { data: rendiciones, error: rendicionError },
+        { data: cheques, error: chequesError },
+        { data: webpayRows, error: webpayError },
+        { data: commitments, error: commitmentsError },
+      ] = await Promise.all([
+        supabase
+          .from("facturas")
+          .select("id, tipo, tercero_id, numero_documento, tercero_nombre, monto, fecha_emision, fecha_vencimiento, estado, facturas_pagos(monto_aplicado, estado)")
+          .eq("empresa_id", selectedEmpresaId)
+          .in("tipo", ["venta", "compra"])
+          .in("estado", ["pendiente", "morosa", "abonada"]),
+        supabase
+          .from("facturas")
+          .select("monto, descripcion, tercero_nombre")
+          .eq("empresa_id", selectedEmpresaId)
+          .eq("tipo", "nota_credito")
+          .neq("estado", "archivada"),
+        supabase
+          .from("rendiciones")
+          .select("id, descripcion, tercero_nombre, monto_total, fecha")
+          .eq("empresa_id", selectedEmpresaId)
+          .eq("estado", "pendiente"),
+        supabase
+          .from("cheques_cartera")
+          .select("id, numero_cheque, librador, monto, fecha_cobro_esperada, estado")
+          .eq("empresa_id", selectedEmpresaId)
+          .in("estado", ["en_cartera", "depositado"]),
+        supabase
+          .from("webpay_liquidaciones")
+          .select("id, orden_compra, monto_neto, fecha_abono_esperada, terceros(razon_social), facturas(numero_documento)")
+          .eq("empresa_id", selectedEmpresaId)
+          .eq("estado", "pendiente"),
+        supabase
+          .from("cash_commitments")
+          .select("id, description, counterparty, amount, due_date, expected_date, status")
+          .eq("empresa_id", selectedEmpresaId)
+          .eq("direction", "outflow")
+          .in("status", ["planned", "confirmed", "deferred"])
+          .is("archived_at", null)
+          .or(`bank_account_id.eq.${selectedAccountId},bank_account_id.is.null`),
+      ]);
+      if (invoiceError) throw invoiceError;
+      if (creditNotesError) throw creditNotesError;
+      if (rendicionError) throw rendicionError;
+      if (chequesError) throw chequesError;
+      if (webpayError) throw webpayError;
+      if (commitmentsError) throw commitmentsError;
+
+      const salesInvoices = ((invoices || []) as any[]).filter((invoice) => invoice.tipo === "venta");
+      const creditNotesByInvoiceId = buildCreditNotesByInvoiceId(salesInvoices, creditNotes || []);
+
+      const pool: AutoPoolCandidate[] = [
+        ...((invoices || []) as any[]).map((invoice) => {
+          const isSale = invoice.tipo === "venta";
+          return {
+            id: invoice.id,
+            key: `factura:${invoice.id}`,
+            type: "factura" as const,
+            direction: isSale ? ("inflow" as const) : ("outflow" as const),
+            label: `${invoice.tercero_nombre || "Sin tercero"} • ${invoice.numero_documento || "Sin folio"}`,
+            subtitle: isSale ? "Factura de venta" : "Factura por pagar",
+            amount: getInvoiceRemainingAmount(invoice, isSale ? creditNotesByInvoiceId : new Map()),
+            dueDate: invoice.fecha_vencimiento || null,
+            dates: [invoice.fecha_emision || null, invoice.fecha_vencimiento || null],
+            invoiceNumber: invoice.numero_documento || null,
+            customerName: invoice.tercero_nombre || null,
+            supplierId: invoice.tercero_id || null,
+            status: invoice.estado || null,
+          };
+        }),
+        ...((rendiciones || []) as any[]).map((rendicion) => ({
+          id: rendicion.id,
+          key: `rendicion:${rendicion.id}`,
+          type: "rendicion" as const,
+          direction: "outflow" as const,
+          label: `${rendicion.tercero_nombre || "Sin responsable"} • ${rendicion.descripcion || "Rendición"}`,
+          subtitle: "Rendición pendiente",
+          amount: Number(rendicion.monto_total || 0),
+          dueDate: rendicion.fecha || null,
+          dates: [rendicion.fecha || null],
+        })),
+        ...((cheques || []) as any[]).map((cheque) => ({
+          id: cheque.id,
+          key: `cheque:${cheque.id}`,
+          type: "cheque" as const,
+          direction: "inflow" as const,
+          label: `${cheque.librador || "Sin librador"} • cheque ${cheque.numero_cheque || "S/N"}`,
+          subtitle: "Cheque en cartera",
+          amount: Number(cheque.monto || 0),
+          dueDate: cheque.fecha_cobro_esperada || null,
+          dates: [cheque.fecha_cobro_esperada || null],
+        })),
+        ...((webpayRows || []) as any[]).map((row) => {
+          const client = readFirstLinkedRow(row.terceros) as { razon_social?: string | null } | null;
+          const invoice = readFirstLinkedRow(row.facturas) as { numero_documento?: string | null } | null;
+          return {
+            id: row.id,
+            key: `webpay:${row.id}`,
+            type: "webpay" as const,
+            direction: "inflow" as const,
+            label: `${client?.razon_social || invoice?.numero_documento || "WebPay"} • orden ${row.orden_compra || "S/N"}`,
+            subtitle: "WebPay por recibir",
+            amount: Number(row.monto_neto || 0),
+            dueDate: row.fecha_abono_esperada || null,
+            dates: [row.fecha_abono_esperada || null],
+          };
+        }),
+        ...((commitments || []) as any[]).map((commitment) => ({
+          id: commitment.id,
+          key: `commitment:${commitment.id}`,
+          type: "commitment" as const,
+          direction: "outflow" as const,
+          label: `${commitment.counterparty || "Sin contraparte"} • ${commitment.description || "Compromiso"}`,
+          subtitle: "Egreso manual / compromiso",
+          amount: Number(commitment.amount || 0),
+          dueDate: commitment.expected_date || null,
+          dates: [commitment.expected_date || null, commitment.due_date || null],
+          status: commitment.status || null,
+        })),
+      ].filter((candidate) => candidate.amount > 0.01);
+
+      if (requestId === autoPoolRequestRef.current) setAutoPool(pool);
+    } catch (error) {
+      console.error("Error loading auto reconciliation candidates:", error);
+      if (requestId === autoPoolRequestRef.current) setAutoPool([]);
+    } finally {
+      if (requestId === autoPoolRequestRef.current) setLoadingAutoPool(false);
+    }
+  };
+
+  const applyCandidateMatch = async (txn: BankMovement, candidate: MatchCandidate, advanceNotes = "") => {
+    if (!selectedEmpresaId) return;
+    if (candidate.type === "customer") {
+      const { error: advanceError } = await supabase.from("customer_advances").insert({
+        empresa_id: selectedEmpresaId,
+        tercero_id: candidate.customerId || candidate.id,
+        movimiento_banco_id: txn.id,
+        tercero_nombre: candidate.customerName || candidate.label,
+        rut: candidate.customerRut || null,
+        amount: Math.abs(txn.monto),
+        remaining_amount: Math.abs(txn.monto),
+        currency: selectedAccount?.moneda || "CLP",
+        received_at: txn.fecha_movimiento,
+        status: "open",
+        notes: advanceNotes.trim() || null,
+        created_by: user?.id || null,
+      });
+      if (advanceError) throw advanceError;
+    }
+
+    if (candidate.type === "factura" || candidate.type === "rendicion") {
+      const payload = {
+        empresa_id: selectedEmpresaId,
+        factura_id: candidate.type === "factura" ? candidate.id : null,
+        rendicion_id: candidate.type === "rendicion" ? candidate.id : null,
+        movimiento_banco_id: txn.id,
+        monto_aplicado: Math.min(Math.abs(txn.monto), candidate.amount),
+        estado: "aplicado",
+      };
+      const { error: paymentError } = await supabase.from("facturas_pagos").insert(payload);
+      if (paymentError) throw paymentError;
+    }
+
+    const { error: movementError } = await supabase
+      .from("movimientos_banco")
+      .update({
+        estado: "conciliado",
+        tipo_conciliacion:
+          candidate.type === "rendicion"
+            ? "rendicion"
+            : candidate.type === "cheque"
+              ? "cheque"
+              : candidate.type === "webpay"
+                ? "webpay"
+                : candidate.type === "commitment"
+                  ? "commitment"
+                  : candidate.type === "customer"
+                    ? "advance"
+                    : candidate.type === "rendition_advance"
+                      ? "rendition_advance"
+                : "factura",
+        numero_documento:
+          candidate.type === "cheque" || candidate.type === "webpay" || candidate.type === "commitment" || candidate.type === "customer" || candidate.type === "rendition_advance"
+            ? candidate.label
+            : candidate.type === "factura"
+              ? candidate.label
+              : txn.numero_documento,
+      })
+      .eq("id", txn.id)
+      .eq("empresa_id", selectedEmpresaId);
+    if (movementError) throw movementError;
+
+    if (candidate.type === "factura") {
+      await syncInvoiceStatuses([candidate.id]);
+    } else if (candidate.type === "rendicion") {
+      const { error } = await supabase
+        .from("rendiciones")
+        .update({ estado: "pagado" })
+        .eq("id", candidate.id)
+        .eq("empresa_id", selectedEmpresaId);
+      if (error) throw error;
+    } else if (candidate.type === "cheque") {
+      const { error } = await supabase
+        .from("cheques_cartera")
+        .update({
+          estado: "cobrado",
+          fecha_cobro_real: txn.fecha_movimiento,
+          movimiento_banco_id: txn.id,
+        })
+        .eq("id", candidate.id)
+        .eq("empresa_id", selectedEmpresaId);
+      if (error) throw error;
+    } else if (candidate.type === "webpay") {
+      const { error } = await supabase
+        .from("webpay_liquidaciones")
+        .update({
+          estado: "conciliado",
+          fecha_abono_real: txn.fecha_movimiento,
+          movimiento_banco_id: txn.id,
+        })
+        .eq("id", candidate.id)
+        .eq("empresa_id", selectedEmpresaId);
+      if (error) throw error;
+    } else if (candidate.type === "commitment") {
+      const { error } = await supabase
+        .from("cash_commitments")
+        .update({
+          status: "paid",
+          estado_previo_conciliacion: candidate.status || "planned",
+          movimiento_banco_id: txn.id,
+        })
+        .eq("id", candidate.id)
+        .eq("empresa_id", selectedEmpresaId);
+      if (error) throw error;
+    } else if (candidate.type === "rendition_advance") {
+      const { error } = await supabase
+        .from("rendition_advances")
+        .update({
+          remaining_amount: 0,
+          return_movement_id: txn.id,
+          returned_at: txn.fecha_movimiento,
+          status: "settled",
+        })
+        .eq("id", candidate.id)
+        .eq("empresa_id", selectedEmpresaId)
+        .eq("status", "open");
+      if (error) throw error;
+    }
+  };
+
   const handleMatch = async (candidate: MatchCandidate) => {
     if (!selectedEmpresaId || !selectedTxn) return;
 
@@ -826,123 +1123,9 @@ export default function BankReconciliation() {
 
     setMatchingId(candidate.id);
     try {
+      await applyCandidateMatch(selectedTxn, candidate, advanceForm.notes);
       if (candidate.type === "customer") {
-      const { error: advanceError } = await supabase.from("customer_advances").insert({
-        empresa_id: selectedEmpresaId,
-        tercero_id: candidate.customerId || candidate.id,
-          movimiento_banco_id: selectedTxn.id,
-          tercero_nombre: candidate.customerName || candidate.label,
-          rut: candidate.customerRut || null,
-          amount: Math.abs(selectedTxn.monto),
-          remaining_amount: Math.abs(selectedTxn.monto),
-          currency: selectedAccount?.moneda || "CLP",
-          received_at: selectedTxn.fecha_movimiento,
-          status: "open",
-          notes: advanceForm.notes.trim() || null,
-          created_by: user?.id || null,
-        });
-        if (advanceError) throw advanceError;
-      }
-
-      if (candidate.type === "factura" || candidate.type === "rendicion") {
-        const payload = {
-          empresa_id: selectedEmpresaId,
-          factura_id: candidate.type === "factura" ? candidate.id : null,
-          rendicion_id: candidate.type === "rendicion" ? candidate.id : null,
-          movimiento_banco_id: selectedTxn.id,
-          monto_aplicado: Math.min(Math.abs(selectedTxn.monto), candidate.amount),
-          estado: "aplicado",
-        };
-        const { error: paymentError } = await supabase.from("facturas_pagos").insert(payload);
-        if (paymentError) throw paymentError;
-      }
-
-      const { error: movementError } = await supabase
-        .from("movimientos_banco")
-        .update({
-          estado: "conciliado",
-          tipo_conciliacion:
-            candidate.type === "rendicion"
-              ? "rendicion"
-              : candidate.type === "cheque"
-                ? "cheque"
-                : candidate.type === "webpay"
-                  ? "webpay"
-                  : candidate.type === "commitment"
-                    ? "commitment"
-                    : candidate.type === "customer"
-                      ? "advance"
-                      : candidate.type === "rendition_advance"
-                        ? "rendition_advance"
-                  : "factura",
-          numero_documento:
-            candidate.type === "cheque" || candidate.type === "webpay" || candidate.type === "commitment" || candidate.type === "customer" || candidate.type === "rendition_advance"
-              ? candidate.label
-              : candidate.type === "factura"
-                ? candidate.label
-                : selectedTxn.numero_documento,
-        })
-        .eq("id", selectedTxn.id)
-        .eq("empresa_id", selectedEmpresaId);
-      if (movementError) throw movementError;
-
-      if (candidate.type === "factura") {
-        await syncInvoiceStatuses([candidate.id]);
-      } else if (candidate.type === "rendicion") {
-        const { error } = await supabase
-          .from("rendiciones")
-          .update({ estado: "pagado" })
-          .eq("id", candidate.id)
-          .eq("empresa_id", selectedEmpresaId);
-        if (error) throw error;
-      } else if (candidate.type === "cheque") {
-        const { error } = await supabase
-          .from("cheques_cartera")
-          .update({
-            estado: "cobrado",
-            fecha_cobro_real: selectedTxn.fecha_movimiento,
-            movimiento_banco_id: selectedTxn.id,
-          })
-          .eq("id", candidate.id)
-          .eq("empresa_id", selectedEmpresaId);
-        if (error) throw error;
-      } else if (candidate.type === "webpay") {
-        const { error } = await supabase
-          .from("webpay_liquidaciones")
-          .update({
-            estado: "conciliado",
-            fecha_abono_real: selectedTxn.fecha_movimiento,
-            movimiento_banco_id: selectedTxn.id,
-          })
-          .eq("id", candidate.id)
-          .eq("empresa_id", selectedEmpresaId);
-        if (error) throw error;
-      } else if (candidate.type === "commitment") {
-        const { error } = await supabase
-          .from("cash_commitments")
-          .update({
-            status: "paid",
-            estado_previo_conciliacion: candidate.status || "planned",
-            movimiento_banco_id: selectedTxn.id,
-          })
-          .eq("id", candidate.id)
-          .eq("empresa_id", selectedEmpresaId);
-        if (error) throw error;
-      } else if (candidate.type === "customer") {
         setAdvanceForm({ customerId: "none", customerSearch: "", notes: "" });
-      } else if (candidate.type === "rendition_advance") {
-        const { error } = await supabase
-          .from("rendition_advances")
-          .update({
-            remaining_amount: 0,
-            return_movement_id: selectedTxn.id,
-            returned_at: selectedTxn.fecha_movimiento,
-            status: "settled",
-          })
-          .eq("id", candidate.id)
-          .eq("empresa_id", selectedEmpresaId)
-          .eq("status", "open");
-        if (error) throw error;
       }
 
       setSelectedTxn(null);
@@ -1848,6 +2031,84 @@ export default function BankReconciliation() {
     };
   }, [transactions]);
 
+  const autoPoolByKey = useMemo(() => new Map(autoPool.map((candidate) => [candidate.key, candidate])), [autoPool]);
+
+  const autoSuggestions = useMemo(() => {
+    const pending = transactions.filter((txn) => txn.estado !== "conciliado");
+    const pendingById = new Map(pending.map((txn) => [txn.id, txn]));
+    return buildAutoMatchSuggestions(
+      pending.map((txn) => ({ id: txn.id, fecha: txn.fecha_movimiento, monto: Number(txn.monto) })),
+      autoPool.map((candidate) => ({
+        id: candidate.key,
+        type: candidate.type,
+        direction: candidate.direction,
+        amount: candidate.amount,
+        dates: candidate.dates,
+      })),
+      { maxDays: autoMaxDays }
+    ).map((suggestion) => ({ ...suggestion, movement: pendingById.get(suggestion.movementId)! }));
+  }, [transactions, autoPool, autoMaxDays]);
+
+  const getAutoChoice = (suggestion: (typeof autoSuggestions)[number]) => {
+    const chosen = autoChoices[suggestion.movementId];
+    return chosen && suggestion.options.some((option) => option.candidateId === chosen) ? chosen : suggestion.candidateId;
+  };
+
+  const checkedAutoSuggestions = autoSuggestions.filter((suggestion) => autoChecked[suggestion.movementId]);
+  const allAutoChecked = autoSuggestions.length > 0 && checkedAutoSuggestions.length === autoSuggestions.length;
+
+  const handleApplyAutoSuggestions = async () => {
+    if (!selectedEmpresaId || !canEdit || checkedAutoSuggestions.length === 0) return;
+
+    const rows = checkedAutoSuggestions.map((suggestion) => ({
+      movement: suggestion.movement,
+      candidate: autoPoolByKey.get(getAutoChoice(suggestion)),
+    }));
+    if (rows.some((row) => !row.candidate)) {
+      alert("Algunas sugerencias ya no están disponibles. Refresca la pantalla e intenta de nuevo.");
+      return;
+    }
+    const chosenKeys = rows.map((row) => row.candidate!.key);
+    if (new Set(chosenKeys).size !== chosenKeys.length) {
+      alert("Elegiste el mismo documento para más de un movimiento. Corrige la selección antes de conciliar.");
+      return;
+    }
+    const currency = selectedAccount?.moneda || "CLP";
+    const confirmed = window.confirm(
+      `Se conciliarán ${rows.length} movimiento(s) por ${formatTreasuryCurrency(
+        rows.reduce((sum, row) => sum + Math.abs(Number(row.movement.monto)), 0),
+        currency
+      )}. ¿Continuar?`
+    );
+    if (!confirmed) return;
+
+    const failures: string[] = [];
+    setAutoProgress({ done: 0, total: rows.length });
+    try {
+      for (const [index, row] of rows.entries()) {
+        try {
+          await applyCandidateMatch(row.movement, row.candidate!);
+        } catch (error: any) {
+          console.error("Error applying auto reconciliation:", error);
+          failures.push(
+            `${formatTreasuryDate(row.movement.fecha_movimiento)} • ${formatTreasuryCurrency(row.movement.monto, currency)} • ${row.candidate!.label}: ${error.message}`
+          );
+        }
+        setAutoProgress({ done: index + 1, total: rows.length });
+      }
+    } finally {
+      setAutoProgress(null);
+      setAutoChecked({});
+      setAutoChoices({});
+      await fetchTransactions();
+      await refreshPositions();
+    }
+
+    if (failures.length > 0) {
+      alert(`Se conciliaron ${rows.length - failures.length} de ${rows.length}. No se pudieron conciliar:\n\n${failures.join("\n")}`);
+    }
+  };
+
   const selectedOutflowSupplierKey = useMemo(() => {
     if (!selectedTxn || selectedTxn.monto >= 0) return null;
     const selectedInvoice = candidates.find(
@@ -2389,6 +2650,172 @@ export default function BankReconciliation() {
                 ? ` Periodo ${formatTreasuryDate(importSummary.periodFrom)} a ${formatTreasuryDate(importSummary.periodTo)}.`
                 : ""}
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {canEdit && selectedAccount && (
+        <Card className="border-sky-200">
+          <CardHeader>
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <CardTitle className="flex items-center gap-2">
+                  <Sparkles className="h-5 w-5 text-sky-600" />
+                  Sugerencias de conciliación automática
+                </CardTitle>
+                <CardDescription>
+                  Movimientos no conciliados con un documento abierto del mismo monto y fecha cercana (±{autoMaxDays} días a la emisión, vencimiento o fecha esperada).
+                </CardDescription>
+              </div>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                <Select value={String(autoMaxDays)} onValueChange={(value) => setAutoMaxDays(Number(value))}>
+                  <SelectTrigger className="w-full sm:w-36">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {AUTO_MATCH_WINDOW_OPTIONS.map((days) => (
+                      <SelectItem key={days} value={String(days)}>
+                        ± {days} días
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  onClick={() => void handleApplyAutoSuggestions()}
+                  disabled={checkedAutoSuggestions.length === 0 || Boolean(autoProgress) || Boolean(matchingId)}
+                >
+                  {autoProgress ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
+                  {autoProgress
+                    ? `Conciliando ${autoProgress.done}/${autoProgress.total}`
+                    : `Conciliar seleccionadas (${checkedAutoSuggestions.length})`}
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="overflow-x-auto">
+            {autoSuggestions.length === 0 ? (
+              <div className="py-6 text-center text-sm text-muted-foreground">
+                {loadingAutoPool || loading ? (
+                  <Loader2 className="mx-auto h-5 w-5 animate-spin" />
+                ) : (
+                  "No hay sugerencias por monto y fecha para los movimientos pendientes."
+                )}
+              </div>
+            ) : (
+              <table className="min-w-full text-sm">
+                <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
+                  <tr>
+                    <th className="w-10 px-4 py-3 text-left">
+                      <input
+                        type="checkbox"
+                        aria-label="Seleccionar todas las sugerencias"
+                        checked={allAutoChecked}
+                        disabled={Boolean(autoProgress)}
+                        onChange={(event) =>
+                          setAutoChecked(
+                            event.target.checked
+                              ? Object.fromEntries(autoSuggestions.map((suggestion) => [suggestion.movementId, true]))
+                              : {}
+                          )
+                        }
+                      />
+                    </th>
+                    <th className="px-4 py-3 text-left">Fecha</th>
+                    <th className="px-4 py-3 text-left">Movimiento</th>
+                    <th className="px-4 py-3 text-right">Monto</th>
+                    <th className="px-4 py-3 text-left">Documento sugerido</th>
+                    <th className="px-4 py-3 text-left">Cercanía</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {autoSuggestions.map((suggestion) => {
+                    const chosenKey = getAutoChoice(suggestion);
+                    const chosen = autoPoolByKey.get(chosenKey);
+                    const chosenOption = suggestion.options.find((option) => option.candidateId === chosenKey);
+                    const isDuplicateChoice =
+                      Boolean(autoChecked[suggestion.movementId]) &&
+                      checkedAutoSuggestions.some(
+                        (other) => other.movementId !== suggestion.movementId && getAutoChoice(other) === chosenKey
+                      );
+                    return (
+                      <tr key={suggestion.movementId} className="border-t">
+                        <td className="px-4 py-3">
+                          <input
+                            type="checkbox"
+                            aria-label="Seleccionar sugerencia"
+                            checked={Boolean(autoChecked[suggestion.movementId])}
+                            disabled={Boolean(autoProgress)}
+                            onChange={(event) =>
+                              setAutoChecked((current) => ({ ...current, [suggestion.movementId]: event.target.checked }))
+                            }
+                          />
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">{formatTreasuryDate(suggestion.movement.fecha_movimiento)}</td>
+                        <td className="px-4 py-3">
+                          <div className="font-medium">{suggestion.movement.descripcion || "Sin descripción"}</div>
+                        </td>
+                        <td
+                          className={cn(
+                            "px-4 py-3 text-right font-semibold whitespace-nowrap",
+                            suggestion.movement.monto >= 0 ? "text-emerald-700" : "text-red-700"
+                          )}
+                        >
+                          {formatTreasuryCurrency(suggestion.movement.monto, selectedAccount.moneda)}
+                        </td>
+                        <td className="px-4 py-3">
+                          {suggestion.options.length > 1 ? (
+                            <Select
+                              value={chosenKey}
+                              disabled={Boolean(autoProgress)}
+                              onValueChange={(value) =>
+                                setAutoChoices((current) => ({ ...current, [suggestion.movementId]: value }))
+                              }
+                            >
+                              <SelectTrigger className={cn("w-full min-w-[18rem]", isDuplicateChoice && "border-red-400")}>
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {suggestion.options.map((option) => {
+                                  const candidate = autoPoolByKey.get(option.candidateId);
+                                  if (!candidate) return null;
+                                  return (
+                                    <SelectItem key={option.candidateId} value={option.candidateId}>
+                                      {candidate.label} • {candidate.subtitle} • {option.dayDistance} día(s)
+                                    </SelectItem>
+                                  );
+                                })}
+                              </SelectContent>
+                            </Select>
+                          ) : (
+                            <div className="font-medium">{chosen?.label || "Documento no disponible"}</div>
+                          )}
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {chosen?.subtitle}
+                            {chosen?.dueDate ? ` • ${formatTreasuryDate(chosen.dueDate)}` : ""}
+                            {suggestion.options.length > 1 ? ` • ${suggestion.options.length} opciones` : ""}
+                          </div>
+                          {isDuplicateChoice && (
+                            <div className="mt-1 text-xs text-red-600">Este documento ya está elegido en otra fila seleccionada.</div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              (chosenOption?.dayDistance ?? 0) <= 3
+                                ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                                : "border-amber-200 bg-amber-50 text-amber-700"
+                            )}
+                          >
+                            {chosenOption?.dayDistance === 0 ? "Mismo día" : `${chosenOption?.dayDistance ?? "?"} día(s)`}
+                          </Badge>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
           </CardContent>
         </Card>
       )}
