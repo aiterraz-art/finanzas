@@ -46,11 +46,13 @@ import {
 } from "@/lib/treasury";
 import type { CollectionPipelineItem } from "@/lib/treasury";
 import { supabase } from "@/lib/supabase";
+import { fetchAllRows } from "@/lib/pnl-data";
 import {
   buildInvoiceDuplicateKey,
   buildInvoiceObjectsFromWorksheet,
   detectReceivablesWorksheetFormat,
   inferReceivableEmissionDate,
+  receivableDocumentKind,
   extractReferencedDocumentNumber,
   normalizeReceivableInvoiceImportRow,
   type ReceivableInvoiceImportRow,
@@ -398,12 +400,15 @@ export default function Collections() {
           .eq("empresa_id", selectedEmpresaId)
           .in("tipo", ["cliente", "ambos"])
           .is("archived_at", null),
-        supabase
-          .from("facturas")
-          .select("id, numero_documento, rut, tercero_nombre, tercero_id, fecha_emision, monto, estado, tipo_documento")
-          .eq("empresa_id", selectedEmpresaId)
-          .eq("tipo", "venta")
-          .is("archived_at", null),
+        fetchAllRows<any>(() =>
+          supabase
+            .from("facturas")
+            .select("id, tipo, numero_documento, rut, tercero_nombre, tercero_id, fecha_emision, monto, estado, tipo_documento")
+            .eq("empresa_id", selectedEmpresaId)
+            .in("tipo", ["venta", "nota_credito"])
+            .is("archived_at", null)
+            .order("id", { ascending: true })
+        ).then((data) => ({ data, error: null }), (error) => ({ data: null, error })),
         supabase
           .from("treasury_categories")
           .select("id")
@@ -432,6 +437,7 @@ export default function Collections() {
           terceroNombre: invoice.tercero_nombre || "",
           fechaEmision: invoice.fecha_emision,
           monto: Number(invoice.monto),
+          tipo: invoice.tipo,
         });
         if (!existingInvoiceByKey.has(key)) existingInvoiceByKey.set(key, invoice);
       }
@@ -445,12 +451,14 @@ export default function Collections() {
       const inserts: Array<Record<string, unknown>> = [];
 
       for (const row of validRows) {
+        const documentKind = receivableDocumentKind(row);
         const key = buildInvoiceDuplicateKey({
           numeroDocumento: row.numeroDocumento,
           rut: row.rut,
           terceroNombre: row.terceroNombre,
           fechaEmision: row.fechaEmision || inferReceivableEmissionDate(row),
-          monto: row.monto,
+          monto: documentKind.monto,
+          tipo: documentKind.tipo,
         });
         if (seenKeys.has(key)) {
           duplicateRows += 1;
@@ -467,14 +475,15 @@ export default function Collections() {
         const dueDate = inferReceivableDueDate(row);
         const payload = {
           empresa_id: selectedEmpresaId,
-          tipo: "venta",
+          tipo: documentKind.tipo,
           tercero_id: client?.id || null,
           tercero_nombre: row.terceroNombre,
           rut: normalizeRut(row.rut),
           fecha_emision: emissionDate,
           fecha_vencimiento: dueDate,
           numero_documento: row.numeroDocumento,
-          monto: row.monto,
+          monto: documentKind.monto,
+          origen_importacion: "cartera",
           descripcion: row.descripcion || null,
           tipo_documento: row.tipoDocumento || null,
           estado: statusFromDueDate(dueDate),

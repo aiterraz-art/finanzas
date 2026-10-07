@@ -35,6 +35,9 @@ import {
   normalizeRut,
 } from "@/lib/treasury";
 import { cn } from "@/lib/utils";
+import { parseTaxBreakdown } from "@/lib/pnl";
+import { TaxBreakdownFields } from "@/components/invoices/TaxBreakdownFields";
+import { emptyTaxBreakdown, taxBreakdownFromInvoice } from "@/components/invoices/taxBreakdown";
 
 type Proveedor = {
   id: string;
@@ -59,6 +62,11 @@ type PurchaseInvoice = {
   preferred_bank_account_id: string | null;
   blocked_reason: string | null;
   treasury_category_id: string | null;
+  monto_neto?: number | null;
+  monto_exento?: number | null;
+  monto_iva?: number | null;
+  monto_iva_no_recuperable?: number | null;
+  monto_otros_impuestos?: number | null;
   facturas_pagos?: Array<{
     monto_aplicado: number;
     estado: string;
@@ -168,6 +176,7 @@ export default function Proveedores() {
     fecha_vencimiento: "",
     numero_documento: "",
     monto: "",
+    breakdown: emptyTaxBreakdown(),
     treasury_category_id: "",
     treasury_priority: "normal",
     preferred_bank_account_id: "none",
@@ -198,6 +207,7 @@ export default function Proveedores() {
   const [editInvoiceData, setEditInvoiceData] = useState({
     numero_documento: "",
     monto: "",
+    breakdown: emptyTaxBreakdown(),
     fecha_emision: "",
     fecha_vencimiento: "",
   });
@@ -231,7 +241,7 @@ export default function Proveedores() {
           .order("razon_social", { ascending: true }),
         supabase
           .from("facturas")
-          .select("id, tercero_id, tercero_nombre, numero_documento, monto, estado, fecha_emision, fecha_vencimiento, planned_cash_date, treasury_priority, preferred_bank_account_id, blocked_reason, treasury_category_id, facturas_pagos(monto_aplicado, estado)")
+          .select("id, tercero_id, tercero_nombre, numero_documento, monto, monto_neto, monto_exento, monto_iva, monto_iva_no_recuperable, monto_otros_impuestos, estado, fecha_emision, fecha_vencimiento, planned_cash_date, treasury_priority, preferred_bank_account_id, blocked_reason, treasury_category_id, facturas_pagos(monto_aplicado, estado)")
           .eq("empresa_id", selectedEmpresaId)
           .eq("tipo", "compra")
           .is("archived_at", null)
@@ -470,6 +480,17 @@ export default function Proveedores() {
       return;
     }
 
+    const newBreakdown = parseTaxBreakdown({
+      total: Number(newInvoiceData.monto),
+      neto: newInvoiceData.breakdown.neto,
+      exento: newInvoiceData.breakdown.exento,
+      iva: newInvoiceData.breakdown.iva,
+    });
+    if ("error" in newBreakdown) {
+      alert(newBreakdown.error);
+      return;
+    }
+
     setIsSavingInvoice(true);
     try {
       const { data: duplicateInvoice, error: duplicateCheckError } = await supabase
@@ -498,6 +519,7 @@ export default function Proveedores() {
         fecha_vencimiento: newInvoiceData.fecha_vencimiento,
         numero_documento: newInvoiceData.numero_documento.trim(),
         monto: Number(newInvoiceData.monto),
+        ...newBreakdown,
         estado: "pendiente",
         treasury_category_id: newInvoiceData.treasury_category_id || suppliersCategoryId || null,
         treasury_priority: newInvoiceData.treasury_priority,
@@ -515,6 +537,7 @@ export default function Proveedores() {
         fecha_vencimiento: "",
         numero_documento: "",
         monto: "",
+        breakdown: emptyTaxBreakdown(),
         treasury_category_id: suppliersCategoryId,
         treasury_priority: "normal",
         preferred_bank_account_id: "none",
@@ -740,6 +763,7 @@ export default function Proveedores() {
     setEditInvoiceData({
       numero_documento: invoice.numero_documento || "",
       monto: String(invoice.monto || ""),
+      breakdown: taxBreakdownFromInvoice(invoice),
       fecha_emision: invoice.fecha_emision || "",
       fecha_vencimiento: invoice.fecha_vencimiento || "",
     });
@@ -759,6 +783,17 @@ export default function Proveedores() {
       alert(`El monto no puede ser menor que los pagos ya aplicados (${formatTreasuryCurrency(appliedAmount)}).`);
       return;
     }
+    const editBreakdown = parseTaxBreakdown({
+      total: amount,
+      neto: editInvoiceData.breakdown.neto,
+      exento: editInvoiceData.breakdown.exento,
+      iva: editInvoiceData.breakdown.iva,
+      otherTaxes: Number(editingInvoice.monto_iva_no_recuperable || 0) + Number(editingInvoice.monto_otros_impuestos || 0),
+    });
+    if ("error" in editBreakdown) {
+      alert(editBreakdown.error);
+      return;
+    }
     setSavingTreasury(true);
     try {
       const { error } = await supabase
@@ -766,6 +801,7 @@ export default function Proveedores() {
         .update({
           numero_documento: editInvoiceData.numero_documento.trim(),
           monto: amount,
+          ...editBreakdown,
           fecha_emision: editInvoiceData.fecha_emision,
           fecha_vencimiento: editInvoiceData.fecha_vencimiento,
           treasury_category_id: editForm.treasury_category_id || null,
@@ -1170,6 +1206,7 @@ export default function Proveedores() {
             <Field label="Monto">
               <Input type="number" min="0" value={newInvoiceData.monto} onChange={(event) => setNewInvoiceData((current) => ({ ...current, monto: event.target.value }))} />
             </Field>
+            <TaxBreakdownFields total={newInvoiceData.monto} value={newInvoiceData.breakdown} onChange={(breakdown) => setNewInvoiceData((current) => ({ ...current, breakdown }))} />
             <Field label="Categoría tesorería">
               <Select value={newInvoiceData.treasury_category_id || suppliersCategoryId || ""} onValueChange={(value) => setNewInvoiceData((current) => ({ ...current, treasury_category_id: value }))}>
                 <SelectTrigger>
@@ -1388,6 +1425,7 @@ export default function Proveedores() {
               <Field label="Monto">
                 <Input type="number" min="0.01" step="0.01" value={editInvoiceData.monto} onChange={(event) => setEditInvoiceData((current) => ({ ...current, monto: event.target.value }))} />
               </Field>
+              <TaxBreakdownFields total={editInvoiceData.monto} value={editInvoiceData.breakdown} onChange={(breakdown) => setEditInvoiceData((current) => ({ ...current, breakdown }))} />
               <Field label="Fecha de emisión">
                 <Input type="date" value={editInvoiceData.fecha_emision} onChange={(event) => setEditInvoiceData((current) => ({ ...current, fecha_emision: event.target.value }))} />
               </Field>

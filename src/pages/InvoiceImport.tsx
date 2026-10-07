@@ -17,6 +17,7 @@ import {
 import { useCompany } from "@/contexts/CompanyContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
+import { fetchAllRows } from "@/lib/pnl-data";
 import {
   buildInvoiceDuplicateKey,
   buildInvoiceObjectsFromWorksheet,
@@ -24,6 +25,7 @@ import {
   detectReceivablesWorksheetFormat,
   extractIssuedInvoicePdfRow,
   inferReceivableEmissionDate,
+  receivableDocumentKind,
   normalizeIssuedInvoiceImportRow,
   normalizeReceivableInvoiceImportRow,
   normalizeSiiPurchaseInvoiceImportRow,
@@ -206,12 +208,15 @@ export default function InvoiceImport() {
           .eq("empresa_id", selectedEmpresaId)
           .in("tipo", ["cliente", "ambos"])
           .is("archived_at", null),
-        supabase
-          .from("facturas")
-          .select("id, tipo, numero_documento, rut, tercero_nombre, tercero_id, fecha_emision, fecha_vencimiento, monto, monto_exento, monto_neto, monto_iva, descripcion, tipo_documento, nombre_documento, vendedor_asignado, estado, archivo_url")
-          .eq("empresa_id", selectedEmpresaId)
-          .in("tipo", ["venta", "nota_credito"])
-          .is("archived_at", null),
+        fetchAllRows<InvoiceRow>(() =>
+          supabase
+            .from("facturas")
+            .select("id, tipo, numero_documento, rut, tercero_nombre, tercero_id, fecha_emision, fecha_vencimiento, monto, monto_exento, monto_neto, monto_iva, descripcion, tipo_documento, nombre_documento, vendedor_asignado, estado, archivo_url")
+            .eq("empresa_id", selectedEmpresaId)
+            .in("tipo", ["venta", "nota_credito"])
+            .is("archived_at", null)
+            .order("id", { ascending: true })
+        ).then((data) => ({ data, error: null }), (error) => ({ data: null, error })),
         supabase
           .from("treasury_categories")
           .select("id")
@@ -459,12 +464,15 @@ export default function InvoiceImport() {
           .eq("empresa_id", selectedEmpresaId)
           .eq("estado", "activo")
           .or("es_trabajador.is.null,es_trabajador.eq.false"),
-        supabase
-          .from("facturas")
-          .select("id, tipo, numero_documento, rut, tercero_nombre, tercero_id, fecha_emision, monto, tipo_documento")
-          .eq("empresa_id", selectedEmpresaId)
-          .in("tipo", ["compra", "nota_credito_compra"])
-          .is("archived_at", null),
+        fetchAllRows<InvoiceRow>(() =>
+          supabase
+            .from("facturas")
+            .select("id, tipo, numero_documento, rut, tercero_nombre, tercero_id, fecha_emision, monto, tipo_documento")
+            .eq("empresa_id", selectedEmpresaId)
+            .in("tipo", ["compra", "nota_credito_compra"])
+            .is("archived_at", null)
+            .order("id", { ascending: true })
+        ).then((data) => ({ data, error: null }), (error) => ({ data: null, error })),
         supabase
           .from("treasury_categories")
           .select("id")
@@ -579,6 +587,8 @@ export default function InvoiceImport() {
         monto_neto: row.montoNeto,
         monto_iva: row.montoIva,
         monto_exento: row.montoExento,
+        monto_iva_no_recuperable: row.montoIvaNoRecuperable,
+        monto_otros_impuestos: row.montoOtrosImpuestos,
         descripcion: [row.descripcion, row.documentoReferencia ? `Documento asociado: ${row.documentoReferencia}` : null].filter(Boolean).join(" | ") || null,
         tipo_documento: row.tipoDocumento,
         nombre_documento: row.nombreDocumento,
@@ -591,12 +601,16 @@ export default function InvoiceImport() {
       const existing = existingByKey.get(key);
       if (existing) {
         // La compra ya estaba cargada (normalmente a mano, sin desglose de IVA). El registro
-        // del SII es la fuente del neto/IVA/exento, asi que se rellena sin tocar monto,
-        // estado ni fechas, que pueden venir corregidos a mano.
+        // del SII es la fuente del neto/IVA/exento y del total del documento: un total tipeado
+        // a mano (p. ej. 433,60 en vez de 433.603) dejaba la deuda descuadrada con su desglose.
+        // Estado y fechas no se tocan porque pueden venir corregidos a mano.
         const breakdown = {
+          ...(Math.abs(Number(existing.monto) - row.monto) > 1 ? { monto: row.monto } : {}),
           ...(row.montoNeto != null ? { monto_neto: row.montoNeto } : {}),
           ...(row.montoIva != null ? { monto_iva: row.montoIva } : {}),
           ...(row.montoExento != null ? { monto_exento: row.montoExento } : {}),
+          ...(row.montoIvaNoRecuperable != null ? { monto_iva_no_recuperable: row.montoIvaNoRecuperable } : {}),
+          ...(row.montoOtrosImpuestos != null ? { monto_otros_impuestos: row.montoOtrosImpuestos } : {}),
           ...(row.tipoDocumento ? { tipo_documento: row.tipoDocumento } : {}),
           ...(row.nombreDocumento ? { nombre_documento: row.nombreDocumento } : {}),
         };
@@ -733,13 +747,14 @@ export default function InvoiceImport() {
     let updatedRows = 0;
 
     for (const row of validRows) {
+      const documentKind = receivableDocumentKind(row);
       const key = buildInvoiceDuplicateKey({
         numeroDocumento: row.numeroDocumento,
         rut: row.rut,
         terceroNombre: row.terceroNombre,
         fechaEmision: row.fechaEmision || inferReceivableEmissionDate(row),
-        monto: row.monto,
-        tipo: "venta",
+        monto: documentKind.monto,
+        tipo: documentKind.tipo,
         tipoDocumento: row.tipoDocumento,
       });
       if (seenKeys.has(key)) {
@@ -756,14 +771,15 @@ export default function InvoiceImport() {
       const dueDate = inferReceivableDueDate(row);
       const payload = {
         empresa_id: selectedEmpresaId,
-        tipo: "venta",
+        tipo: documentKind.tipo,
         tercero_id: client?.id || null,
         tercero_nombre: row.terceroNombre,
         rut: row.rut,
         fecha_emision: emissionDate,
         fecha_vencimiento: dueDate,
         numero_documento: row.numeroDocumento,
-        monto: row.monto,
+        monto: documentKind.monto,
+        origen_importacion: "cartera",
         descripcion: row.descripcion || null,
         estado: statusFromDueDate(dueDate),
         planned_cash_date: dueDate,

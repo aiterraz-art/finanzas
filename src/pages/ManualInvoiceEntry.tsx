@@ -34,6 +34,9 @@ import { addDays } from "date-fns";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { useCompany } from "@/contexts/CompanyContext";
+import { parseTaxBreakdown } from "@/lib/pnl";
+import { TaxBreakdownFields } from "@/components/invoices/TaxBreakdownFields";
+import { emptyTaxBreakdown, type TaxBreakdownValue } from "@/components/invoices/taxBreakdown";
 
 // Schema matching Sprint 1 requirements (simplified for manual entry without lookups yet)
 const formSchema = z.object({
@@ -57,6 +60,7 @@ export default function ManualInvoiceEntry({ embedded = false }: ManualInvoiceEn
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [message, setMessage] = useState<string | null>(null);
     const [terceros, setTerceros] = useState<any[]>([]);
+    const [breakdown, setBreakdown] = useState<TaxBreakdownValue>(emptyTaxBreakdown);
 
     const form = useForm<FormValues>({
         resolver: zodResolver(formSchema) as any,
@@ -118,6 +122,11 @@ export default function ManualInvoiceEntry({ embedded = false }: ManualInvoiceEn
             setMessage("Debes seleccionar una empresa.");
             return;
         }
+        const taxBreakdown = parseTaxBreakdown({ total: values.monto, neto: breakdown.neto, exento: breakdown.exento, iva: breakdown.iva });
+        if ("error" in taxBreakdown) {
+            setMessage(taxBreakdown.error);
+            return;
+        }
         setIsSubmitting(true);
         setMessage(null);
 
@@ -133,6 +142,7 @@ export default function ManualInvoiceEntry({ embedded = false }: ManualInvoiceEn
                     fecha_vencimiento: format(values.fecha_vencimiento, 'yyyy-MM-dd'),
                     tipo: values.tipo,
                     monto: values.monto,
+                    ...taxBreakdown,
                     estado: "pendiente",
                     descripcion: values.descripcion || null,
                     tercero_nombre: values.tercero_nombre,
@@ -145,6 +155,7 @@ export default function ManualInvoiceEntry({ embedded = false }: ManualInvoiceEn
 
             setMessage("Factura guardada correctamente.");
             form.reset();
+            setBreakdown(emptyTaxBreakdown());
         } catch (error: any) {
             console.error("Error saving invoice:", error);
             setMessage(`Error: ${error.message}`);
@@ -321,6 +332,7 @@ export default function ManualInvoiceEntry({ embedded = false }: ManualInvoiceEn
                             )}
                         />
                     </div>
+                    <TaxBreakdownFields total={String(form.watch("monto") ?? "")} value={breakdown} onChange={setBreakdown} />
                     <FormField<FormValues, "descripcion">
                         control={form.control as any}
                         name="descripcion"

@@ -8,6 +8,7 @@ import {
   normalizeIssuedInvoiceImportRow,
   normalizeReceivableInvoiceImportRow,
   normalizeSiiPurchaseInvoiceImportRow,
+  receivableDocumentKind,
 } from "@/lib/invoice-import";
 import { buildObjectsFromWorksheetRows } from "@/lib/treasury";
 
@@ -164,6 +165,31 @@ describe("invoice import helpers", () => {
     expect(parsed?.montoIva).toBe(3798);
     expect(parsed?.monto).toBe(23788);
     expect(parsed?.documentoReferencia).toBe("2990");
+  });
+
+  it("captures non-recoverable VAT and other taxes from the SII purchases register", () => {
+    const rows = [
+      ["Nro", "Tipo Doc", "Tipo Compra", "RUT Proveedor", "Razon Social", "Folio", "Fecha Docto", "Monto Exento", "Monto Neto", "Monto IVA Recuperable", "Monto Iva No Recuperable", "Codigo IVA No Rec.", "Monto Total", "Impto. Sin Derecho a Credito", "Valor Otro Impuesto"],
+      ["1", "33", "Del Giro", "77.890.021-1", "Copec", "55", "01/08/2026", "0", "100000", "0", "19000", "1", "125000", "0", "6000"],
+      ["2", "33", "Del Giro", "77.890.021-1", "Otro", "56", "01/08/2026", "0", "100000", "19000", "", "", "119000", "", ""],
+    ];
+    const [withTaxes, plain] = buildObjectsFromWorksheetRows(rows, 0).map(normalizeSiiPurchaseInvoiceImportRow);
+
+    expect(withTaxes?.montoIva).toBe(0);
+    expect(withTaxes?.montoIvaNoRecuperable).toBe(19000);
+    expect(withTaxes?.montoOtrosImpuestos).toBe(6000);
+    expect(plain?.montoIvaNoRecuperable).toBeNull();
+    expect(plain?.montoOtrosImpuestos).toBeNull();
+  });
+
+  it("stores receivable credit notes as positive nota_credito", () => {
+    expect(receivableDocumentKind({ monto: -11900, tipoDocumento: null, descripcion: null })).toEqual({ tipo: "nota_credito", monto: 11900 });
+    expect(receivableDocumentKind({ monto: 11900, tipoDocumento: "61", descripcion: null })).toEqual({ tipo: "nota_credito", monto: 11900 });
+    expect(receivableDocumentKind({ monto: 11900, tipoDocumento: "33", descripcion: null })).toEqual({ tipo: "venta", monto: 11900 });
+  });
+
+  it("does not invent today's date for receivables without dates", () => {
+    expect(inferReceivableEmissionDate({ numeroDocumento: "1", rut: null, terceroNombre: "X", fechaEmision: null, fechaVencimiento: null, monto: 1 })).toBeNull();
   });
 
   it("parses the SII credit-note reference format used in uploaded PDFs", () => {

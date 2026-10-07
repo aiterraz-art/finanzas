@@ -35,6 +35,8 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { canEditTreasury } from "@/lib/treasury";
 import { extractReferencedDocumentNumber } from "@/lib/invoice-import";
+import { parseTaxBreakdown } from "@/lib/pnl";
+import { TaxBreakdownFields } from "@/components/invoices/TaxBreakdownFields";
 
 const statusButtonOptions = [
     { value: "all", label: "Ver todos" },
@@ -47,7 +49,7 @@ const statusButtonOptions = [
 ] as const;
 
 type InvoiceEditForm = {
-    tipo: "venta" | "compra" | "nota_credito";
+    tipo: "venta" | "compra" | "nota_credito" | "nota_credito_compra";
     tipo_documento: string;
     nombre_documento: string;
     numero_documento: string;
@@ -57,6 +59,9 @@ type InvoiceEditForm = {
     fecha_emision: string;
     fecha_vencimiento: string;
     monto: string;
+    monto_neto: string;
+    monto_exento: string;
+    monto_iva: string;
     descripcion: string;
 };
 
@@ -135,7 +140,7 @@ export default function InvoicesList() {
     const openEditDialog = (invoice: any) => {
         setEditingInvoice(invoice);
         setEditForm({
-            tipo: invoice.tipo === "compra" || invoice.tipo === "nota_credito" ? invoice.tipo : "venta",
+            tipo: ["compra", "nota_credito", "nota_credito_compra"].includes(invoice.tipo) ? invoice.tipo : "venta",
             tipo_documento: invoice.tipo_documento || "",
             nombre_documento: invoice.nombre_documento || "",
             numero_documento: invoice.numero_documento || "",
@@ -145,6 +150,9 @@ export default function InvoicesList() {
             fecha_emision: invoiceDateValue(invoice.fecha_emision || invoice.created_at),
             fecha_vencimiento: invoiceDateValue(invoice.fecha_vencimiento),
             monto: String(invoice.monto ?? ""),
+            monto_neto: invoice.monto_neto == null ? "" : String(invoice.monto_neto),
+            monto_exento: invoice.monto_exento == null ? "" : String(invoice.monto_exento),
+            monto_iva: invoice.monto_iva == null ? "" : String(invoice.monto_iva),
             descripcion: invoice.descripcion || "",
         });
     };
@@ -155,6 +163,17 @@ export default function InvoicesList() {
         const amount = Number(editForm.monto);
         if (!editForm.tercero_nombre.trim() || !editForm.fecha_emision || !Number.isFinite(amount) || amount <= 0) {
             alert("Completa la razón social, fecha de emisión y un monto mayor a cero.");
+            return;
+        }
+        const breakdown = parseTaxBreakdown({
+            total: amount,
+            neto: editForm.monto_neto,
+            exento: editForm.monto_exento,
+            iva: editForm.monto_iva,
+            otherTaxes: Number(editingInvoice.monto_iva_no_recuperable || 0) + Number(editingInvoice.monto_otros_impuestos || 0),
+        });
+        if ("error" in breakdown) {
+            alert(breakdown.error);
             return;
         }
 
@@ -173,6 +192,7 @@ export default function InvoicesList() {
                     fecha_emision: editForm.fecha_emision,
                     fecha_vencimiento: editForm.fecha_vencimiento || null,
                     monto: amount,
+                    ...breakdown,
                     descripcion: editForm.descripcion.trim() || null,
                 })
                 .eq("id", editingInvoice.id)
@@ -462,7 +482,8 @@ export default function InvoicesList() {
                                     <SelectContent>
                                         <SelectItem value="venta">Venta</SelectItem>
                                         <SelectItem value="compra">Compra</SelectItem>
-                                        <SelectItem value="nota_credito">Nota de crédito</SelectItem>
+                                        <SelectItem value="nota_credito">Nota de crédito de venta</SelectItem>
+                                        <SelectItem value="nota_credito_compra">Nota de crédito de compra</SelectItem>
                                     </SelectContent>
                                 </Select>
                             </div>
@@ -495,9 +516,14 @@ export default function InvoicesList() {
                                 <Input type="date" value={editForm.fecha_vencimiento} onChange={(event) => setEditForm((current) => current ? { ...current, fecha_vencimiento: event.target.value } : current)} />
                             </div>
                             <div className="space-y-2">
-                                <label className="text-sm font-medium">Monto</label>
+                                <label className="text-sm font-medium">Monto total</label>
                                 <Input type="number" min="0.01" step="0.01" value={editForm.monto} onChange={(event) => setEditForm((current) => current ? { ...current, monto: event.target.value } : current)} />
                             </div>
+                            <TaxBreakdownFields
+                                total={editForm.monto}
+                                value={{ neto: editForm.monto_neto, exento: editForm.monto_exento, iva: editForm.monto_iva }}
+                                onChange={(next) => setEditForm((current) => current ? { ...current, monto_neto: next.neto, monto_exento: next.exento, monto_iva: next.iva } : current)}
+                            />
                             <div className="space-y-2">
                                 <label className="text-sm font-medium">Vendedor asignado</label>
                                 <Input value={editForm.vendedor_asignado} onChange={(event) => setEditForm((current) => current ? { ...current, vendedor_asignado: event.target.value } : current)} />

@@ -54,6 +54,9 @@ export type PurchaseInvoiceImportRow = {
   montoNeto: number | null;
   montoIva: number | null;
   montoExento: number | null;
+  // IVA e impuestos sin derecho a crédito: son costo y van al P/L junto con el neto.
+  montoIvaNoRecuperable: number | null;
+  montoOtrosImpuestos: number | null;
   tipoDocumento: string | null;
   nombreDocumento: string | null;
   descripcion: string | null;
@@ -115,6 +118,16 @@ const getValueFromRow = (rawRow: RawSheetRow, ...keys: string[]) => {
 
   return undefined;
 };
+
+// Solo coincidencias exactas: columnas como "Monto IVA No Recuperable" se parecen demasiado a otras.
+const getExactValueFromRow = (rawRow: RawSheetRow, ...keys: string[]) => {
+  const normalizedKeys = keys.map(normalizeImportHeaderToken);
+  const entry = Object.entries(rawRow).find(([key]) => normalizedKeys.includes(normalizeImportHeaderToken(key)));
+  return entry?.[1];
+};
+
+const sumNullable = (...values: Array<number | null>) =>
+  values.every((value) => value === null) ? null : values.reduce<number>((sum, value) => sum + (value ?? 0), 0);
 
 const inferRutFromRow = (rawRow: RawSheetRow) => {
   const preferred = normalizeRut(
@@ -425,6 +438,11 @@ export const normalizeSiiPurchaseInvoiceImportRow = (rawRow: RawSheetRow): Purch
     getValueFromRow(rawRow, "monto iva recuperable", "monto iva", "iva")
   );
   const montoExento = normalizeInvoiceMoneyValue(getValueFromRow(rawRow, "monto exento", "exento"));
+  const montoIvaNoRecuperable = normalizeInvoiceMoneyValue(getExactValueFromRow(rawRow, "monto iva no recuperable"));
+  const montoOtrosImpuestos = sumNullable(
+    normalizeInvoiceMoneyValue(getExactValueFromRow(rawRow, "impto. sin derecho a credito", "impuesto sin derecho a credito")),
+    normalizeInvoiceMoneyValue(getExactValueFromRow(rawRow, "valor otro impuesto"))
+  );
   const referencia = sanitizeImportText(
     getValueFromRow(rawRow, "folio docto referencia", "folio referencia", "documento referencia")
   ) || null;
@@ -440,6 +458,8 @@ export const normalizeSiiPurchaseInvoiceImportRow = (rawRow: RawSheetRow): Purch
     montoNeto,
     montoIva,
     montoExento,
+    montoIvaNoRecuperable,
+    montoOtrosImpuestos,
     tipoDocumento,
     nombreDocumento: siiDocumentName(tipoDocumento),
     descripcion: sanitizeImportText(getValueFromRow(rawRow, "tipo compra", "descripcion", "detalle", "glosa")) || null,
@@ -619,10 +639,18 @@ export const buildInvoiceDuplicateKey = (row: {
   ].join("|");
 };
 
-export const inferReceivableEmissionDate = (row: ReceivableInvoiceImportRow) => {
+// Sin fecha de emisión ni vencimiento no se inventa una fecha: usar hoy metía la venta en el P/L del mes actual.
+export const inferReceivableEmissionDate = (row: ReceivableInvoiceImportRow): string | null => {
   if (row.fechaEmision) return row.fechaEmision;
   if (row.fechaVencimiento) return subtractDaysIso(row.fechaVencimiento, 30);
-  return new Date().toISOString().split("T")[0];
+  return null;
+};
+
+// La cartera trae notas de crédito mezcladas con facturas (tipo 61, texto o saldo negativo).
+// Se guardan como nota_credito con monto positivo para que el P/L las reste una sola vez.
+export const receivableDocumentKind = (row: Pick<ReceivableInvoiceImportRow, "monto" | "tipoDocumento" | "descripcion">) => {
+  const isCreditNote = row.monto < 0 || inferIssuedDocumentType([row.tipoDocumento, row.descripcion]) === "nota_credito";
+  return { tipo: isCreditNote ? "nota_credito" as const : "venta" as const, monto: Math.abs(row.monto) };
 };
 
 export const buildInvoiceObjectsFromWorksheet = (

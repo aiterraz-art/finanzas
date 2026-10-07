@@ -34,6 +34,8 @@ import {
 } from "@/components/ui/select";
 import { useCompany } from "@/contexts/CompanyContext";
 import { useAuth } from "@/contexts/AuthContext";
+import { PNL_CATEGORY_CODES } from "@/lib/pnl";
+import { unlinkInvoicesForCommitment } from "@/lib/pnl-data";
 import { supabase } from "@/lib/supabase";
 import {
   buildObjectsFromWorksheetRows,
@@ -401,7 +403,7 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
     [outflowCategories, quickExpenseForm.categoryId]
   );
   const needsRenditionNumber = selectedQuickExpenseCategory?.code === "reimbursements";
-  const needsAccrualMonth = ["payroll", "professional_fees", "reimbursements"].includes(selectedQuickExpenseCategory?.code || "");
+  const needsAccrualMonth = PNL_CATEGORY_CODES.includes(selectedQuickExpenseCategory?.code || "");
   const internalTransferCategoryId = useMemo(
     () => categories.find((category) => category.active && category.code === "internal_transfers")?.id || "",
     [categories]
@@ -1077,6 +1079,14 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
         .eq("id", candidate.id)
         .eq("empresa_id", selectedEmpresaId);
       if (error) throw error;
+      // Sin mes de devengo, el P/L lo reconoce en el mes del pago.
+      const { error: accrualError } = await supabase
+        .from("cash_commitments")
+        .update({ accrual_month: `${txn.fecha_movimiento.slice(0, 7)}-01` })
+        .eq("id", candidate.id)
+        .eq("empresa_id", selectedEmpresaId)
+        .is("accrual_month", null);
+      if (accrualError) throw accrualError;
     } else if (candidate.type === "rendition_advance") {
       const { error } = await supabase
         .from("rendition_advances")
@@ -1306,6 +1316,7 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
       }
 
       if (linkedCommitment) {
+        await unlinkInvoicesForCommitment(selectedEmpresaId, linkedCommitment.id);
         const { error } = await supabase
           .from("cash_commitments")
           .update({
@@ -1404,6 +1415,7 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
         .eq("empresa_id", selectedEmpresaId)
         .is("archived_at", null);
       if (commitmentError) throw commitmentError;
+      await unlinkInvoicesForCommitment(selectedEmpresaId, linkedCommitment.id);
 
       await fetchTransactions();
       await refreshPositions();
