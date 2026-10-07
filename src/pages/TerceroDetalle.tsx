@@ -44,6 +44,8 @@ type DocumentRecord = {
   archivo_url?: string | null;
   tercero_id?: string | null;
   rut?: string | null;
+  factura_referencia_id?: string | null;
+  archived_at?: string | null;
   facturas_pagos?: PaymentRecord[];
 };
 
@@ -61,6 +63,8 @@ const DOCUMENT_SELECT = `
   archivo_url,
   tercero_id,
   rut,
+  factura_referencia_id,
+  archived_at,
   facturas_pagos (
     id,
     monto_aplicado,
@@ -111,6 +115,8 @@ const getPaymentMethodLabel = (payment: PaymentRecord) => {
   return "Pago manual";
 };
 
+const isCreditNoteType = (tipo?: string | null) => tipo === "nota_credito" || tipo === "nota_credito_compra";
+
 const normalizeDocumentNumber = (value?: string | null) => {
   const cleaned = (value || "").trim().toLowerCase();
   return cleaned ? cleaned.replace(/\s+/g, "") : "";
@@ -153,7 +159,7 @@ const getStatusMeta = (document: {
     };
   }
 
-  if (document.tipo === "nota_credito") {
+  if (isCreditNoteType(document.tipo)) {
     return {
       label: "Nota de crédito",
       icon: <CheckCircle2 className="h-4 w-4 text-emerald-600" />,
@@ -226,31 +232,43 @@ export default function TerceroDetalle() {
   const entityLabel = tercero?.tipo === "proveedor" ? "proveedor" : "cliente";
 
   const accountRows = useMemo(() => {
-    const creditNotesByInvoiceNumber = new Map<string, Array<{ id: string; numeroDocumento: string | null; amount: number }>>();
+    // Los documentos archivados (p. ej. duplicados) no forman parte del estado de cuenta.
+    const activeDocuments = documentos.filter((document) => !document.archived_at && document.estado !== "archivada");
+    const invoicesById = new Map(activeDocuments.filter((document) => !isCreditNoteType(document.tipo)).map((document) => [document.id, document]));
+    const findInvoiceByNumber = (number: string | null) =>
+      number
+        ? activeDocuments.find(
+            (document) => document.tipo === "venta" && normalizeDocumentNumber(document.numero_documento) === normalizeDocumentNumber(number)
+          ) || null
+        : null;
+    // Factura a la que se aplica cada NC: la asociada explícitamente o, en NC de venta antiguas,
+    // el folio citado en su descripción.
+    const referencedInvoiceFor = (document: DocumentRecord) =>
+      (document.factura_referencia_id && invoicesById.get(document.factura_referencia_id)) ||
+      (document.tipo === "nota_credito" ? findInvoiceByNumber(extractReferencedInvoiceNumber(document)) : null);
 
-    for (const document of documentos) {
-      if (document.tipo !== "nota_credito") continue;
-      const referencedInvoiceNumber = normalizeDocumentNumber(extractReferencedInvoiceNumber(document));
-      if (!referencedInvoiceNumber) continue;
-      const current = creditNotesByInvoiceNumber.get(referencedInvoiceNumber) || [];
+    const creditNotesByInvoiceId = new Map<string, Array<{ id: string; numeroDocumento: string | null; amount: number }>>();
+    for (const document of activeDocuments) {
+      if (!isCreditNoteType(document.tipo)) continue;
+      const invoice = referencedInvoiceFor(document);
+      if (!invoice) continue;
+      const current = creditNotesByInvoiceId.get(invoice.id) || [];
       current.push({
         id: document.id,
         numeroDocumento: document.numero_documento,
         amount: Number(document.monto || 0),
       });
-      creditNotesByInvoiceNumber.set(referencedInvoiceNumber, current);
+      creditNotesByInvoiceId.set(invoice.id, current);
     }
 
-    return documentos
+    return activeDocuments
       .map((document) => {
         const total = Number(document.monto || 0);
         const payments = getAppliedPayments(document);
         const paidAmount = payments.reduce((sum, payment) => sum + Number(payment.monto_aplicado || 0), 0);
-        const isCreditNote = document.tipo === "nota_credito";
-        const referencedInvoiceNumber = isCreditNote ? extractReferencedInvoiceNumber(document) : null;
-        const linkedCreditNotes = !isCreditNote
-          ? creditNotesByInvoiceNumber.get(normalizeDocumentNumber(document.numero_documento)) || []
-          : [];
+        const isCreditNote = isCreditNoteType(document.tipo);
+        const referencedInvoiceNumber = isCreditNote ? referencedInvoiceFor(document)?.numero_documento || null : null;
+        const linkedCreditNotes = !isCreditNote ? creditNotesByInvoiceId.get(document.id) || [] : [];
         const creditNoteAppliedAmount = linkedCreditNotes.reduce((sum, note) => sum + note.amount, 0);
         const signedTotal = isCreditNote ? -total : total;
         const balance = isCreditNote
@@ -345,19 +363,19 @@ export default function TerceroDetalle() {
     const groupedEntries = accountRows.flatMap((document) => {
       const baseEntry = {
         id: `doc-${document.id}`,
-        serie: document.tipo === "nota_credito" ? "NC" : "FE",
+        serie: isCreditNoteType(document.tipo) ? "NC" : "FE",
         numero: document.numero_documento || "---",
         fechaEmisionDocumento: document.fecha_emision,
         fechaContable: document.fecha_emision,
-        documentoReferencia: document.tipo === "nota_credito" ? "Factura" : "",
+        documentoReferencia: isCreditNoteType(document.tipo) ? "Factura" : "",
         numeroDocumentoReferencia: document.referencedInvoiceNumber || "",
         glosa:
-          document.tipo === "nota_credito"
+          isCreditNoteType(document.tipo)
             ? document.nombre_documento || document.descripcion || "Nota de crédito"
             : document.nombre_documento || document.descripcion || "Factura electrónica",
-        cargo: document.tipo === "nota_credito" ? 0 : document.rawTotal,
-        abono: document.tipo === "nota_credito" ? document.rawTotal : 0,
-        sourceKind: document.tipo === "nota_credito" ? "credit-note" : "invoice",
+        cargo: isCreditNoteType(document.tipo) ? 0 : document.rawTotal,
+        abono: isCreditNoteType(document.tipo) ? document.rawTotal : 0,
+        sourceKind: isCreditNoteType(document.tipo) ? "credit-note" : "invoice",
       };
 
       const paymentEntries = document.paymentBreakdown.map((payment) => ({
@@ -411,6 +429,45 @@ export default function TerceroDetalle() {
       ),
     [accountStatementEntries]
   );
+
+  const [applyingCreditNoteId, setApplyingCreditNoteId] = useState<string | null>(null);
+
+  // Facturas abiertas del mismo tipo (venta para NC de venta, compra para NC de compra).
+  const creditNoteTargets = (creditNoteId: string) => {
+    const creditNote = accountRows.find((document) => document.id === creditNoteId);
+    const targetType = creditNote?.tipo === "nota_credito_compra" ? "compra" : "venta";
+    return accountRows.filter((document) => document.tipo === targetType && document.balance > 0.01);
+  };
+
+  const handleApplyCreditNote = async (creditNoteId: string, invoiceId: string) => {
+    if (!selectedEmpresaId) return;
+    setApplyingCreditNoteId(`doc-${creditNoteId}`);
+    try {
+      const { error } = await supabase
+        .from("facturas")
+        .update({ factura_referencia_id: invoiceId })
+        .eq("id", creditNoteId)
+        .eq("empresa_id", selectedEmpresaId);
+      if (error) throw error;
+      // Si la NC salda la factura, queda pagada.
+      const invoice = accountRows.find((document) => document.id === invoiceId);
+      const creditNote = accountRows.find((document) => document.id === creditNoteId);
+      if (invoice && creditNote && invoice.balance - creditNote.rawTotal <= 0.01) {
+        const { error: statusError } = await supabase
+          .from("facturas")
+          .update({ estado: "pagada" })
+          .eq("id", invoiceId)
+          .eq("empresa_id", selectedEmpresaId);
+        if (statusError) throw statusError;
+      }
+      await fetchData();
+    } catch (error: any) {
+      console.error("Error applying credit note:", error);
+      alert(`No se pudo aplicar la nota de crédito: ${error.message}`);
+    } finally {
+      setApplyingCreditNoteId(null);
+    }
+  };
 
   const handleDeleteTercero = async () => {
     if (!selectedEmpresaId || !tercero) return;
@@ -691,7 +748,7 @@ export default function TerceroDetalle() {
         <TabsContent value="estado-cuenta" className="mt-6">
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg">Informe análisis por cliente</CardTitle>
+              <CardTitle className="text-lg">Informe análisis por {entityLabel}</CardTitle>
               <CardDescription>
                 Fecha de control {formatDate(new Date().toISOString().split("T")[0])}. Detalle contable con cargos, abonos y saldo corrido.
               </CardDescription>
@@ -699,7 +756,7 @@ export default function TerceroDetalle() {
             <CardContent className="overflow-x-auto">
               <div className="min-w-[1200px] rounded-lg border">
                 <div className="border-b bg-muted/20 px-4 py-3 text-center">
-                  <div className="text-lg font-semibold">Informe Análisis por cliente</div>
+                  <div className="text-lg font-semibold">Informe Análisis por {entityLabel}</div>
                   <div className="text-sm text-muted-foreground">Fecha de Control {formatDate(new Date().toISOString().split("T")[0])}</div>
                 </div>
                 <div className="border-b bg-background px-4 py-3 text-sm">
@@ -732,6 +789,33 @@ export default function TerceroDetalle() {
                       <TableRow key={entry.id}>
                         <TableCell>
                           <div className="font-medium">{entry.glosa}</div>
+                          {entityLabel === "proveedor" && entry.sourceKind === "invoice" ? (
+                            <button
+                              type="button"
+                              className="text-xs text-primary underline"
+                              onClick={() => navigate(`/proveedores?factura=${entry.id.replace("doc-", "")}&volver=${encodeURIComponent(`/proveedores/${id}`)}`)}
+                            >
+                              Editar documento
+                            </button>
+                          ) : null}
+                          {entry.sourceKind === "credit-note" && !entry.numeroDocumentoReferencia ? (
+                            <div className="mt-1 flex items-center gap-2">
+                              <select
+                                className="h-7 max-w-56 rounded-md border bg-background px-1 text-xs"
+                                defaultValue=""
+                                disabled={applyingCreditNoteId === entry.id}
+                                onChange={(event) => event.target.value && void handleApplyCreditNote(entry.id.replace("doc-", ""), event.target.value)}
+                              >
+                                <option value="">Aplicar a factura…</option>
+                                {creditNoteTargets(entry.id.replace("doc-", "")).map((invoice) => (
+                                  <option key={invoice.id} value={invoice.id}>
+                                    N° {invoice.numero_documento || "s/f"} · {formatDate(invoice.fecha_emision)} · saldo {formatCurrency(invoice.balance)}
+                                  </option>
+                                ))}
+                              </select>
+                              {applyingCreditNoteId === entry.id ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                            </div>
+                          ) : null}
                           {entry.sourceKind === "invoice" ? (
                             <div className="mt-1 space-y-1 text-xs text-muted-foreground">
                               {accountRows

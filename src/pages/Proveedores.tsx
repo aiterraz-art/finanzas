@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Landmark, Loader2, Plus, Search, Trash2 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -27,8 +28,6 @@ import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { useBankAccounts, useTreasuryCategories } from "@/hooks/useTreasury";
 import {
-  PRIORITY_BADGE_CLASSES,
-  PRIORITY_LABELS,
   canEditTreasury,
   formatTreasuryCurrency,
   formatTreasuryDate,
@@ -114,14 +113,6 @@ const frequencyLabels: Record<LoanFrequency, string> = {
 
 const openCommitmentStatuses = new Set(["planned", "confirmed", "deferred"]);
 
-const invoiceStatusLabels: Record<string, string> = {
-  pendiente: "Pendiente",
-  morosa: "Morosa",
-  abonada: "Abonada",
-  pagada: "Pagada",
-  conciliada: "Conciliada",
-};
-
 const addFrequencyStep = (baseDate: string, frequency: LoanFrequency) => {
   const next = new Date(`${baseDate}T12:00:00`);
   if (Number.isNaN(next.getTime())) return baseDate;
@@ -164,6 +155,10 @@ export default function Proveedores() {
   const [loanProgressPaid, setLoanProgressPaid] = useState("0");
   const [savingLoanProgress, setSavingLoanProgress] = useState(false);
   const [editingInvoice, setEditingInvoice] = useState<PurchaseInvoice | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+  // Edición abierta desde el estado de cuenta del proveedor: al cerrar se vuelve ahí.
+  const returnPath = searchParams.get("volver");
   const [savingTreasury, setSavingTreasury] = useState(false);
   const [newProvData, setNewProvData] = useState({
     rut: "",
@@ -766,6 +761,24 @@ export default function Proveedores() {
     }
   };
 
+  const closeEditDialog = () => {
+    setEditingInvoice(null);
+    if (searchParams.get("factura")) {
+      if (returnPath?.startsWith("/proveedores/")) {
+        navigate(returnPath);
+      } else {
+        setSearchParams({}, { replace: true });
+      }
+    }
+  };
+
+  useEffect(() => {
+    const invoiceId = searchParams.get("factura");
+    if (!invoiceId || editingInvoice || invoices.length === 0) return;
+    const invoice = invoices.find((item) => item.id === invoiceId);
+    if (invoice) openEditDialog(invoice);
+  }, [searchParams, invoices]);
+
   const openEditDialog = (invoice: PurchaseInvoice) => {
     setEditingInvoice(invoice);
     setEditForm({
@@ -828,7 +841,7 @@ export default function Proveedores() {
         .eq("id", editingInvoice.id)
         .eq("empresa_id", selectedEmpresaId);
       if (error) throw error;
-      setEditingInvoice(null);
+      closeEditDialog();
       await fetchData();
     } catch (error: any) {
       console.error("Error saving treasury data:", error);
@@ -842,16 +855,17 @@ export default function Proveedores() {
     }
   };
 
-  const handleArchiveInvoice = async (invoice: PurchaseInvoice) => {
-    if (!selectedEmpresaId || !canEdit) return;
+  // Devuelve true si la factura quedó archivada.
+  const handleArchiveInvoice = async (invoice: PurchaseInvoice): Promise<boolean> => {
+    if (!selectedEmpresaId || !canEdit) return false;
     const appliedAmount = (invoice.facturas_pagos || [])
       .filter((payment) => payment.estado === "aplicado")
       .reduce((sum, payment) => sum + Number(payment.monto_aplicado || 0), 0);
     if (appliedAmount > 0) {
       alert("No puedes eliminar una factura que ya tiene pagos conciliados. Corrige o revierte primero la conciliación bancaria.");
-      return;
+      return false;
     }
-    if (!window.confirm(`¿Eliminar la factura ${invoice.numero_documento || "sin folio"}? Se archivará y no aparecerá en las cuentas por pagar.`)) return;
+    if (!window.confirm(`¿Eliminar la factura ${invoice.numero_documento || "sin folio"}? Se archivará y no aparecerá en las cuentas por pagar.`)) return false;
 
     try {
       const { error } = await supabase
@@ -866,9 +880,11 @@ export default function Proveedores() {
         .eq("empresa_id", selectedEmpresaId);
       if (error) throw error;
       await fetchData();
+      return true;
     } catch (error: any) {
       console.error("Error archivando factura de compra:", error);
       alert(`No se pudo eliminar la factura: ${error.message}`);
+      return false;
     }
   };
 
@@ -1029,7 +1045,7 @@ export default function Proveedores() {
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <CardTitle>Deudas con proveedores</CardTitle>
-              <CardDescription>Facturas abiertas y metadata de pago por proveedor.</CardDescription>
+              <CardDescription>Saldo pendiente por proveedor. Haz clic en un proveedor para ver su estado de cuenta.</CardDescription>
             </div>
             <div className="relative w-full max-w-sm">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -1044,92 +1060,23 @@ export default function Proveedores() {
         </CardHeader>
         <CardContent className="space-y-4">
           {loading && groupedSuppliers.length === 0 && <Loader2 className="h-5 w-5 animate-spin text-primary" />}
-          {groupedSuppliers.map((supplier) => (
-            <div key={supplier.id} className="rounded-xl border p-4">
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                <div>
-                  <div className="font-medium">{supplier.razon_social}</div>
-                  <div className="text-sm text-muted-foreground">
-                    {supplier.rut} • {supplier.email || "sin email"} • {supplier.telefono || "sin teléfono"}
-                  </div>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Badge variant="outline">{formatTreasuryCurrency(supplier.outstanding)}</Badge>
-                  {supplier.dueSoon > 0 && <Badge className="bg-amber-100 text-amber-700 hover:bg-amber-100">{supplier.dueSoon} por vencer</Badge>}
-                </div>
-              </div>
-              <div className="mt-4 space-y-3">
-                {supplier.supplierInvoices.length === 0 && (
-                  <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
-                    Sin compras registradas.
-                  </div>
-                )}
-                {supplier.supplierInvoices.map((invoice) => (
-                  <div key={invoice.id} className="rounded-xl border bg-muted/15 p-4">
-                    <div className="grid gap-3 lg:grid-cols-[1.2fr_0.8fr_0.8fr_0.8fr_0.9fr_1fr]">
-                      <div>
-                        <div className="font-medium">Factura {invoice.numero_documento || "Sin folio"}</div>
-                        <div className="text-sm text-muted-foreground">
-                          Emisión {formatTreasuryDate(invoice.fecha_emision)} • vence {formatTreasuryDate(invoice.fecha_vencimiento)}
-                        </div>
-                        <div className="mt-2">
-                          <Badge
-                            variant="outline"
-                            className={cn(
-                              invoice.estado === "pagada" && "border-emerald-200 bg-emerald-50 text-emerald-700",
-                              invoice.estado === "abonada" && "border-sky-200 bg-sky-50 text-sky-700",
-                              invoice.estado === "morosa" && "border-rose-200 bg-rose-50 text-rose-700",
-                              invoice.estado === "pendiente" && "border-amber-200 bg-amber-50 text-amber-700"
-                            )}
-                          >
-                            {invoiceStatusLabels[invoice.estado] || invoice.estado}
-                          </Badge>
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-xs uppercase text-muted-foreground">Monto</div>
-                        <div className="font-semibold">{formatTreasuryCurrency(invoice.monto)}</div>
-                        <div className="text-sm text-muted-foreground">
-                          Saldo {formatTreasuryCurrency(invoice.remainingAmount)}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-xs uppercase text-muted-foreground">Pago esperado</div>
-                        <div>{formatTreasuryDate(invoice.planned_cash_date)}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs uppercase text-muted-foreground">Prioridad</div>
-                        <Badge variant="outline" className={cn("capitalize", PRIORITY_BADGE_CLASSES[invoice.treasury_priority || "normal"])}>
-                          {PRIORITY_LABELS[invoice.treasury_priority || "normal"]}
-                        </Badge>
-                      </div>
-                      <div>
-                        <div className="text-xs uppercase text-muted-foreground">Cuenta / categoría</div>
-                        <div>{accountsById.get(invoice.preferred_bank_account_id || "") || "Sin cuenta"}</div>
-                        <div className="text-sm text-muted-foreground">{categoriesById.get(invoice.treasury_category_id || "") || "Sin categoría"}</div>
-                      </div>
-                      <div className="flex flex-col items-start gap-2 lg:items-end">
-                        <div className="text-sm">{invoice.blocked_reason || "Sin bloqueo"}</div>
-                        <Button size="sm" variant="outline" disabled={!canEdit} onClick={() => openEditDialog(invoice)}>
-                          Editar factura
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="text-rose-600 hover:bg-rose-50 hover:text-rose-700"
-                          disabled={!canEdit}
-                          onClick={() => void handleArchiveInvoice(invoice)}
-                        >
-                          <Trash2 className="mr-2 h-4 w-4" />
-                          Eliminar
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
+          {groupedSuppliers.length > 0 && (
+            <div className="divide-y rounded-xl border">
+              {groupedSuppliers.map((supplier) => (
+                <Link
+                  key={supplier.id}
+                  to={`/proveedores/${supplier.id}`}
+                  className="flex items-center justify-between gap-4 px-4 py-3 transition-colors hover:bg-muted/40"
+                >
+                  <span className="font-medium">{supplier.razon_social}</span>
+                  <span className="flex shrink-0 items-center gap-2 text-sm">
+                    {supplier.dueSoon > 0 && <Badge className="bg-amber-100 text-amber-700 hover:bg-amber-100">{supplier.dueSoon} por vencer</Badge>}
+                    <span className={supplier.outstanding > 0.01 ? "font-medium" : "text-muted-foreground"}>{formatTreasuryCurrency(supplier.outstanding)}</span>
+                  </span>
+                </Link>
+              ))}
             </div>
-          ))}
+          )}
           {!loading && groupedSuppliers.length === 0 && (
             <div className="rounded-xl border border-dashed p-8 text-center text-muted-foreground">
               No se encontraron proveedores para el filtro actual.
@@ -1424,7 +1371,7 @@ export default function Proveedores() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={Boolean(editingInvoice)} onOpenChange={(open) => !open && setEditingInvoice(null)}>
+      <Dialog open={Boolean(editingInvoice)} onOpenChange={(open) => !open && closeEditDialog()}>
         <DialogContent className="max-h-[88vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Editar factura de compra</DialogTitle>
@@ -1497,12 +1444,23 @@ export default function Proveedores() {
               <Textarea value={editForm.blocked_reason} onChange={(event) => setEditForm((current) => ({ ...current, blocked_reason: event.target.value }))} />
             </Field>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setEditingInvoice(null)}>Cancelar</Button>
+          <DialogFooter className="gap-2 sm:justify-between">
+            <Button
+              variant="ghost"
+              className="text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+              disabled={!canEdit || !editingInvoice}
+              onClick={() => editingInvoice && void handleArchiveInvoice(editingInvoice).then((archived) => archived && closeEditDialog())}
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              Eliminar factura
+            </Button>
+            <div className="flex gap-2">
+            <Button variant="outline" onClick={closeEditDialog}>Cancelar</Button>
             <Button onClick={handleSaveTreasury} disabled={savingTreasury}>
               {savingTreasury ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
               Guardar cambios
             </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
