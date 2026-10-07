@@ -33,7 +33,7 @@ import {
     DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { canEditTreasury } from "@/lib/treasury";
+import { canEditTreasury, formatTreasuryCurrency } from "@/lib/treasury";
 import { extractReferencedDocumentNumber } from "@/lib/invoice-import";
 import { parseTaxBreakdown } from "@/lib/pnl";
 import { TaxBreakdownFields } from "@/components/invoices/TaxBreakdownFields";
@@ -62,6 +62,7 @@ type InvoiceEditForm = {
     monto_neto: string;
     monto_exento: string;
     monto_iva: string;
+    factura_referencia_id: string;
     descripcion: string;
 };
 
@@ -153,9 +154,23 @@ export default function InvoicesList() {
             monto_neto: invoice.monto_neto == null ? "" : String(invoice.monto_neto),
             monto_exento: invoice.monto_exento == null ? "" : String(invoice.monto_exento),
             monto_iva: invoice.monto_iva == null ? "" : String(invoice.monto_iva),
+            factura_referencia_id: invoice.factura_referencia_id || "",
             descripcion: invoice.descripcion || "",
         });
     };
+
+    // Facturas del mismo tercero a las que puede aplicarse la nota de crédito en edición.
+    const creditNoteTargets = useMemo(() => {
+        if (!editingInvoice || !editForm || (editForm.tipo !== "nota_credito" && editForm.tipo !== "nota_credito_compra")) return [];
+        const targetType = editForm.tipo === "nota_credito" ? "venta" : "compra";
+        return invoices
+            .filter((invoice) =>
+                invoice.tipo === targetType &&
+                invoice.estado !== "archivada" &&
+                (editingInvoice.tercero_id ? invoice.tercero_id === editingInvoice.tercero_id : invoice.tercero_nombre === editingInvoice.tercero_nombre)
+            )
+            .sort((a, b) => String(b.fecha_emision || "").localeCompare(String(a.fecha_emision || "")));
+    }, [editForm, editingInvoice, invoices]);
 
     const handleSaveInvoice = async () => {
         if (!selectedEmpresaId || !editingInvoice || !editForm || !canEdit) return;
@@ -193,6 +208,7 @@ export default function InvoicesList() {
                     fecha_vencimiento: editForm.fecha_vencimiento || null,
                     monto: amount,
                     ...breakdown,
+                    factura_referencia_id: editForm.tipo === "nota_credito" || editForm.tipo === "nota_credito_compra" ? editForm.factura_referencia_id || null : null,
                     descripcion: editForm.descripcion.trim() || null,
                 })
                 .eq("id", editingInvoice.id)
@@ -223,10 +239,10 @@ export default function InvoicesList() {
     const creditNotesByInvoiceId = useMemo(() => {
         const amounts = new Map<string, number>();
         for (const invoice of invoices) {
-            if (invoice.tipo !== "nota_credito" || invoice.estado === "archivada") continue;
+            if ((invoice.tipo !== "nota_credito" && invoice.tipo !== "nota_credito_compra") || invoice.estado === "archivada") continue;
             const referencedInvoiceId =
                 invoice.factura_referencia_id ||
-                invoices.find(
+                invoice.tipo === "nota_credito" && invoices.find(
                     (candidate) =>
                         candidate.tipo === "venta" &&
                         normalizeInvoiceNumber(candidate.numero_documento) === normalizeInvoiceNumber(extractReferencedDocumentNumber(invoice.descripcion)) &&
@@ -242,7 +258,7 @@ export default function InvoicesList() {
     }, [invoices]);
 
     const getEffectiveInvoiceAmount = (invoice: any) =>
-        invoice.tipo === "venta"
+        invoice.tipo === "venta" || invoice.tipo === "compra"
             ? Math.max(Number(invoice.monto || 0) - (creditNotesByInvoiceId.get(invoice.id) || 0), 0)
             : Number(invoice.monto || 0);
 
@@ -519,6 +535,24 @@ export default function InvoicesList() {
                                 <label className="text-sm font-medium">Monto total</label>
                                 <Input type="number" min="0.01" step="0.01" value={editForm.monto} onChange={(event) => setEditForm((current) => current ? { ...current, monto: event.target.value } : current)} />
                             </div>
+                            {(editForm.tipo === "nota_credito" || editForm.tipo === "nota_credito_compra") && (
+                                <div className="space-y-2 md:col-span-2">
+                                    <label className="text-sm font-medium">Factura a la que se aplica</label>
+                                    <select
+                                        className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+                                        value={editForm.factura_referencia_id}
+                                        onChange={(event) => setEditForm((current) => current ? { ...current, factura_referencia_id: event.target.value } : current)}
+                                    >
+                                        <option value="">Sin asociar</option>
+                                        {creditNoteTargets.map((invoice) => (
+                                            <option key={invoice.id} value={invoice.id}>
+                                                N° {invoice.numero_documento || "s/f"} · {invoice.fecha_emision?.slice(0, 10)} · {formatTreasuryCurrency(Number(invoice.monto || 0))}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <p className="text-xs text-muted-foreground">La nota de crédito rebaja el saldo pendiente de esa factura.</p>
+                                </div>
+                            )}
                             <TaxBreakdownFields
                                 total={editForm.monto}
                                 value={{ neto: editForm.monto_neto, exento: editForm.monto_exento, iva: editForm.monto_iva }}

@@ -562,7 +562,9 @@ export default function InvoiceImport() {
     let updatedRows = 0;
     let duplicateRows = 0;
     const seenKeys = new Set<string>();
-    for (const row of validRows) {
+    // Facturas antes que notas de crédito, para asociar la NC a una factura del mismo archivo.
+    const orderedRows = [...validRows].sort((a, b) => Number(a.tipo === "nota_credito_compra") - Number(b.tipo === "nota_credito_compra"));
+    for (const row of orderedRows) {
       const supplier =
         (row.rut && byRut.get(normalizeRutKey(row.rut))) ||
         byName.get(matchText(row.terceroNombre));
@@ -573,6 +575,10 @@ export default function InvoiceImport() {
         continue;
       }
       seenKeys.add(key);
+      const referencedInvoice =
+        row.tipo === "nota_credito_compra" && row.documentoReferencia
+          ? existingByKey.get(["compra", supplier.id, normalizeDocumentNumber(row.documentoReferencia)].join("|")) || null
+          : null;
 
       const payload = {
         empresa_id: selectedEmpresaId,
@@ -597,6 +603,7 @@ export default function InvoiceImport() {
         treasury_priority: "normal",
         treasury_category_id: support.suppliersCategoryId,
         origen_importacion: "sii_compras",
+        ...(referencedInvoice ? { factura_referencia_id: referencedInvoice.id } : {}),
       };
       const existing = existingByKey.get(key);
       if (existing) {
@@ -613,6 +620,7 @@ export default function InvoiceImport() {
           ...(row.montoOtrosImpuestos != null ? { monto_otros_impuestos: row.montoOtrosImpuestos } : {}),
           ...(row.tipoDocumento ? { tipo_documento: row.tipoDocumento } : {}),
           ...(row.nombreDocumento ? { nombre_documento: row.nombreDocumento } : {}),
+          ...(referencedInvoice ? { factura_referencia_id: referencedInvoice.id } : {}),
         };
         if (Object.keys(breakdown).length === 0) {
           duplicateRows += 1;
@@ -626,8 +634,9 @@ export default function InvoiceImport() {
         if (error) throw new Error(`No se pudo actualizar la compra ${row.numeroDocumento}: ${error.message}`);
         updatedRows += 1;
       } else {
-        const { error } = await supabase.from("facturas").insert(payload);
+        const { data: inserted, error } = await supabase.from("facturas").insert(payload).select("id, tipo, numero_documento, rut, tercero_nombre, tercero_id, fecha_emision, monto, tipo_documento").single();
         if (error) throw new Error(`No se pudo insertar la compra ${row.numeroDocumento}: ${error.message}`);
+        existingByKey.set(key, inserted as InvoiceRow);
         insertedRows += 1;
       }
     }

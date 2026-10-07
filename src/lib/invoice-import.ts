@@ -443,9 +443,18 @@ export const normalizeSiiPurchaseInvoiceImportRow = (rawRow: RawSheetRow): Purch
     normalizeInvoiceMoneyValue(getExactValueFromRow(rawRow, "impto. sin derecho a credito", "impuesto sin derecho a credito")),
     normalizeInvoiceMoneyValue(getExactValueFromRow(rawRow, "valor otro impuesto"))
   );
-  const referencia = sanitizeImportText(
-    getValueFromRow(rawRow, "folio docto referencia", "folio referencia", "documento referencia")
+  // Coincidencia exacta: con búsqueda aproximada, sin columna de referencia se tomaba "Folio"
+  // y cada documento quedaba asociado a sí mismo. Solo notas de crédito/débito tienen referencia.
+  const rawReferencia = sanitizeImportText(
+    getExactValueFromRow(rawRow, "folio docto. referencia", "folio docto referencia", "folio referencia", "documento referencia")
   ) || null;
+  const referencia =
+    (tipoDocumento === "61" || tipoDocumento === "56") &&
+    rawReferencia &&
+    rawReferencia !== "0" &&
+    normalizeText(rawReferencia).toLowerCase() !== normalizeText(numeroDocumento).toLowerCase()
+      ? rawReferencia
+      : null;
 
   if (!numeroDocumento || !terceroNombre || !fechaEmision || !monto) return null;
 

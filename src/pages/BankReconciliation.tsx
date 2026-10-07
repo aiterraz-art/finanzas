@@ -288,14 +288,21 @@ const readFirstLinkedRow = <T,>(value: T[] | T | null | undefined) => (Array.isA
 const getActivePayments = (txn: BankMovement) => (txn.facturas_pagos || []).filter((payment) => payment.estado !== "revertido");
 const isAmountMatch = (left: number, right: number) => Math.abs(left - right) <= 0.01;
 
+// Notas de crédito que rebajan el saldo de una factura: por factura_referencia_id (ventas y compras)
+// o, para NC de venta antiguas, por el folio citado en la descripción.
 const buildCreditNotesByInvoiceId = (invoices: any[], creditNotes: any[]) => {
   const creditNotesByInvoiceId = new Map<string, number>();
   for (const creditNote of creditNotes) {
-    const referencedInvoice = invoices.find(
-      (invoice: any) =>
-        normalizeInvoiceNumber(invoice.numero_documento) === normalizeInvoiceNumber(extractReferencedDocumentNumber(creditNote.descripcion)) &&
-        (!creditNote.tercero_nombre || invoice.tercero_nombre === creditNote.tercero_nombre)
-    );
+    const referencedInvoice = creditNote.factura_referencia_id
+      ? invoices.find((invoice: any) => invoice.id === creditNote.factura_referencia_id)
+      : creditNote.tipo === "nota_credito_compra"
+        ? undefined
+        : invoices.find(
+            (invoice: any) =>
+              invoice.tipo !== "compra" &&
+              normalizeInvoiceNumber(invoice.numero_documento) === normalizeInvoiceNumber(extractReferencedDocumentNumber(creditNote.descripcion)) &&
+              (!creditNote.tercero_nombre || invoice.tercero_nombre === creditNote.tercero_nombre)
+          );
     if (!referencedInvoice) continue;
     creditNotesByInvoiceId.set(
       referencedInvoice.id,
@@ -516,7 +523,7 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
     if (!selectedEmpresaId || invoiceIds.length === 0) return;
 
     const uniqueIds = Array.from(new Set(invoiceIds));
-    const [{ data: invoices, error: invoicesError }, { data: payments, error: paymentsError }] = await Promise.all([
+    const [{ data: invoices, error: invoicesError }, { data: payments, error: paymentsError }, { data: creditNotes, error: creditNotesError }] = await Promise.all([
       supabase
         .from("facturas")
         .select("id, monto, fecha_vencimiento")
@@ -528,15 +535,29 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
         .eq("empresa_id", selectedEmpresaId)
         .in("factura_id", uniqueIds)
         .eq("estado", "aplicado"),
+      // Las notas de crédito asociadas también saldan la factura.
+      supabase
+        .from("facturas")
+        .select("factura_referencia_id, monto")
+        .eq("empresa_id", selectedEmpresaId)
+        .in("tipo", ["nota_credito", "nota_credito_compra"])
+        .in("factura_referencia_id", uniqueIds)
+        .is("archived_at", null),
     ]);
     if (invoicesError) throw invoicesError;
     if (paymentsError) throw paymentsError;
+    if (creditNotesError) throw creditNotesError;
 
     const appliedByInvoice = new Map<string, number>();
     for (const payment of payments || []) {
       const facturaId = payment.factura_id as string | null;
       if (!facturaId) continue;
       appliedByInvoice.set(facturaId, (appliedByInvoice.get(facturaId) || 0) + Number(payment.monto_aplicado || 0));
+    }
+    for (const creditNote of creditNotes || []) {
+      const facturaId = creditNote.factura_referencia_id as string | null;
+      if (!facturaId) continue;
+      appliedByInvoice.set(facturaId, (appliedByInvoice.get(facturaId) || 0) + Number(creditNote.monto || 0));
     }
 
     for (const invoice of invoices || []) {
@@ -650,11 +671,17 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
       const creditNotesQuery = txn.monto >= 0
         ? supabase
             .from("facturas")
-            .select("monto, descripcion, tercero_nombre")
+            .select("tipo, monto, descripcion, tercero_nombre, factura_referencia_id")
             .eq("empresa_id", selectedEmpresaId)
             .eq("tipo", "nota_credito")
-            .neq("estado", "archivada")
-        : Promise.resolve({ data: [], error: null });
+            .is("archived_at", null)
+        : supabase
+            .from("facturas")
+            .select("tipo, monto, descripcion, tercero_nombre, factura_referencia_id")
+            .eq("empresa_id", selectedEmpresaId)
+            .eq("tipo", "nota_credito_compra")
+            .not("factura_referencia_id", "is", null)
+            .is("archived_at", null);
 
       const [
         { data: invoices, error: invoiceError },
@@ -890,10 +917,10 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
           .in("estado", ["pendiente", "morosa", "abonada"]),
         supabase
           .from("facturas")
-          .select("monto, descripcion, tercero_nombre")
+          .select("tipo, monto, descripcion, tercero_nombre, factura_referencia_id")
           .eq("empresa_id", selectedEmpresaId)
-          .eq("tipo", "nota_credito")
-          .neq("estado", "archivada"),
+          .in("tipo", ["nota_credito", "nota_credito_compra"])
+          .is("archived_at", null),
         supabase
           .from("rendiciones")
           .select("id, descripcion, tercero_nombre, monto_total, fecha")
@@ -925,8 +952,7 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
       if (webpayError) throw webpayError;
       if (commitmentsError) throw commitmentsError;
 
-      const salesInvoices = ((invoices || []) as any[]).filter((invoice) => invoice.tipo === "venta");
-      const creditNotesByInvoiceId = buildCreditNotesByInvoiceId(salesInvoices, creditNotes || []);
+      const creditNotesByInvoiceId = buildCreditNotesByInvoiceId((invoices || []) as any[], creditNotes || []);
 
       const pool: AutoPoolCandidate[] = [
         ...((invoices || []) as any[]).map((invoice) => {
@@ -938,7 +964,7 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
             direction: isSale ? ("inflow" as const) : ("outflow" as const),
             label: `${invoice.tercero_nombre || "Sin tercero"} • ${invoice.numero_documento || "Sin folio"}`,
             subtitle: isSale ? "Factura de venta" : "Factura por pagar",
-            amount: getInvoiceRemainingAmount(invoice, isSale ? creditNotesByInvoiceId : new Map()),
+            amount: getInvoiceRemainingAmount(invoice, creditNotesByInvoiceId),
             dueDate: invoice.fecha_vencimiento || null,
             dates: [invoice.fecha_emision || null, invoice.fecha_vencimiento || null],
             invoiceNumber: invoice.numero_documento || null,

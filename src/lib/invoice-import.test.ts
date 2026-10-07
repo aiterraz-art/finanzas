@@ -167,6 +167,19 @@ describe("invoice import helpers", () => {
     expect(parsed?.documentoReferencia).toBe("2990");
   });
 
+  it("does not use the document's own folio as its reference", () => {
+    const rows = [
+      ["Nro", "Tipo Doc", "Tipo Compra", "RUT Proveedor", "Razon Social", "Folio", "Fecha Docto", "Monto Exento", "Monto Neto", "Monto IVA Recuperable", "Monto Total"],
+      ["1", "61", "Del Giro", "76.921.029-6", "3DENTAL SPA", "952", "10/08/2026", "0", "73872", "14036", "87908"],
+      ["2", "33", "Del Giro", "76.921.029-6", "3DENTAL SPA", "9668", "07/08/2026", "0", "77760", "14774", "92534"],
+    ];
+    const [creditNote, invoice] = buildObjectsFromWorksheetRows(rows, 0).map(normalizeSiiPurchaseInvoiceImportRow);
+
+    expect(creditNote?.tipo).toBe("nota_credito_compra");
+    expect(creditNote?.documentoReferencia).toBeNull();
+    expect(invoice?.documentoReferencia).toBeNull();
+  });
+
   it("captures non-recoverable VAT and other taxes from the SII purchases register", () => {
     const rows = [
       ["Nro", "Tipo Doc", "Tipo Compra", "RUT Proveedor", "Razon Social", "Folio", "Fecha Docto", "Monto Exento", "Monto Neto", "Monto IVA Recuperable", "Monto Iva No Recuperable", "Codigo IVA No Rec.", "Monto Total", "Impto. Sin Derecho a Credito", "Valor Otro Impuesto"],

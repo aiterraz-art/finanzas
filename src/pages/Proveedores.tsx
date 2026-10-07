@@ -67,6 +67,8 @@ type PurchaseInvoice = {
   monto_iva?: number | null;
   monto_iva_no_recuperable?: number | null;
   monto_otros_impuestos?: number | null;
+  // Notas de crédito del proveedor asociadas a esta factura: rebajan su saldo.
+  creditNoteAmount?: number;
   facturas_pagos?: Array<{
     monto_aplicado: number;
     estado: string;
@@ -267,7 +269,20 @@ export default function Proveedores() {
       if (loanCommitmentError) throw loanCommitmentError;
 
       setProveedores((supplierData || []) as Proveedor[]);
-      setInvoices((invoiceData || []) as PurchaseInvoice[]);
+      const { data: creditNoteData, error: creditNoteError } = await supabase
+        .from("facturas")
+        .select("factura_referencia_id, monto")
+        .eq("empresa_id", selectedEmpresaId)
+        .eq("tipo", "nota_credito_compra")
+        .not("factura_referencia_id", "is", null)
+        .is("archived_at", null);
+      if (creditNoteError) throw creditNoteError;
+      const creditNotesByInvoice = new Map<string, number>();
+      for (const creditNote of creditNoteData || []) {
+        const facturaId = creditNote.factura_referencia_id as string;
+        creditNotesByInvoice.set(facturaId, (creditNotesByInvoice.get(facturaId) || 0) + Number(creditNote.monto || 0));
+      }
+      setInvoices(((invoiceData || []) as PurchaseInvoice[]).map((invoice) => ({ ...invoice, creditNoteAmount: creditNotesByInvoice.get(invoice.id) || 0 })));
       setBankLoans((loanData || []) as BankLoan[]);
       setLoanCommitments((loanCommitmentData || []) as LoanCommitment[]);
     } catch (error) {
@@ -303,7 +318,7 @@ export default function Proveedores() {
             const allocatedAmount = (invoice.facturas_pagos || [])
               .filter((payment) => payment.estado === "aplicado")
               .reduce((sum, payment) => sum + Number(payment.monto_aplicado || 0), 0);
-            const remainingAmount = Math.max(Number(invoice.monto || 0) - allocatedAmount, 0);
+            const remainingAmount = Math.max(Number(invoice.monto || 0) - allocatedAmount - (invoice.creditNoteAmount || 0), 0);
             return {
               ...invoice,
               allocatedAmount,
@@ -779,8 +794,8 @@ export default function Proveedores() {
     const appliedAmount = (editingInvoice.facturas_pagos || [])
       .filter((payment) => payment.estado === "aplicado")
       .reduce((sum, payment) => sum + Number(payment.monto_aplicado || 0), 0);
-    if (amount < appliedAmount) {
-      alert(`El monto no puede ser menor que los pagos ya aplicados (${formatTreasuryCurrency(appliedAmount)}).`);
+    if (amount < appliedAmount + (editingInvoice.creditNoteAmount || 0)) {
+      alert(`El monto no puede ser menor que los pagos y notas de crédito ya aplicados (${formatTreasuryCurrency(appliedAmount + (editingInvoice.creditNoteAmount || 0))}).`);
       return;
     }
     const editBreakdown = parseTaxBreakdown({
