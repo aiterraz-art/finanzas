@@ -41,6 +41,7 @@ import {
   detectWorksheetImportFormat,
   formatTreasuryCurrency,
   formatTreasuryDate,
+  excludeAlreadyImportedBankRows,
   normalizeBankImportRow,
 } from "@/lib/treasury";
 import { useBankAccountPositions, useBankAccounts, useTreasuryCategories } from "@/hooks/useTreasury";
@@ -1839,6 +1840,29 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
     return nextSet;
   };
 
+  const fetchExistingMovementsInRange = async (dateFrom: string, dateTo: string) => {
+    if (!selectedEmpresaId || !selectedAccountId) return [];
+    const rows: Array<{ fecha_movimiento: string; monto: number; descripcion: string | null; source_hash: string | null }> = [];
+    const PAGE_SIZE = 1000;
+
+    for (let from = 0; ; from += PAGE_SIZE) {
+      const { data, error } = await supabase
+        .from("movimientos_banco")
+        .select("id, fecha_movimiento, monto, descripcion, source_hash")
+        .eq("empresa_id", selectedEmpresaId)
+        .eq("bank_account_id", selectedAccountId)
+        .gte("fecha_movimiento", dateFrom)
+        .lte("fecha_movimiento", dateTo)
+        .order("id")
+        .range(from, from + PAGE_SIZE - 1);
+      if (error) throw error;
+      rows.push(...(data || []));
+      if (!data || data.length < PAGE_SIZE) break;
+    }
+
+    return rows;
+  };
+
   const insertBankMovementChunks = async (
     rowsToInsert: Array<{
       empresa_id: string;
@@ -1901,7 +1925,13 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
 
       const hashes = validRows.map((row) => row!.sourceHash);
       const existingHashes = await fetchExistingHashes(hashes);
-      const rowsToInsert = validRows.filter((row) => row && !existingHashes.has(row.sourceHash));
+      const rowsWithNewHash = validRows.filter((row) => row && !existingHashes.has(row.sourceHash));
+      const fileDates = validRows.map((row) => row!.fechaMovimiento).sort();
+      const existingInRange = await fetchExistingMovementsInRange(fileDates[0], fileDates[fileDates.length - 1]);
+      const rowsToInsert = excludeAlreadyImportedBankRows(
+        rowsWithNewHash.map((row) => row!),
+        existingInRange.filter((row) => !row.source_hash || !existingHashes.has(row.source_hash))
+      );
 
       const periodFrom = rowsToInsert.length > 0 ? rowsToInsert[0]!.fechaMovimiento : validRows[0]?.fechaMovimiento ?? null;
       const periodTo = rowsToInsert.length > 0 ? rowsToInsert[rowsToInsert.length - 1]!.fechaMovimiento : validRows.at(-1)?.fechaMovimiento ?? null;

@@ -5,6 +5,7 @@ import {
   canEditTreasury,
   detectChequeWorksheetFormat,
   detectWorksheetImportFormat,
+  excludeAlreadyImportedBankRows,
   normalizeBankImportRow,
   normalizeChequeImportRow,
   normalizeDateInput,
@@ -183,6 +184,43 @@ describe("treasury helpers", () => {
     expect(outflow?.salidaBanco).toBe(10000);
     expect(outflow?.numeroOperacion).toBe("5641071602");
     expect(outflow?.saldo).toBe(190010);
+  });
+
+  it("recognizes movements already imported from a different statement layout", () => {
+    const monthly = normalizeBankImportRow(
+      {
+        Fecha: "04-09-2026",
+        Descripción: "TEF  9366587-2 REBECA GUACOLDA",
+        "Numero Documento": 0,
+        Cargo: -150000,
+        Abono: "",
+        "Saldo Diario": 13387585,
+      },
+      "acc-1"
+    );
+    const repeated = normalizeBankImportRow(
+      {
+        Fecha: "04-09-2026",
+        Descripción: "TEF 13674566-2 CRISTIAN ZUNIGA",
+        "Numero Documento": 0,
+        Cargo: -10000,
+        Abono: "",
+        "Saldo Diario": 13377585,
+      },
+      "acc-1"
+    );
+
+    expect(monthly?.numeroOperacion).toBeNull();
+
+    const existing = [
+      { fecha_movimiento: "2026-09-04", monto: -150000, descripcion: "TEF  9366587-2 REBECA GUACOLDA" },
+      { fecha_movimiento: "2026-09-04", monto: -10000, descripcion: "TEF 13674566-2 CRISTIAN ZUNIGA" },
+    ];
+    const rows = [monthly!, repeated!, { ...repeated!, saldo: 13367585 }];
+
+    const pending = excludeAlreadyImportedBankRows(rows, existing);
+    expect(pending).toHaveLength(1);
+    expect(pending[0].saldo).toBe(13367585);
   });
 
   it("detects receivables aging reports and avoids importing them as bank statements", () => {

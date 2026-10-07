@@ -454,6 +454,35 @@ export const buildBankSourceHash = (params: {
     params.saldo === null || params.saldo === undefined ? "" : Number(params.saldo).toFixed(2),
   ].join("|");
 
+// Distintos formatos de descarga del mismo banco (últimos movimientos vs. estado de cuenta
+// mensual) traen N° de documento y saldos distintos para el mismo movimiento, así que el
+// hash no basta. Este cruce compara solo fecha, monto y glosa.
+const buildBankMovementMatchKey = (fechaMovimiento: string, monto: number, descripcion: string) =>
+  [fechaMovimiento, Number(monto).toFixed(2), normalizeText(descripcion).replace(/\s+/g, " ").toLowerCase()].join("|");
+
+// Descarta las filas que ya existen en la cuenta. Cuenta repeticiones: si la base tiene un
+// movimiento y el archivo dos idénticos (mismo día, monto y glosa), solo se omite uno.
+export const excludeAlreadyImportedBankRows = <
+  T extends { fechaMovimiento: string; monto: number; descripcion: string }
+>(
+  rows: T[],
+  existing: Array<{ fecha_movimiento: string; monto: number; descripcion: string | null }>
+) => {
+  const remaining = new Map<string, number>();
+  for (const row of existing) {
+    const key = buildBankMovementMatchKey(row.fecha_movimiento, row.monto, row.descripcion || "");
+    remaining.set(key, (remaining.get(key) || 0) + 1);
+  }
+
+  return rows.filter((row) => {
+    const key = buildBankMovementMatchKey(row.fechaMovimiento, row.monto, row.descripcion);
+    const available = remaining.get(key) || 0;
+    if (available === 0) return true;
+    remaining.set(key, available - 1);
+    return false;
+  });
+};
+
 const normalizeImportHeaderToken = (value: unknown) =>
   normalizeText(value)
     .normalize("NFD")
@@ -672,23 +701,23 @@ export const normalizeBankImportRow = (
     return normalizeMoneyInput(value);
   })();
 
-  const numeroOperacion =
-    normalizeText(
-      getValue(
-        "n_operacion",
-        "n operacion",
-        "operacion",
-        "referencia",
-        "nro operacion",
-        "nro_operacion",
-        "n doc",
-        "n° doc",
-        "numero doc",
-        "numero documento"
-      )
-    ) ||
-    hora ||
-    null;
+  // El estado de cuenta mensual trae "Numero Documento" en 0 para todas las filas; eso no
+  // identifica nada y debe tratarse como vacío.
+  const numeroOperacionRaw = normalizeText(
+    getValue(
+      "n_operacion",
+      "n operacion",
+      "operacion",
+      "referencia",
+      "nro operacion",
+      "nro_operacion",
+      "n doc",
+      "n° doc",
+      "numero doc",
+      "numero documento"
+    )
+  );
+  const numeroOperacion = (/^0+$/.test(numeroOperacionRaw) ? "" : numeroOperacionRaw) || hora || null;
   const sucursal = normalizeText(getValue("sucursal", "branch")) || null;
   const postedAt = normalizeDateInput(getValue("fecha contable", "posted_at"));
   const knownKeys = new Set([
