@@ -65,7 +65,8 @@ function App() {
                 <Route path="reports" element={<Reports />} />
                 <Route path="pnl" element={<Reports />} />
                 <Route path="settings" element={<Settings />} />
-                <Route path="reconciliation" element={<BankReconciliation />} />
+                <Route path="reconciliation" element={<BankReconciliation key="bank" />} />
+                <Route path="reconciliation/automatica" element={<BankReconciliation key="auto" view="auto" />} />
                 <Route path="banco" element={<Navigate to="/reconciliation" replace />} />
                 <Route path="cashflow" element={<CashFlow />} />
                 <Route path="flujo-caja" element={<Navigate to="/cashflow" replace />} />

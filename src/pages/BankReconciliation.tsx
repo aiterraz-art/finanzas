@@ -1,6 +1,8 @@
 import { type ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import * as XLSX from "xlsx";
 import {
+  ArrowLeft,
   Check,
   Loader2,
   RefreshCw,
@@ -306,12 +308,14 @@ const getInvoiceRemainingAmount = (invoice: any, creditNotesByInvoiceId: Map<str
     0
   );
 
-export default function BankReconciliation() {
+export default function BankReconciliation({ view = "bank" }: { view?: "bank" | "auto" }) {
+  const isAutoView = view === "auto";
+  const [searchParams] = useSearchParams();
   const { selectedEmpresaId, selectedRole } = useCompany();
   const { user } = useAuth();
   const canEdit = canEditTreasury(selectedRole);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [selectedAccountId, setSelectedAccountId] = useState<string>("");
+  const [selectedAccountId, setSelectedAccountId] = useState<string>(() => searchParams.get("cuenta") || "");
   const [transactions, setTransactions] = useState<BankMovement[]>([]);
   const [latestImport, setLatestImport] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
@@ -403,7 +407,8 @@ export default function BankReconciliation() {
   );
 
   useEffect(() => {
-    if (!selectedAccountId && bankAccounts.length > 0) {
+    if (bankAccounts.length === 0) return;
+    if (!selectedAccountId || !bankAccounts.some((account) => account.id === selectedAccountId)) {
       setSelectedAccountId(bankAccounts[0].id);
     }
   }, [bankAccounts, selectedAccountId]);
@@ -419,7 +424,7 @@ export default function BankReconciliation() {
   }, [selectedEmpresaId, selectedAccountId]);
 
   useEffect(() => {
-    if (selectedEmpresaId && selectedAccountId && canEdit) {
+    if (isAutoView && selectedEmpresaId && selectedAccountId && canEdit) {
       void fetchAutoPool();
     } else {
       setAutoPool([]);
@@ -2558,9 +2563,11 @@ export default function BankReconciliation() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Banco por Cuenta</h1>
+          <h1 className="text-3xl font-bold tracking-tight">{isAutoView ? "Conciliaciones automáticas" : "Banco por Cuenta"}</h1>
           <p className="mt-1 text-muted-foreground">
-            Importa cartolas por cuenta, deduplica por hash y concilia con facturas y rendiciones.
+            {isAutoView
+              ? "Revisa las sugerencias por monto y fecha, elige las que quieras y concílialas en lote."
+              : "Importa cartolas por cuenta, deduplica por hash y concilia con facturas y rendiciones."}
           </p>
         </div>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
@@ -2585,24 +2592,42 @@ export default function BankReconciliation() {
             Refrescar
           </Button>
 
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            className="hidden"
-            onChange={handleImportFile}
-          />
-          <Button
-            onClick={() => fileInputRef.current?.click()}
-            disabled={!selectedAccountId || !canEdit || isImporting}
-          >
-            {isImporting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
-            Importar cartola
-          </Button>
+          {isAutoView ? (
+            <Button variant="outline" asChild>
+              <Link to={selectedAccountId ? `/reconciliation?cuenta=${selectedAccountId}` : "/reconciliation"}>
+                <ArrowLeft className="mr-2 h-4 w-4" />
+                Volver al banco
+              </Link>
+            </Button>
+          ) : (
+            <>
+              <Button variant="outline" asChild>
+                <Link to={selectedAccountId ? `/reconciliation/automatica?cuenta=${selectedAccountId}` : "/reconciliation/automatica"}>
+                  <Sparkles className="mr-2 h-4 w-4" />
+                  Conciliaciones
+                </Link>
+              </Button>
+
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                className="hidden"
+                onChange={handleImportFile}
+              />
+              <Button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={!selectedAccountId || !canEdit || isImporting}
+              >
+                {isImporting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
+                Importar cartola
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
-      {!canEdit && (
+      {!isAutoView && !canEdit && (
         <Card className="border-amber-200">
           <CardContent className="pt-6 text-sm text-amber-700">
             Tu rol actual es solo lectura. Puedes revisar cartolas y conciliaciones, pero no importar ni editar.
@@ -2610,7 +2635,7 @@ export default function BankReconciliation() {
         </Card>
       )}
 
-      {selectedAccount && (
+      {!isAutoView && selectedAccount && (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <StatCard
             title="Saldo actual"
@@ -2640,7 +2665,7 @@ export default function BankReconciliation() {
         </div>
       )}
 
-      {importSummary && (
+      {!isAutoView && importSummary && (
         <Card className="border-emerald-200">
           <CardContent className="pt-6 text-sm">
             <div className="font-medium text-emerald-700">Importación completada: {importSummary.filename}</div>
@@ -2654,8 +2679,16 @@ export default function BankReconciliation() {
         </Card>
       )}
 
-      {canEdit && selectedAccount && (
-        <Card className="border-sky-200">
+      {isAutoView && !canEdit && (
+        <Card>
+          <CardContent className="pt-6 text-sm text-muted-foreground">
+            Las conciliaciones automáticas requieren permisos de edición en tesorería.
+          </CardContent>
+        </Card>
+      )}
+
+      {isAutoView && canEdit && selectedAccount && (
+        <Card>
           <CardHeader>
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
               <div>
@@ -2820,237 +2853,239 @@ export default function BankReconciliation() {
         </Card>
       )}
 
-      <Card>
-        <CardHeader>
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <CardTitle>Movimientos bancarios</CardTitle>
-              <CardDescription>Filtrados por la cuenta seleccionada y listos para conciliación.</CardDescription>
-            </div>
-            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap lg:justify-end">
-              <div className="relative w-full sm:min-w-[18rem] sm:flex-1">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={searchTerm}
-                  onChange={(event) => setSearchTerm(event.target.value)}
-                  placeholder="Buscar glosa, razón social o documento..."
-                  className="pl-10"
-                />
+      {!isAutoView && (
+        <Card>
+          <CardHeader>
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <CardTitle>Movimientos bancarios</CardTitle>
+                <CardDescription>Filtrados por la cuenta seleccionada y listos para conciliación.</CardDescription>
               </div>
-              <Input
-                value={amountFilter}
-                onChange={(event) => setAmountFilter(event.target.value)}
-                placeholder="Monto exacto"
-                className="w-full sm:w-36"
-              />
-              <Input
-                type="date"
-                value={dateFromFilter}
-                onChange={(event) => setDateFromFilter(event.target.value)}
-                className="w-full sm:w-40"
-              />
-              <Input
-                type="date"
-                value={dateToFilter}
-                onChange={(event) => setDateToFilter(event.target.value)}
-                className="w-full sm:w-40"
-              />
-              <Select value={filter} onValueChange={(value: "all" | "unmatched" | "matched") => setFilter(value)}>
-                <SelectTrigger className="w-full sm:w-40">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todos</SelectItem>
-                  <SelectItem value="unmatched">No conciliados</SelectItem>
-                  <SelectItem value="matched">Conciliados</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select
-                value={directionFilter}
-                onValueChange={(value: "all" | "inflow" | "outflow") => setDirectionFilter(value)}
-              >
-                <SelectTrigger className="w-full min-w-0 sm:w-40">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Todos los movimientos</SelectItem>
-                  <SelectItem value="inflow">Ingresos</SelectItem>
-                  <SelectItem value="outflow">Egresos</SelectItem>
-                </SelectContent>
-              </Select>
+              <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap lg:justify-end">
+                <div className="relative w-full sm:min-w-[18rem] sm:flex-1">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={searchTerm}
+                    onChange={(event) => setSearchTerm(event.target.value)}
+                    placeholder="Buscar glosa, razón social o documento..."
+                    className="pl-10"
+                  />
+                </div>
+                <Input
+                  value={amountFilter}
+                  onChange={(event) => setAmountFilter(event.target.value)}
+                  placeholder="Monto exacto"
+                  className="w-full sm:w-36"
+                />
+                <Input
+                  type="date"
+                  value={dateFromFilter}
+                  onChange={(event) => setDateFromFilter(event.target.value)}
+                  className="w-full sm:w-40"
+                />
+                <Input
+                  type="date"
+                  value={dateToFilter}
+                  onChange={(event) => setDateToFilter(event.target.value)}
+                  className="w-full sm:w-40"
+                />
+                <Select value={filter} onValueChange={(value: "all" | "unmatched" | "matched") => setFilter(value)}>
+                  <SelectTrigger className="w-full sm:w-40">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos</SelectItem>
+                    <SelectItem value="unmatched">No conciliados</SelectItem>
+                    <SelectItem value="matched">Conciliados</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={directionFilter}
+                  onValueChange={(value: "all" | "inflow" | "outflow") => setDirectionFilter(value)}
+                >
+                  <SelectTrigger className="w-full min-w-0 sm:w-40">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Todos los movimientos</SelectItem>
+                    <SelectItem value="inflow">Ingresos</SelectItem>
+                    <SelectItem value="outflow">Egresos</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
-          </div>
-        </CardHeader>
-        <CardContent className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
-              <tr>
-                <th className="px-4 py-3 text-left">Fecha</th>
-                <th className="px-4 py-3 text-left">Descripción</th>
-                <th className="px-4 py-3 text-right">Monto</th>
-                <th className="px-4 py-3 text-right">Saldo</th>
-                <th className="px-4 py-3 text-left">Conciliación</th>
-                <th className="px-4 py-3 text-left">Estado</th>
-                <th className="px-4 py-3 text-center">Acciones</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredTransactions.map((txn) => {
-                const activePayments = getActivePayments(txn);
-                const payment = activePayments[0];
-                const invoiceInfo = readFirstLinkedRow(payment?.facturas);
-                const rendicionInfo = readFirstLinkedRow(payment?.rendiciones);
-                const chequeInfo = readFirstLinkedRow(txn.cheques_cartera);
-                const webpayInfo = readFirstLinkedRow(txn.webpay_liquidaciones);
-                const commitmentInfo = readFirstLinkedRow(txn.cash_commitments);
-                const advanceInfo = readFirstLinkedRow(txn.customer_advances);
-                const canArchiveLinkedManual =
-                  Boolean(commitmentInfo) && commitmentInfo?.source_type === "manual" && !commitmentInfo?.archived_at;
-                const webpayClient = readFirstLinkedRow(webpayInfo?.terceros);
-                const webpayInvoice = readFirstLinkedRow(webpayInfo?.facturas);
-                return (
-                  <tr key={txn.id} className="border-t">
-                    <td className="px-4 py-3">{formatTreasuryDate(txn.fecha_movimiento)}</td>
-                    <td className="px-4 py-3">
-                      <div className="font-medium">{txn.descripcion || "Sin descripción"}</div>
-                      {txn.numero_documento && <div className="text-xs text-muted-foreground">{txn.numero_documento}</div>}
-                    </td>
-                    <td className={cn("px-4 py-3 text-right font-semibold", txn.monto >= 0 ? "text-emerald-700" : "text-red-700")}>
-                      {formatTreasuryCurrency(txn.monto, selectedAccount?.moneda || "CLP")}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      {txn.saldo === null ? "Sin saldo" : formatTreasuryCurrency(txn.saldo, selectedAccount?.moneda || "CLP")}
-                    </td>
-                    <td className="px-4 py-3">
-                      {payment ? (
-                        <div>
-                          <div className="font-medium">
-                            {activePayments.length > 1
-                              ? `${activePayments.length} facturas conciliadas`
-                              : invoiceInfo?.tercero_nombre || rendicionInfo?.tercero_nombre || "Documento conciliado"}
-                          </div>
-                          <div className="text-xs text-muted-foreground">
-                            {activePayments.length > 1
-                              ? activePayments
-                                  .map((row) => {
-                                    const factura = Array.isArray(row.facturas) ? row.facturas[0] : row.facturas;
-                                    return factura?.numero_documento;
-                                  })
-                                  .filter(Boolean)
-                                  .slice(0, 3)
-                                  .join(", ")
-                              : invoiceInfo?.numero_documento || rendicionInfo?.descripcion || "Sin detalle"}
-                          </div>
-                          {txn.monto >= 0 && (
-                            <div className="mt-2 space-y-1 text-xs text-muted-foreground">
-                              {activePayments.slice(0, 5).map((row) => {
-                                const factura = Array.isArray(row.facturas) ? row.facturas[0] : row.facturas;
-                                if (!factura) return null;
-                                return (
-                                  <div key={row.id}>
-                                    Factura {factura.numero_documento || "S/F"} • {factura.tercero_nombre || "Sin cliente"} • {formatTreasuryCurrency(Number(row.monto_aplicado || 0), selectedAccount?.moneda || "CLP")}
-                                  </div>
-                                );
-                              })}
-                              {activePayments.length > 5 && (
-                                <div>+ {activePayments.length - 5} factura(s) más</div>
-                              )}
-                              {advanceInfo && (
-                                <div>
-                                  Anticipo restante • {advanceInfo.tercero_nombre || "Sin cliente"} • {formatTreasuryCurrency(Number(advanceInfo.amount || 0), selectedAccount?.moneda || "CLP")}
-                                </div>
-                              )}
+          </CardHeader>
+          <CardContent className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-muted/40 text-xs uppercase text-muted-foreground">
+                <tr>
+                  <th className="px-4 py-3 text-left">Fecha</th>
+                  <th className="px-4 py-3 text-left">Descripción</th>
+                  <th className="px-4 py-3 text-right">Monto</th>
+                  <th className="px-4 py-3 text-right">Saldo</th>
+                  <th className="px-4 py-3 text-left">Conciliación</th>
+                  <th className="px-4 py-3 text-left">Estado</th>
+                  <th className="px-4 py-3 text-center">Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredTransactions.map((txn) => {
+                  const activePayments = getActivePayments(txn);
+                  const payment = activePayments[0];
+                  const invoiceInfo = readFirstLinkedRow(payment?.facturas);
+                  const rendicionInfo = readFirstLinkedRow(payment?.rendiciones);
+                  const chequeInfo = readFirstLinkedRow(txn.cheques_cartera);
+                  const webpayInfo = readFirstLinkedRow(txn.webpay_liquidaciones);
+                  const commitmentInfo = readFirstLinkedRow(txn.cash_commitments);
+                  const advanceInfo = readFirstLinkedRow(txn.customer_advances);
+                  const canArchiveLinkedManual =
+                    Boolean(commitmentInfo) && commitmentInfo?.source_type === "manual" && !commitmentInfo?.archived_at;
+                  const webpayClient = readFirstLinkedRow(webpayInfo?.terceros);
+                  const webpayInvoice = readFirstLinkedRow(webpayInfo?.facturas);
+                  return (
+                    <tr key={txn.id} className="border-t">
+                      <td className="px-4 py-3">{formatTreasuryDate(txn.fecha_movimiento)}</td>
+                      <td className="px-4 py-3">
+                        <div className="font-medium">{txn.descripcion || "Sin descripción"}</div>
+                        {txn.numero_documento && <div className="text-xs text-muted-foreground">{txn.numero_documento}</div>}
+                      </td>
+                      <td className={cn("px-4 py-3 text-right font-semibold", txn.monto >= 0 ? "text-emerald-700" : "text-red-700")}>
+                        {formatTreasuryCurrency(txn.monto, selectedAccount?.moneda || "CLP")}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {txn.saldo === null ? "Sin saldo" : formatTreasuryCurrency(txn.saldo, selectedAccount?.moneda || "CLP")}
+                      </td>
+                      <td className="px-4 py-3">
+                        {payment ? (
+                          <div>
+                            <div className="font-medium">
+                              {activePayments.length > 1
+                                ? `${activePayments.length} facturas conciliadas`
+                                : invoiceInfo?.tercero_nombre || rendicionInfo?.tercero_nombre || "Documento conciliado"}
                             </div>
+                            <div className="text-xs text-muted-foreground">
+                              {activePayments.length > 1
+                                ? activePayments
+                                    .map((row) => {
+                                      const factura = Array.isArray(row.facturas) ? row.facturas[0] : row.facturas;
+                                      return factura?.numero_documento;
+                                    })
+                                    .filter(Boolean)
+                                    .slice(0, 3)
+                                    .join(", ")
+                                : invoiceInfo?.numero_documento || rendicionInfo?.descripcion || "Sin detalle"}
+                            </div>
+                            {txn.monto >= 0 && (
+                              <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                                {activePayments.slice(0, 5).map((row) => {
+                                  const factura = Array.isArray(row.facturas) ? row.facturas[0] : row.facturas;
+                                  if (!factura) return null;
+                                  return (
+                                    <div key={row.id}>
+                                      Factura {factura.numero_documento || "S/F"} • {factura.tercero_nombre || "Sin cliente"} • {formatTreasuryCurrency(Number(row.monto_aplicado || 0), selectedAccount?.moneda || "CLP")}
+                                    </div>
+                                  );
+                                })}
+                                {activePayments.length > 5 && (
+                                  <div>+ {activePayments.length - 5} factura(s) más</div>
+                                )}
+                                {advanceInfo && (
+                                  <div>
+                                    Anticipo restante • {advanceInfo.tercero_nombre || "Sin cliente"} • {formatTreasuryCurrency(Number(advanceInfo.amount || 0), selectedAccount?.moneda || "CLP")}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        ) : chequeInfo ? (
+                          <div>
+                            <div className="font-medium">{chequeInfo.librador || "Cheque conciliado"}</div>
+                            <div className="text-xs text-muted-foreground">Cheque {chequeInfo.numero_cheque}</div>
+                          </div>
+                        ) : webpayInfo ? (
+                          <div>
+                            <div className="font-medium">{webpayClient?.razon_social || "WebPay conciliado"}</div>
+                            <div className="text-xs text-muted-foreground">
+                              Orden {webpayInfo.orden_compra}
+                              {webpayInvoice?.numero_documento ? ` • Factura ${webpayInvoice.numero_documento}` : ""}
+                            </div>
+                          </div>
+                        ) : commitmentInfo ? (
+                          <div>
+                            <div className="font-medium">
+                              {commitmentInfo.direction === "inflow"
+                                ? commitmentInfo.description || commitmentInfo.counterparty || "Ingreso manual conciliado"
+                                : commitmentInfo.counterparty || "Compromiso conciliado"}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              {commitmentInfo.direction === "inflow"
+                                ? commitmentInfo.counterparty || "Ingreso manual conciliado"
+                                : commitmentInfo.description || "Sin detalle"}
+                            </div>
+                          </div>
+                        ) : advanceInfo ? (
+                          <div>
+                            <div className="font-medium">{advanceInfo.tercero_nombre || "Anticipo de cliente"}</div>
+                            <div className="text-xs text-muted-foreground">
+                              Anticipo disponible {formatTreasuryCurrency(Number(advanceInfo.remaining_amount || 0), selectedAccount?.moneda || "CLP")}
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">Pendiente</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            txn.estado === "conciliado"
+                              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                              : "border-amber-200 bg-amber-50 text-amber-700"
+                          )}
+                        >
+                          {txn.estado === "conciliado" ? "Conciliado" : "No conciliado"}
+                        </Badge>
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <div className="flex justify-center gap-2">
+                          {txn.estado === "conciliado" ? (
+                            <>
+                              <Button size="sm" variant="outline" onClick={() => openReviewDialog(txn)}>
+                                Revisar
+                              </Button>
+                              <Button size="sm" variant="outline" disabled={!canEdit} onClick={() => handleUndoMatch(txn)}>
+                                <RotateCcw className="mr-2 h-4 w-4" />
+                                Deshacer
+                              </Button>
+                              {canArchiveLinkedManual && (
+                                <Button size="sm" variant="outline" disabled={!canEdit} onClick={() => void handleArchiveLinkedManualExpense(txn)}>
+                                  {commitmentInfo?.direction === "inflow" ? "Archivar ingreso" : "Archivar egreso"}
+                                </Button>
+                              )}
+                            </>
+                          ) : (
+                            <Button size="sm" disabled={!canEdit} onClick={() => void fetchCandidates(txn)}>
+                              <Check className="mr-2 h-4 w-4" />
+                              Conciliar
+                            </Button>
                           )}
                         </div>
-                      ) : chequeInfo ? (
-                        <div>
-                          <div className="font-medium">{chequeInfo.librador || "Cheque conciliado"}</div>
-                          <div className="text-xs text-muted-foreground">Cheque {chequeInfo.numero_cheque}</div>
-                        </div>
-                      ) : webpayInfo ? (
-                        <div>
-                          <div className="font-medium">{webpayClient?.razon_social || "WebPay conciliado"}</div>
-                          <div className="text-xs text-muted-foreground">
-                            Orden {webpayInfo.orden_compra}
-                            {webpayInvoice?.numero_documento ? ` • Factura ${webpayInvoice.numero_documento}` : ""}
-                          </div>
-                        </div>
-                      ) : commitmentInfo ? (
-                        <div>
-                          <div className="font-medium">
-                            {commitmentInfo.direction === "inflow"
-                              ? commitmentInfo.description || commitmentInfo.counterparty || "Ingreso manual conciliado"
-                              : commitmentInfo.counterparty || "Compromiso conciliado"}
-                          </div>
-                          <div className="text-xs text-muted-foreground">
-                            {commitmentInfo.direction === "inflow"
-                              ? commitmentInfo.counterparty || "Ingreso manual conciliado"
-                              : commitmentInfo.description || "Sin detalle"}
-                          </div>
-                        </div>
-                      ) : advanceInfo ? (
-                        <div>
-                          <div className="font-medium">{advanceInfo.tercero_nombre || "Anticipo de cliente"}</div>
-                          <div className="text-xs text-muted-foreground">
-                            Anticipo disponible {formatTreasuryCurrency(Number(advanceInfo.remaining_amount || 0), selectedAccount?.moneda || "CLP")}
-                          </div>
-                        </div>
-                      ) : (
-                        <span className="text-muted-foreground">Pendiente</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <Badge
-                        variant="outline"
-                        className={cn(
-                          txn.estado === "conciliado"
-                            ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                            : "border-amber-200 bg-amber-50 text-amber-700"
-                        )}
-                      >
-                        {txn.estado === "conciliado" ? "Conciliado" : "No conciliado"}
-                      </Badge>
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      <div className="flex justify-center gap-2">
-                        {txn.estado === "conciliado" ? (
-                          <>
-                            <Button size="sm" variant="outline" onClick={() => openReviewDialog(txn)}>
-                              Revisar
-                            </Button>
-                            <Button size="sm" variant="outline" disabled={!canEdit} onClick={() => handleUndoMatch(txn)}>
-                              <RotateCcw className="mr-2 h-4 w-4" />
-                              Deshacer
-                            </Button>
-                            {canArchiveLinkedManual && (
-                              <Button size="sm" variant="outline" disabled={!canEdit} onClick={() => void handleArchiveLinkedManualExpense(txn)}>
-                                {commitmentInfo?.direction === "inflow" ? "Archivar ingreso" : "Archivar egreso"}
-                              </Button>
-                            )}
-                          </>
-                        ) : (
-                          <Button size="sm" disabled={!canEdit} onClick={() => void fetchCandidates(txn)}>
-                            <Check className="mr-2 h-4 w-4" />
-                            Conciliar
-                          </Button>
-                        )}
-                      </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {filteredTransactions.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-12 text-center text-muted-foreground">
+                      {loading ? <Loader2 className="mx-auto h-5 w-5 animate-spin" /> : "No hay movimientos para el filtro actual."}
                     </td>
                   </tr>
-                );
-              })}
-              {filteredTransactions.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="px-4 py-12 text-center text-muted-foreground">
-                    {loading ? <Loader2 className="mx-auto h-5 w-5 animate-spin" /> : "No hay movimientos para el filtro actual."}
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </CardContent>
-      </Card>
+                )}
+              </tbody>
+            </table>
+          </CardContent>
+        </Card>
+      )}
 
       <Dialog
         open={Boolean(selectedTxn)}
