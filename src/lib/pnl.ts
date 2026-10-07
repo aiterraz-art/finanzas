@@ -123,6 +123,8 @@ export type PnlExpenseItem = {
   source: "commitment" | "rendicion" | "advance_return";
   line: PnlExpenseLine;
   month: string;
+  // Fecha del pago bancario (o del documento) para ubicarlo en la cartola.
+  date: string | null;
   description: string;
   counterparty: string | null;
   paidAmount: number;
@@ -283,8 +285,8 @@ export const buildPnl = (params: {
     }
   }
 
+  // Los pagos cubiertos por facturas quedan en el detalle con monto 0 para poder revisarlos.
   const addExpense = (item: PnlExpenseItem) => {
-    if (item.amount === 0) return;
     totals.expenses[item.line] += item.amount;
     monthTotals(item.month).expenses[item.line] += item.amount;
     expenseItems.push(item);
@@ -297,6 +299,7 @@ export const buildPnl = (params: {
     if (!line || !month || !isMonthInRange(month, fromMonth, toMonth)) continue;
     const amount = commitmentPnlAmount(commitment);
     const notes: string[] = [];
+    if (commitment.movementCoveredByInvoice) notes.push("El pago está aplicado a una factura: el gasto ya está en compras");
     if (commitment.linkedInvoicesGross > 0) notes.push(`Descuenta facturas vinculadas por ${commitment.linkedInvoicesGross}`);
     if (commitment.pnlAmount != null && commitment.pnlAmount !== commitment.amount) notes.push("Monto devengado distinto al pagado");
     addExpense({
@@ -304,6 +307,7 @@ export const buildPnl = (params: {
       source: "commitment",
       line,
       month,
+      date: commitment.movementDate || commitment.expectedDate || commitment.dueDate,
       description: commitment.description,
       counterparty: commitment.counterparty,
       paidAmount: commitment.amount,
@@ -344,6 +348,7 @@ export const buildPnl = (params: {
       source: "rendicion",
       line: "reimbursements",
       month,
+      date: rendicion.fecha,
       description: rendicion.descripcion || "Rendición",
       counterparty: rendicion.terceroNombre,
       paidAmount: rendicion.montoTotal,
@@ -361,6 +366,7 @@ export const buildPnl = (params: {
       source: "advance_return",
       line: "reimbursements",
       month,
+      date: advance.returnedAt,
       description: "Devolución de saldo de anticipo",
       counterparty: advance.workerName,
       paidAmount: -advance.amount,

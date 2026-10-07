@@ -55,6 +55,8 @@ export default function Reports() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [editingAccrual, setEditingAccrual] = useState<{ id: string; value: string } | null>(null);
   const [linkingInvoice, setLinkingInvoice] = useState<{ commitmentId: string; facturaId: string } | null>(null);
+  const [expenseLineFilter, setExpenseLineFilter] = useState<PnlExpenseLine | "all">("all");
+  const [expenseMonthFilter, setExpenseMonthFilter] = useState<string>("all");
 
   const loadPnl = async () => {
     if (!selectedEmpresaId) return;
@@ -91,6 +93,32 @@ export default function Reports() {
   const negativeWarnings = pnl.warnings.filter((warning) => warning.kind === "negative_document");
   const visibleExpenseLines = PNL_EXPENSE_LINES.filter((line) => totals.expenses[line.key] !== 0 || ["payroll", "professional_fees", "reimbursements"].includes(line.key));
   const commitmentById = useMemo(() => new Map(data.commitments.map((commitment) => [commitment.id, commitment])), [data.commitments]);
+  const filteredExpenseItems = useMemo(
+    () => pnl.expenseItems.filter((item) =>
+      (expenseLineFilter === "all" || item.line === expenseLineFilter) &&
+      (expenseMonthFilter === "all" || item.month === expenseMonthFilter)
+    ),
+    [expenseLineFilter, expenseMonthFilter, pnl.expenseItems]
+  );
+  // Agrupado por línea del P/L y ordenado por fecha de pago, con subtotales.
+  const expenseGroups = useMemo(
+    () => PNL_EXPENSE_LINES
+      .map((line) => {
+        const items = filteredExpenseItems
+          .filter((item) => item.line === line.key)
+          .sort((a, b) => (a.date || a.month).localeCompare(b.date || b.month));
+        return { ...line, items, paid: items.reduce((sum, item) => sum + item.paidAmount, 0), total: items.reduce((sum, item) => sum + item.amount, 0) };
+      })
+      .filter((group) => group.items.length > 0),
+    [filteredExpenseItems]
+  );
+  const filteredExpenseTotal = filteredExpenseItems.reduce((sum, item) => sum + item.amount, 0);
+  const showExpenseDetail = (line: PnlExpenseLine) => {
+    setExpenseLineFilter(line);
+    setExpenseMonthFilter("all");
+    document.getElementById("gastos-sin-factura")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   const linksInPeriod = useMemo(() => {
     const itemIds = new Set(pnl.expenseItems.map((item) => item.id));
     return data.links.filter((link) => itemIds.has(link.cashCommitmentId || link.rendicionId || ""));
@@ -179,6 +207,7 @@ export default function Reports() {
       Estado: document.estado || "Sin estado",
     }));
     const expenseRows = pnl.expenseItems.map((item) => ({
+      "Fecha pago": item.date ? format(parseLocalDate(item.date), "dd/MM/yyyy") : "",
       Mes: item.month,
       Línea: lineLabel(item.line),
       Beneficiario: item.counterparty || "Sin beneficiario",
@@ -192,7 +221,7 @@ export default function Reports() {
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(summaryRows), "P-L");
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(monthlySheetRows), "Mensual");
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(detailRows), "Documentos");
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(expenseRows), "Gastos pagados");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(expenseRows), "Gastos sin factura");
     if (warningRows.length > 0) XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(warningRows), "Advertencias");
     XLSX.writeFile(workbook, `PL_${fromMonth}_${toMonth}.xlsx`);
   };
@@ -287,7 +316,7 @@ export default function Reports() {
             <PnlLine label="Ingresos netos" amount={income} emphasis />
             <PnlLine label="Compras y gastos documentados" amount={-totals.purchases} />
             <PnlLine label="Notas de crédito de compra" amount={totals.purchaseCreditNotes} muted />
-            {visibleExpenseLines.map((line) => <PnlLine key={line.key} label={line.label} amount={-totals.expenses[line.key]} />)}
+            {visibleExpenseLines.map((line) => <PnlLine key={line.key} label={line.label} amount={-totals.expenses[line.key]} onClick={() => showExpenseDetail(line.key)} />)}
             <PnlLine label="Gastos netos" amount={-expenses} emphasis />
             <div className="border-t pt-3"><PnlLine label="Resultado P/L" amount={result} emphasis result /></div>
           </CardContent>
@@ -314,21 +343,45 @@ export default function Reports() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader><CardTitle>Gastos pagados incluidos</CardTitle><CardDescription>Egresos conciliados en banco sin factura, según su mes de devengo. En remuneraciones, honorarios y créditos puedes ajustar el monto devengado.</CardDescription></CardHeader>
-        <CardContent className="overflow-x-auto">
+      <Card id="gastos-sin-factura" className="scroll-mt-4">
+        <CardHeader>
+          <CardTitle>Gastos sin factura</CardTitle>
+          <CardDescription>Egresos conciliados en banco que entran al P/L sin factura de compra, según su mes de devengo. Haz clic en una línea del estado de resultados para ver solo esa línea. Si un pago tiene factura, vincúlala; en remuneraciones, honorarios y créditos puedes ajustar el monto devengado.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-col gap-3 md:flex-row md:items-end">
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground" htmlFor="expense-line-filter">Línea</label>
+              <select id="expense-line-filter" className="h-9 w-full rounded-md border bg-background px-2 text-sm md:w-72" value={expenseLineFilter} onChange={(event) => setExpenseLineFilter(event.target.value as PnlExpenseLine | "all")}>
+                <option value="all">Todas las líneas</option>
+                {PNL_EXPENSE_LINES.filter((line) => pnl.expenseItems.some((item) => item.line === line.key)).map((line) => <option key={line.key} value={line.key}>{line.label}</option>)}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground" htmlFor="expense-month-filter">Mes P/L</label>
+              <select id="expense-month-filter" className="h-9 w-full rounded-md border bg-background px-2 text-sm md:w-48" value={expenseMonthFilter} onChange={(event) => setExpenseMonthFilter(event.target.value)}>
+                <option value="all">Todo el período</option>
+                {monthlyRows.map((row) => <option key={row.key} value={row.key}>{row.label}</option>)}
+              </select>
+            </div>
+            {(expenseLineFilter !== "all" || expenseMonthFilter !== "all") && <Button variant="ghost" size="sm" onClick={() => { setExpenseLineFilter("all"); setExpenseMonthFilter("all"); }}>Quitar filtros</Button>}
+            <div className="text-sm md:ml-auto">{filteredExpenseItems.length} pago(s) · <span className="font-semibold">{formatCurrency(-filteredExpenseTotal)}</span> en P/L</div>
+          </div>
+          <div className="overflow-x-auto">
           <table className="w-full min-w-[900px] text-sm">
-            <thead className="border-b text-left text-xs uppercase text-muted-foreground"><tr><th className="px-3 py-3">Mes P/L</th><th className="px-3 py-3">Línea</th><th className="px-3 py-3">Beneficiario / detalle</th><th className="px-3 py-3 text-right">Pagado</th><th className="px-3 py-3 text-right">Monto P/L</th><th className="px-3 py-3"></th></tr></thead>
-            <tbody>
-              {pnl.expenseItems.length === 0 ? <tr><td colSpan={6} className="px-3 py-8 text-center text-muted-foreground">No hay gastos pagados sin factura en este período.</td></tr> : pnl.expenseItems.map((item) => {
+            <thead className="border-b text-left text-xs uppercase text-muted-foreground"><tr><th className="px-3 py-3">Fecha pago</th><th className="px-3 py-3">Mes P/L</th><th className="px-3 py-3">Beneficiario / detalle</th><th className="px-3 py-3 text-right">Pagado</th><th className="px-3 py-3 text-right">Monto P/L</th><th className="px-3 py-3"></th></tr></thead>
+            {expenseGroups.length === 0 ? <tbody><tr><td colSpan={6} className="px-3 py-8 text-center text-muted-foreground">No hay gastos sin factura para este filtro.</td></tr></tbody> : expenseGroups.map((group) => (
+            <tbody key={group.key}>
+              <tr className="border-b bg-muted/50"><td colSpan={3} className="px-3 py-2 font-semibold">{group.label} <span className="font-normal text-muted-foreground">· {group.items.length} pago(s)</span></td><td className="px-3 py-2 text-right font-semibold">{formatCurrency(group.paid)}</td><td className="px-3 py-2 text-right font-semibold">{formatCurrency(-group.total)}</td><td></td></tr>
+              {group.items.map((item) => {
                 const commitment = item.source === "commitment" ? commitmentById.get(item.id) : undefined;
                 const canEditAccrual = canEdit && commitment && EDITABLE_ACCRUAL_LINES.includes(item.line);
                 const isEditing = editingAccrual?.id === item.id;
                 const isLinking = linkingInvoice?.commitmentId === item.id;
                 return (
-                  <tr key={`${item.source}:${item.id}`} className="border-b last:border-0 align-top">
+                  <tr key={`${item.source}:${item.id}`} className={`border-b align-top ${item.amount === 0 ? "text-muted-foreground" : ""}`}>
+                    <td className="px-3 py-3 whitespace-nowrap">{item.date ? format(parseLocalDate(item.date), "dd MMM yyyy", { locale: es }) : "—"}</td>
                     <td className="px-3 py-3">{item.month}</td>
-                    <td className="px-3 py-3">{lineLabel(item.line)}</td>
                     <td className="px-3 py-3"><div className="font-medium">{item.counterparty || "Sin beneficiario"}</div><div className="text-xs text-muted-foreground">{item.description}</div>{item.note && <div className="text-xs text-amber-700">{item.note}</div>}</td>
                     <td className="px-3 py-3 text-right">{formatCurrency(item.paidAmount)}</td>
                     <td className="px-3 py-3 text-right font-medium">
@@ -367,7 +420,9 @@ export default function Reports() {
                 );
               })}
             </tbody>
+            ))}
           </table>
+          </div>
         </CardContent>
       </Card>
 
@@ -407,8 +462,12 @@ function MetricCard({ label, amount, description, tone }: { label: string; amoun
   return <Card className={tone === "emerald" ? "border-l-4 border-l-emerald-500" : "border-l-4 border-l-rose-500"}><CardHeader className="pb-2"><CardDescription>{label}</CardDescription><CardTitle className="text-2xl">{formatCurrency(amount)}</CardTitle></CardHeader><CardContent className="text-sm text-muted-foreground">{description}</CardContent></Card>;
 }
 
-function PnlLine({ label, amount, emphasis = false, muted = false, result = false }: { label: string; amount: number; emphasis?: boolean; muted?: boolean; result?: boolean }) {
-  return <div className={`flex items-center justify-between ${emphasis ? "font-semibold" : ""} ${muted ? "text-muted-foreground" : ""} ${result ? (amount >= 0 ? "text-emerald-700" : "text-destructive") : ""}`}><span>{label}</span><span>{formatCurrency(amount)}</span></div>;
+function PnlLine({ label, amount, emphasis = false, muted = false, result = false, onClick }: { label: string; amount: number; emphasis?: boolean; muted?: boolean; result?: boolean; onClick?: () => void }) {
+  const className = `flex w-full items-center justify-between ${emphasis ? "font-semibold" : ""} ${muted ? "text-muted-foreground" : ""} ${result ? (amount >= 0 ? "text-emerald-700" : "text-destructive") : ""}`;
+  if (onClick) {
+    return <button type="button" className={`${className} rounded text-left hover:bg-muted/60`} onClick={onClick} title="Ver el detalle de esta línea"><span className="underline decoration-dotted underline-offset-4">{label}</span><span>{formatCurrency(amount)}</span></button>;
+  }
+  return <div className={className}><span>{label}</span><span>{formatCurrency(amount)}</span></div>;
 }
 
 function DocumentTypeLabel({ type }: { type: PnlDocumentType }) {
