@@ -24,6 +24,7 @@ import {
 import {
   linkInvoiceToCommitment,
   loadPnlData,
+  setCommitmentInvoiceCheck,
   unlinkInvoice,
   updateCommitmentPnlAmount,
   type PnlData,
@@ -91,6 +92,7 @@ export default function Reports() {
   const documentsWithoutBreakdown = data.documents.filter((document) => !hasTaxBreakdown(document));
   const duplicateWarnings = pnl.warnings.filter((warning) => warning.kind === "possible_duplicate");
   const negativeWarnings = pnl.warnings.filter((warning) => warning.kind === "negative_document");
+  const uncheckedRenditionWarnings = pnl.warnings.filter((warning) => warning.kind === "unchecked_rendition");
   const visibleExpenseLines = PNL_EXPENSE_LINES.filter((line) => totals.expenses[line.key] !== 0 || ["payroll", "professional_fees", "reimbursements"].includes(line.key));
   const commitmentById = useMemo(() => new Map(data.commitments.map((commitment) => [commitment.id, commitment])), [data.commitments]);
   const filteredExpenseItems = useMemo(
@@ -164,6 +166,18 @@ export default function Reports() {
     runAction(`${commitmentId}:${facturaId}`, () =>
       linkInvoiceToCommitment({ empresaId: selectedEmpresaId!, cashCommitmentId: commitmentId, facturaId, userId: user?.id || null })
     );
+
+  const handleConfirmNoInvoices = (commitmentId: string) =>
+    runAction(commitmentId, () =>
+      setCommitmentInvoiceCheck({ empresaId: selectedEmpresaId!, cashCommitmentId: commitmentId, check: "no_invoices", userId: user?.id || null })
+    );
+
+  const reviewRendition = (commitmentId: string) => {
+    setExpenseLineFilter("reimbursements");
+    setExpenseMonthFilter("all");
+    setLinkingInvoice({ commitmentId, facturaId: "" });
+    document.getElementById("gastos-sin-factura")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
 
   const handleSaveAccrual = (item: PnlExpenseItem) => {
     if (!editingAccrual) return;
@@ -287,6 +301,25 @@ export default function Reports() {
                 })}
               </div>
             )}
+            {uncheckedRenditionWarnings.length > 0 && (
+              <div className="space-y-2">
+                <p className="font-medium">Rendiciones sin revisar facturas ({uncheckedRenditionWarnings.length})</p>
+                <p className="text-muted-foreground">Confirma que cada rendición no incluye facturas a nombre de la empresa, o vincula las que tenga: esas facturas ya están en compras.</p>
+                {uncheckedRenditionWarnings.map((warning) => (
+                  <div key={warning.commitmentId} className="flex flex-col gap-2 rounded-md border p-3 md:flex-row md:items-center md:justify-between">
+                    <span>{warning.message}</span>
+                    {canEdit && (
+                      <div className="flex shrink-0 gap-2">
+                        <Button size="sm" variant="outline" onClick={() => reviewRendition(warning.commitmentId!)}><Link2 className="mr-2 h-4 w-4" />Vincular facturas</Button>
+                        <Button size="sm" variant="outline" disabled={busyId === warning.commitmentId} onClick={() => void handleConfirmNoInvoices(warning.commitmentId!)}>
+                          {busyId === warning.commitmentId && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}No tiene facturas
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
             {negativeWarnings.length > 0 && (
               <div className="space-y-1">
                 <p className="font-medium">Documentos con monto negativo ({negativeWarnings.length})</p>
@@ -382,7 +415,7 @@ export default function Reports() {
                   <tr key={`${item.source}:${item.id}`} className={`border-b align-top ${item.amount === 0 ? "text-muted-foreground" : ""}`}>
                     <td className="px-3 py-3 whitespace-nowrap">{item.date ? format(parseLocalDate(item.date), "dd MMM yyyy", { locale: es }) : "—"}</td>
                     <td className="px-3 py-3">{item.month}</td>
-                    <td className="px-3 py-3"><div className="font-medium">{item.counterparty || "Sin beneficiario"}</div><div className="text-xs text-muted-foreground">{item.description}</div>{item.note && <div className="text-xs text-amber-700">{item.note}</div>}</td>
+                    <td className="px-3 py-3"><div className="font-medium">{item.counterparty || "Sin beneficiario"}</div><div className="text-xs text-muted-foreground">{item.description}</div>{item.note && <div className="text-xs text-amber-700">{item.note}</div>}{commitment && item.line === "reimbursements" && item.amount > 0 && !commitment.invoiceCheck && <div className="text-xs font-medium text-amber-700">Sin revisar facturas</div>}{commitment?.invoiceCheck === "no_invoices" && <div className="text-xs text-emerald-700">Confirmada sin facturas</div>}</td>
                     <td className="px-3 py-3 text-right">{formatCurrency(item.paidAmount)}</td>
                     <td className="px-3 py-3 text-right font-medium">
                       {isEditing ? (

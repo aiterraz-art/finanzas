@@ -92,6 +92,8 @@ export type PnlCommitment = {
   linkedInvoicesGross: number;
   // El mismo movimiento bancario está aplicado a una factura de compra.
   movementCoveredByInvoice: boolean;
+  // Rendiciones: se confirmó que no hay facturas o se vincularon. null = sin revisar.
+  invoiceCheck?: "no_invoices" | "linked" | null;
 };
 
 export type PnlRendicion = {
@@ -133,7 +135,7 @@ export type PnlExpenseItem = {
 };
 
 export type PnlWarning = {
-  kind: "missing_breakdown" | "negative_document" | "possible_duplicate";
+  kind: "missing_breakdown" | "negative_document" | "possible_duplicate" | "unchecked_rendition";
   message: string;
   documentId?: string;
   commitmentId?: string;
@@ -298,6 +300,13 @@ export const buildPnl = (params: {
     const month = effectiveAccrualMonth(commitment);
     if (!line || !month || !isMonthInRange(month, fromMonth, toMonth)) continue;
     const amount = commitmentPnlAmount(commitment);
+    if (line === "reimbursements" && amount > 0 && !commitment.invoiceCheck && commitment.linkedInvoicesGross === 0) {
+      warnings.push({
+        kind: "unchecked_rendition",
+        commitmentId: commitment.id,
+        message: `Rendición "${commitment.description}" por ${commitment.amount} sin revisar: vincula sus facturas de compra o confirma que no tiene.`,
+      });
+    }
     const notes: string[] = [];
     if (commitment.movementCoveredByInvoice) notes.push("El pago está aplicado a una factura: el gasto ya está en compras");
     if (commitment.linkedInvoicesGross > 0) notes.push(`Descuenta facturas vinculadas por ${commitment.linkedInvoicesGross}`);

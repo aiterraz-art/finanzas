@@ -34,8 +34,9 @@ import {
 } from "@/components/ui/select";
 import { useCompany } from "@/contexts/CompanyContext";
 import { useAuth } from "@/contexts/AuthContext";
-import { PNL_CATEGORY_CODES } from "@/lib/pnl";
-import { unlinkInvoicesForCommitment } from "@/lib/pnl-data";
+import { PNL_CATEGORY_CODES, type PnlDocument } from "@/lib/pnl";
+import { linkInvoiceToCommitment, loadLinkablePurchaseInvoices, setCommitmentInvoiceCheck, unlinkInvoicesForCommitment } from "@/lib/pnl-data";
+import { RenditionInvoiceCheck } from "@/components/reconciliation/RenditionInvoiceCheck";
 import { supabase } from "@/lib/supabase";
 import {
   buildObjectsFromWorksheetRows,
@@ -165,6 +166,9 @@ type QuickExpenseForm = {
   counterparty: string;
   categoryId: string;
   renditionNumber: string;
+  // Rendiciones: obligatorio vincular sus facturas o confirmar que no tiene, para no duplicar el gasto.
+  invoiceCheck: "" | "no_invoices" | "linked";
+  linkedInvoiceIds: string[];
   priority: TreasuryPriority;
   notes: string;
   isRecurring: boolean;
@@ -357,12 +361,17 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
     counterparty: "",
     categoryId: "",
     renditionNumber: "",
+    invoiceCheck: "",
+    linkedInvoiceIds: [],
     priority: "normal",
     notes: "",
     isRecurring: false,
     frequency: "monthly",
     accrualMonth: new Date().toISOString().slice(0, 7),
   });
+  const [linkableInvoices, setLinkableInvoices] = useState<PnlDocument[]>([]);
+  const [loadingLinkableInvoices, setLoadingLinkableInvoices] = useState(false);
+  const [linkableInvoiceSearch, setLinkableInvoiceSearch] = useState("");
   const [savingQuickExpense, setSavingQuickExpense] = useState(false);
   const [quickCapitalForm, setQuickCapitalForm] = useState<QuickCapitalForm>({
     counterparty: "",
@@ -448,13 +457,36 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
       counterparty: "",
       categoryId: "",
       renditionNumber: "",
+      invoiceCheck: "",
+      linkedInvoiceIds: [],
       priority: "normal",
       notes: "",
       isRecurring: false,
       frequency: "monthly",
       accrualMonth: selectedTxn.fecha_movimiento.slice(0, 7),
     });
+    setLinkableInvoiceSearch("");
   }, [selectedTxn]);
+
+  useEffect(() => {
+    if (!needsRenditionNumber || !selectedEmpresaId || !selectedTxn || selectedTxn.monto >= 0) {
+      setLinkableInvoices([]);
+      return;
+    }
+    let cancelled = false;
+    const paymentDate = new Date(`${selectedTxn.fecha_movimiento}T12:00:00`);
+    const shift = (days: number) => {
+      const next = new Date(paymentDate);
+      next.setDate(next.getDate() + days);
+      return next.toISOString().slice(0, 10);
+    };
+    setLoadingLinkableInvoices(true);
+    loadLinkablePurchaseInvoices(selectedEmpresaId, shift(-120), shift(30))
+      .then((invoices) => { if (!cancelled) setLinkableInvoices(invoices); })
+      .catch((error) => console.error("Error loading purchase invoices for rendition:", error))
+      .finally(() => { if (!cancelled) setLoadingLinkableInvoices(false); });
+    return () => { cancelled = true; };
+  }, [needsRenditionNumber, selectedEmpresaId, selectedTxn]);
 
   useEffect(() => {
     if (!selectedTxn || selectedTxn.monto < 0) return;
@@ -1528,6 +1560,23 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
       alert("Ingresa el número de rendición para este egreso.");
       return;
     }
+    if (needsRenditionNumber && !quickExpenseForm.invoiceCheck) {
+      alert("Revisa si la rendición incluye facturas de compra a nombre de la empresa: vincúlalas o confirma que no tiene, para no duplicar el gasto.");
+      return;
+    }
+    if (needsRenditionNumber && quickExpenseForm.invoiceCheck === "linked") {
+      if (quickExpenseForm.linkedInvoiceIds.length === 0) {
+        alert("Selecciona las facturas de compra incluidas en la rendición.");
+        return;
+      }
+      const linkedTotal = linkableInvoices
+        .filter((invoice) => quickExpenseForm.linkedInvoiceIds.includes(invoice.id))
+        .reduce((sum, invoice) => sum + Number(invoice.monto || 0), 0);
+      if (linkedTotal > Math.abs(selectedTxn.monto) + 1) {
+        alert(`Las facturas seleccionadas suman ${formatTreasuryCurrency(linkedTotal)}, más que la rendición (${formatTreasuryCurrency(Math.abs(selectedTxn.monto))}). Revisa la selección.`);
+        return;
+      }
+    }
     if (needsAccrualMonth && !/^\d{4}-\d{2}$/.test(quickExpenseForm.accrualMonth)) {
       alert("Selecciona el mes al que corresponde este gasto para el P/L.");
       return;
@@ -1657,6 +1706,16 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
           .eq("id", commitmentId)
           .eq("empresa_id", selectedEmpresaId);
         throw movementError;
+      }
+
+      if (needsRenditionNumber) {
+        if (quickExpenseForm.invoiceCheck === "linked") {
+          for (const facturaId of quickExpenseForm.linkedInvoiceIds) {
+            await linkInvoiceToCommitment({ empresaId: selectedEmpresaId, facturaId, cashCommitmentId: commitmentId, userId: user?.id || null });
+          }
+        } else {
+          await setCommitmentInvoiceCheck({ empresaId: selectedEmpresaId, cashCommitmentId: commitmentId, check: "no_invoices", userId: user?.id || null });
+        }
       }
 
       setSelectedTxn(null);
@@ -3479,6 +3538,18 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
                         placeholder="Ej: R-1458"
                       />
                     </div>
+                  )}
+                  {needsRenditionNumber && (
+                    <RenditionInvoiceCheck
+                      amount={Math.abs(selectedTxn?.monto || 0)}
+                      invoices={linkableInvoices}
+                      loading={loadingLinkableInvoices}
+                      search={linkableInvoiceSearch}
+                      onSearchChange={setLinkableInvoiceSearch}
+                      check={quickExpenseForm.invoiceCheck}
+                      selectedIds={quickExpenseForm.linkedInvoiceIds}
+                      onChange={(invoiceCheck, linkedInvoiceIds) => setQuickExpenseForm((current) => ({ ...current, invoiceCheck, linkedInvoiceIds }))}
+                    />
                   )}
                   <div className="space-y-2">
                     <Label>Contraparte</Label>

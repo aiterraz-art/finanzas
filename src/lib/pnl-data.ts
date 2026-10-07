@@ -71,6 +71,7 @@ type CommitmentRow = {
   counterparty: string | null;
   amount: number | string | null;
   pnl_amount: number | string | null;
+  invoice_check: "no_invoices" | "linked" | null;
   accrual_month: string | null;
   expected_date: string | null;
   due_date: string | null;
@@ -113,7 +114,7 @@ export const loadPnlData = async (empresaId: string, fromMonth: string, toMonth:
     fetchAllRows<CommitmentRow>(() =>
       supabase
         .from("cash_commitments")
-        .select("id, movimiento_banco_id, description, counterparty, amount, pnl_amount, accrual_month, expected_date, due_date, treasury_categories!inner(code), movimientos_banco(fecha_movimiento)")
+        .select("id, movimiento_banco_id, description, counterparty, amount, pnl_amount, invoice_check, accrual_month, expected_date, due_date, treasury_categories!inner(code), movimientos_banco(fecha_movimiento)")
         .eq("empresa_id", empresaId)
         .eq("status", "paid")
         .eq("direction", "outflow")
@@ -193,6 +194,7 @@ export const loadPnlData = async (empresaId: string, fromMonth: string, toMonth:
       counterparty: row.counterparty || null,
       amount: Number(row.amount || 0),
       pnlAmount: row.pnl_amount == null ? null : Number(row.pnl_amount),
+      invoiceCheck: row.invoice_check,
       accrualMonth: row.accrual_month || null,
       movementDate: movement?.fecha_movimiento || null,
       expectedDate: row.expected_date || null,
@@ -282,6 +284,8 @@ export const linkInvoiceToCommitment = async (params: {
     .eq("id", params.facturaId)
     .eq("empresa_id", params.empresaId);
   if (updateError) throw updateError;
+
+  await setCommitmentInvoiceCheck({ empresaId: params.empresaId, cashCommitmentId: params.cashCommitmentId, check: "linked", userId: params.userId });
 };
 
 export const unlinkInvoice = async (params: { empresaId: string; link: PnlInvoiceLink }) => {
@@ -298,6 +302,25 @@ export const unlinkInvoice = async (params: { empresaId: string; link: PnlInvoic
     .eq("id", params.link.facturaId)
     .eq("empresa_id", params.empresaId);
   if (updateError) throw updateError;
+
+  // Sin facturas vinculadas, la rendición vuelve a quedar sin revisar.
+  if (params.link.cashCommitmentId) {
+    const { count, error: countError } = await supabase
+      .from("pnl_invoice_links")
+      .select("id", { count: "exact", head: true })
+      .eq("empresa_id", params.empresaId)
+      .eq("cash_commitment_id", params.link.cashCommitmentId);
+    if (countError) throw countError;
+    if (!count) {
+      const { error: checkError } = await supabase
+        .from("cash_commitments")
+        .update({ invoice_check: null, invoice_checked_at: null, invoice_checked_by: null })
+        .eq("id", params.link.cashCommitmentId)
+        .eq("empresa_id", params.empresaId)
+        .eq("invoice_check", "linked");
+      if (checkError) throw checkError;
+    }
+  }
 };
 
 // Al deshacer la conciliación de un gasto, sus facturas vinculadas vuelven a su estado anterior.
@@ -323,6 +346,49 @@ export const unlinkInvoicesForCommitment = async (empresaId: string, cashCommitm
       },
     });
   }
+};
+
+// Registra la revisión de facturas de una rendición (confirmada sin facturas o con facturas vinculadas).
+export const setCommitmentInvoiceCheck = async (params: {
+  empresaId: string;
+  cashCommitmentId: string;
+  check: "no_invoices" | "linked" | null;
+  userId: string | null;
+}) => {
+  const { error } = await supabase
+    .from("cash_commitments")
+    .update({
+      invoice_check: params.check,
+      invoice_checked_at: params.check ? new Date().toISOString() : null,
+      invoice_checked_by: params.check ? params.userId : null,
+    })
+    .eq("id", params.cashCommitmentId)
+    .eq("empresa_id", params.empresaId);
+  if (error) throw error;
+};
+
+// Facturas de compra que aún pueden pertenecer a una rendición: no pagadas ni vinculadas.
+export const loadLinkablePurchaseInvoices = async (empresaId: string, fromDate: string, toDate: string) => {
+  const [invoices, links] = await Promise.all([
+    fetchAllRows<PnlDocument>(() =>
+      supabase
+        .from("facturas")
+        .select(DOCUMENT_COLUMNS)
+        .eq("empresa_id", empresaId)
+        .eq("tipo", "compra")
+        .is("archived_at", null)
+        .neq("estado", "pagada")
+        .gte("fecha_emision", fromDate)
+        .lte("fecha_emision", toDate)
+        .order("fecha_emision", { ascending: false })
+        .order("id", { ascending: true })
+    ),
+    fetchAllRows<{ factura_id: string }>(() =>
+      supabase.from("pnl_invoice_links").select("factura_id").eq("empresa_id", empresaId).order("factura_id", { ascending: true })
+    ),
+  ]);
+  const linked = new Set(links.map((link) => link.factura_id));
+  return invoices.filter((invoice) => !linked.has(invoice.id));
 };
 
 export const updateCommitmentPnlAmount = async (empresaId: string, cashCommitmentId: string, pnlAmount: number | null) => {

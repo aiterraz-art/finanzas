@@ -169,6 +169,22 @@ describe("gastos pagados", () => {
 });
 
 describe("rendiciones", () => {
+  it("advierte rendiciones sin revisar facturas", () => {
+    const result = pnl({ commitments: [commitment({ id: "r", categoryCode: "reimbursements", invoiceCheck: null })] });
+    expect(result.warnings.find((warning) => warning.kind === "unchecked_rendition")).toMatchObject({ commitmentId: "r" });
+  });
+
+  it("no advierte rendiciones confirmadas sin facturas o con facturas vinculadas", () => {
+    const result = pnl({
+      commitments: [
+        commitment({ id: "a", categoryCode: "reimbursements", invoiceCheck: "no_invoices" }),
+        commitment({ id: "b", categoryCode: "reimbursements", linkedInvoicesGross: 50000 }),
+        commitment({ id: "c", categoryCode: "fuel" }),
+      ],
+    });
+    expect(result.warnings.filter((warning) => warning.kind === "unchecked_rendition")).toHaveLength(0);
+  });
+
   it("incluye rendiciones del módulo y resta devoluciones de anticipos", () => {
     const result = pnl({
       rendiciones: [{ id: "r", fecha: "2026-08-12", montoTotal: 30000, terceroNombre: "Ana", descripcion: null, linkedInvoicesGross: 10000 }],
