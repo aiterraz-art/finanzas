@@ -518,7 +518,7 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
       setSelectedInvoiceMatches({});
       setAllocateDifferenceAsAdvance(false);
       setAcceptTransferDifference(false);
-      setTransferDifferenceNote(\"\");
+      setTransferDifferenceNote("");
       setAdvanceForm({ customerId: "none", customerSearch: "", notes: "" });
     }
   }, [selectedInflowSource, selectedTxn]);
@@ -627,7 +627,7 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
     setInvoiceMismatchDialog(null);
     setAllocateDifferenceAsAdvance(false);
     setAcceptTransferDifference(false);
-    setTransferDifferenceNote(\"\");
+    setTransferDifferenceNote("");
     setAdvanceForm({ customerId: "none", customerSearch: "", notes: "" });
   };
 
@@ -2681,7 +2681,7 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
       setSelectedInvoiceMatches({});
       setAllocateDifferenceAsAdvance(false);
       setAcceptTransferDifference(false);
-      setTransferDifferenceNote(\"\");
+      setTransferDifferenceNote("");
       setAdvanceForm({ customerId: "none", customerSearch: "", notes: "" });
       await fetchTransactions();
       await refreshPositions();
@@ -3243,7 +3243,7 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
             setInvoiceMismatchDialog(null);
             setAllocateDifferenceAsAdvance(false);
             setAcceptTransferDifference(false);
-            setTransferDifferenceNote(\"\");
+            setTransferDifferenceNote("");
             setAdvanceForm({ customerId: "none", customerSearch: "", notes: "" });
           }
         }}
