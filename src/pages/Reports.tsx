@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { addMonths, format, isAfter, startOfMonth } from "date-fns";
 import { es } from "date-fns/locale";
-import * as XLSX from "xlsx";
 import { AlertTriangle, Download, FileText, Link2, Loader2, RefreshCw, TrendingDown, TrendingUp, Unlink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -30,18 +29,20 @@ import {
   type PnlData,
 } from "@/lib/pnl-data";
 import { canEditTreasury } from "@/lib/treasury";
+import { supabase } from "@/lib/supabase";
+import { buildPnlStatement } from "@/lib/pnl-report";
+import { exportPnlToExcel, exportPnlToPdf, type PnlExportContext } from "@/lib/pnl-export";
 
 const parseLocalDate = (value: string) => new Date(`${value.slice(0, 10)}T12:00:00`);
 const formatCurrency = (amount: number) => new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", minimumFractionDigits: 0 }).format(amount);
-const emptyData = (): PnlData => ({ documents: [], commitments: [], rendiciones: [], advanceReturns: [], purchaseCandidates: [], links: [] });
-const lineLabel = (line: PnlExpenseLine) => PNL_EXPENSE_LINES.find((item) => item.key === line)?.label || line;
+const emptyData = (): PnlData => ({ documents: [], commitments: [], rendiciones: [], advanceReturns: [], purchaseCandidates: [], links: [], unreconciledOutflows: { count: 0, total: 0 } });
 // Retención de boletas de honorarios vigente en 2026.
 const HONORARIOS_RETENTION_RATE = 0.1525;
 // Líneas donde lo pagado por banco puede diferir del gasto: líquido vs bruto, cuota vs interés.
 const EDITABLE_ACCRUAL_LINES: PnlExpenseLine[] = ["payroll", "professional_fees", "interest"];
 
 export default function Reports() {
-  const { selectedEmpresaId, selectedRole } = useCompany();
+  const { selectedEmpresaId, selectedEmpresa, selectedRole } = useCompany();
   const { user } = useAuth();
   const canEdit = canEditTreasury(selectedRole);
   const today = new Date();
@@ -54,6 +55,7 @@ export default function Reports() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [exporting, setExporting] = useState<"excel" | "pdf" | null>(null);
   const [editingAccrual, setEditingAccrual] = useState<{ id: string; value: string } | null>(null);
   const [linkingInvoice, setLinkingInvoice] = useState<{ commitmentId: string; facturaId: string } | null>(null);
   const [expenseLineFilter, setExpenseLineFilter] = useState<PnlExpenseLine | "all">("all");
@@ -193,51 +195,34 @@ export default function Reports() {
     });
   };
 
-  const exportToExcel = () => {
-    const summaryRows = [
-      { Concepto: "Ventas", Monto: totals.sales },
-      { Concepto: "(-) Notas de crédito de venta", Monto: -totals.salesCreditNotes },
-      { Concepto: "Ingresos netos", Monto: income },
-      { Concepto: "Compras y gastos documentados", Monto: -totals.purchases },
-      { Concepto: "Notas de crédito de compra", Monto: totals.purchaseCreditNotes },
-      ...PNL_EXPENSE_LINES.map((line) => ({ Concepto: line.label, Monto: -totals.expenses[line.key] })),
-      { Concepto: "Gastos netos", Monto: -expenses },
-      { Concepto: "Resultado P/L", Monto: result },
-    ];
-    const monthlySheetRows = monthlyRows.map((row) => ({
-      Mes: row.key,
-      "Ingresos netos": incomeFromTotals(row.totals),
-      "Gastos netos": expenseFromTotals(row.totals),
-      Resultado: incomeFromTotals(row.totals) - expenseFromTotals(row.totals),
-    }));
-    const detailRows = data.documents.map((document) => ({
-      Fecha: document.fecha_emision ? format(parseLocalDate(document.fecha_emision), "dd/MM/yyyy") : "Sin fecha",
-      Tipo: document.tipo === "venta" ? "Venta" : document.tipo === "compra" ? "Compra" : document.tipo === "nota_credito" ? "NC venta" : "NC compra",
-      Tercero: document.tercero_nombre || "Sin tercero",
-      Folio: document.numero_documento || "Sin folio",
-      Total: Number(document.monto || 0),
-      "Monto P/L sin IVA": documentSignedPnlAmount(document),
-      "Con desglose": hasTaxBreakdown(document) ? "Sí" : "No (usa total)",
-      Estado: document.estado || "Sin estado",
-    }));
-    const expenseRows = pnl.expenseItems.map((item) => ({
-      "Fecha pago": item.date ? format(parseLocalDate(item.date), "dd/MM/yyyy") : "",
-      Mes: item.month,
-      Línea: lineLabel(item.line),
-      Beneficiario: item.counterparty || "Sin beneficiario",
-      Detalle: item.description,
-      Pagado: item.paidAmount,
-      "Monto P/L": -item.amount,
-      Nota: item.note || "",
-    }));
-    const warningRows = pnl.warnings.map((warning) => ({ Tipo: warning.kind, Detalle: warning.message }));
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(summaryRows), "P-L");
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(monthlySheetRows), "Mensual");
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(detailRows), "Documentos");
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(expenseRows), "Gastos sin factura");
-    if (warningRows.length > 0) XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(warningRows), "Advertencias");
-    XLSX.writeFile(workbook, `PL_${fromMonth}_${toMonth}.xlsx`);
+  const buildExportContext = async (): Promise<PnlExportContext> => {
+    // El RUT no viene en el contexto de empresa; se lee al exportar.
+    const { data: company } = await supabase.from("empresas").select("rut").eq("id", selectedEmpresaId!).maybeSingle();
+    return {
+      companyName: selectedEmpresa?.nombre || "Empresa",
+      companyRut: company?.rut || null,
+      logoUrl: selectedEmpresa?.logo_url || null,
+      fromMonth,
+      toMonth,
+      statement: buildPnlStatement(pnl, fromMonth, toMonth),
+      pnl,
+      data,
+    };
+  };
+
+  const handleExport = async (format: "excel" | "pdf") => {
+    if (!selectedEmpresaId) return;
+    setExporting(format);
+    try {
+      const context = await buildExportContext();
+      if (format === "excel") exportPnlToExcel(context);
+      else await exportPnlToPdf(context);
+    } catch (exportError: any) {
+      console.error("Error exporting P/L:", exportError);
+      alert(`No se pudo generar el archivo: ${exportError.message}`);
+    } finally {
+      setExporting(null);
+    }
   };
 
   if (loading) return <div className="flex h-[70vh] items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div>;
@@ -253,7 +238,12 @@ export default function Reports() {
           <Button variant="outline" onClick={setCurrentMonth}>Este mes</Button>
           <Button variant="outline" onClick={setCurrentYear}>Año actual</Button>
           <Button variant="outline" onClick={() => void loadPnl()}><RefreshCw className="mr-2 h-4 w-4" />Actualizar</Button>
-          <Button onClick={exportToExcel} disabled={data.documents.length + pnl.expenseItems.length === 0}><Download className="mr-2 h-4 w-4" />Exportar Excel</Button>
+          <Button variant="outline" onClick={() => void handleExport("excel")} disabled={exporting !== null || data.documents.length + pnl.expenseItems.length === 0}>
+            {exporting === "excel" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}Excel
+          </Button>
+          <Button onClick={() => void handleExport("pdf")} disabled={exporting !== null || data.documents.length + pnl.expenseItems.length === 0}>
+            {exporting === "pdf" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}PDF
+          </Button>
         </div>
       </div>
 

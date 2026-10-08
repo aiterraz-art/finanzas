@@ -56,6 +56,8 @@ export type PnlData = {
   advanceReturns: PnlAdvanceReturn[];
   purchaseCandidates: PnlDocument[];
   links: PnlInvoiceLink[];
+  // Egresos bancarios del período aún sin conciliar: pueden ser gastos que faltan en el P/L.
+  unreconciledOutflows: { count: number; total: number };
 };
 
 const monthRange = (fromMonth: string, toMonth: string) => {
@@ -250,7 +252,23 @@ export const loadPnlData = async (empresaId: string, fromMonth: string, toMonth:
     )
   ).filter((document) => !linkedFacturaIds.has(document.id));
 
-  return { documents, commitments, rendiciones, advanceReturns, purchaseCandidates, links };
+  const unreconciledRows = await fetchAllRows<{ monto: number | string }>(() =>
+    supabase
+      .from("movimientos_banco")
+      .select("monto")
+      .eq("empresa_id", empresaId)
+      .lt("monto", 0)
+      .neq("estado", "conciliado")
+      .gte("fecha_movimiento", fromDate)
+      .lte("fecha_movimiento", toDate)
+      .order("id", { ascending: true })
+  );
+  const unreconciledOutflows = {
+    count: unreconciledRows.length,
+    total: unreconciledRows.reduce((sum, row) => sum + Math.abs(Number(row.monto || 0)), 0),
+  };
+
+  return { documents, commitments, rendiciones, advanceReturns, purchaseCandidates, links, unreconciledOutflows };
 };
 
 // Vincula una factura de compra a un gasto pagado: la factura queda en compras (sin IVA) y el gasto
