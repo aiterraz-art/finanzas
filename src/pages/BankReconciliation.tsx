@@ -359,6 +359,8 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
   });
   const [savingRenditionAdvance, setSavingRenditionAdvance] = useState(false);
   const [allocateDifferenceAsAdvance, setAllocateDifferenceAsAdvance] = useState(false);
+  const [acceptTransferDifference, setAcceptTransferDifference] = useState(false);
+  const [transferDifferenceNote, setTransferDifferenceNote] = useState("");
   const [invoiceMismatchDialog, setInvoiceMismatchDialog] = useState<InvoiceMismatchDialogState | null>(null);
   const [loadingCandidates, setLoadingCandidates] = useState(false);
   const [matchingId, setMatchingId] = useState<string | null>(null);
@@ -515,6 +517,8 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
       setCandidateSearchTerm("");
       setSelectedInvoiceMatches({});
       setAllocateDifferenceAsAdvance(false);
+      setAcceptTransferDifference(false);
+      setTransferDifferenceNote(\"\");
       setAdvanceForm({ customerId: "none", customerSearch: "", notes: "" });
     }
   }, [selectedInflowSource, selectedTxn]);
@@ -622,6 +626,8 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
     setSelectedInvoiceMatches({});
     setInvoiceMismatchDialog(null);
     setAllocateDifferenceAsAdvance(false);
+    setAcceptTransferDifference(false);
+    setTransferDifferenceNote(\"\");
     setAdvanceForm({ customerId: "none", customerSearch: "", notes: "" });
   };
 
@@ -2597,7 +2603,15 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
       return;
     }
 
-    if (Math.abs(difference) > 0.01 && !(allowSimpleAdjustment && canSimpleAdjust) && !canAllocateAdvance) {
+    const canAcceptTransferDifference =
+      selectedTxn.monto < 0 && Math.abs(difference) > 0.01 && acceptTransferDifference;
+
+    if (
+      Math.abs(difference) > 0.01 &&
+      !(allowSimpleAdjustment && canSimpleAdjust) &&
+      !canAllocateAdvance &&
+      !canAcceptTransferDifference
+    ) {
       alert(`El total aplicado (${formatTreasuryCurrency(totalApplied, selectedAccount?.moneda || "CLP")}) debe coincidir con el movimiento bancario (${formatTreasuryCurrency(bankAmount, selectedAccount?.moneda || "CLP")}).`);
       return;
     }
@@ -2644,7 +2658,11 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
           ? ` • ajuste ${difference > 0 ? "+" : ""}${difference.toFixed(2)}`
           : canAllocateAdvance
             ? ` • anticipo ${difference.toFixed(2)}`
-            : "";
+            : canAcceptTransferDifference
+              ? ` • error transferencia ${difference > 0 ? "+" : ""}${difference.toFixed(2)}${
+                  transferDifferenceNote.trim() ? ` (${transferDifferenceNote.trim()})` : ""
+                }`
+              : "";
 
       const { error: movementError } = await supabase
         .from("movimientos_banco")
@@ -2662,6 +2680,8 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
       setCandidates([]);
       setSelectedInvoiceMatches({});
       setAllocateDifferenceAsAdvance(false);
+      setAcceptTransferDifference(false);
+      setTransferDifferenceNote(\"\");
       setAdvanceForm({ customerId: "none", customerSearch: "", notes: "" });
       await fetchTransactions();
       await refreshPositions();
@@ -3222,6 +3242,8 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
             setSelectedInflowSource("factura");
             setInvoiceMismatchDialog(null);
             setAllocateDifferenceAsAdvance(false);
+            setAcceptTransferDifference(false);
+            setTransferDifferenceNote(\"\");
             setAdvanceForm({ customerId: "none", customerSearch: "", notes: "" });
           }
         }}
@@ -3738,7 +3760,9 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
                         !canEdit ||
                         matchingId === "multi-factura" ||
                         selectedInvoiceCandidates.length === 0 ||
-                        ((selectedTxn?.monto ?? 0) < 0 && Math.abs(selectedInvoiceDifference) > 0.01)
+                        ((selectedTxn?.monto ?? 0) < 0 &&
+                          Math.abs(selectedInvoiceDifference) > 0.01 &&
+                          !acceptTransferDifference)
                       }
                     >
                       {matchingId === "multi-factura" ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Check className="mr-2 h-4 w-4" />}
@@ -3746,6 +3770,36 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
                     </Button>
                   </div>
                 </div>
+                {(selectedTxn?.monto ?? 0) < 0 &&
+                  selectedInvoiceCandidates.length > 0 &&
+                  Math.abs(selectedInvoiceDifference) > 0.01 && (
+                  <div className="mt-4 space-y-3 rounded-lg border bg-background p-3">
+                    <Label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={acceptTransferDifference}
+                        onChange={(event) => {
+                          setAcceptTransferDifference(event.target.checked);
+                          if (!event.target.checked) setTransferDifferenceNote("");
+                        }}
+                      />
+                      Conciliar igual: la diferencia de {formatTreasuryCurrency(Math.abs(selectedInvoiceDifference), selectedAccount?.moneda || "CLP")} fue un error de transferencia
+                    </Label>
+                    {acceptTransferDifference && (
+                      <div className="space-y-2">
+                        <Label>Nota (opcional)</Label>
+                        <Textarea
+                          value={transferDifferenceNote}
+                          onChange={(event) => setTransferDifferenceNote(event.target.value)}
+                          placeholder="Ej: se transfirió de más, el proveedor lo descontará en la próxima factura"
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Las facturas quedan con el monto aplicado y la diferencia se registra en el detalle del movimiento.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
                 {(selectedTxn?.monto ?? 0) >= 0 && !canApplySimpleInvoiceAdjustment && selectedInvoiceDifference > 0.01 && (
                   <div className="mt-4 grid gap-3 rounded-lg border bg-background p-3 md:grid-cols-2">
                     <Label className="flex items-center gap-2 md:col-span-2">
