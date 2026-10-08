@@ -144,6 +144,7 @@ export default function Proveedores() {
   const [loanCommitments, setLoanCommitments] = useState<LoanCommitment[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
+  const [issueMonthFilter, setIssueMonthFilter] = useState("all");
   const [invoiceSupplierSearch, setInvoiceSupplierSearch] = useState("");
   const [isNewProvOpen, setIsNewProvOpen] = useState(false);
   const [isSavingProv, setIsSavingProv] = useState(false);
@@ -308,7 +309,11 @@ export default function Proveedores() {
     return proveedores
       .map((supplier) => {
         const supplierInvoices = invoices
-          .filter((invoice) => invoice.tercero_id === supplier.id)
+          .filter(
+            (invoice) =>
+              invoice.tercero_id === supplier.id &&
+              (issueMonthFilter === "all" || (invoice.fecha_emision || "").slice(0, 7) === issueMonthFilter)
+          )
           .map((invoice) => {
             const allocatedAmount = (invoice.facturas_pagos || [])
               .filter((payment) => payment.estado === "aplicado")
@@ -334,9 +339,11 @@ export default function Proveedores() {
           const diff = new Date(invoice.planned_cash_date).getTime() - Date.now();
           return diff <= 7 * 24 * 60 * 60 * 1000;
         }).length;
-        return { ...supplier, supplierInvoices, openInvoices, outstanding, dueSoon };
+        const issuedTotal = supplierInvoices.reduce((sum, invoice) => sum + Number(invoice.monto || 0), 0);
+        return { ...supplier, supplierInvoices, openInvoices, outstanding, dueSoon, issuedTotal };
       })
       .filter((supplier) => {
+        if (issueMonthFilter !== "all" && supplier.supplierInvoices.length === 0) return false;
         const normalized = searchQuery.toLowerCase().trim();
         if (!normalized) return true;
         return (
@@ -345,7 +352,20 @@ export default function Proveedores() {
           supplier.supplierInvoices.some((invoice) => invoice.numero_documento?.toLowerCase().includes(normalized))
         );
       });
-  }, [proveedores, invoices, searchQuery]);
+  }, [proveedores, invoices, searchQuery, issueMonthFilter]);
+
+  const issueMonthOptions = useMemo(() => {
+    const months = new Set(
+      invoices.map((invoice) => (invoice.fecha_emision || "").slice(0, 7)).filter((month) => /^\d{4}-\d{2}$/.test(month))
+    );
+    return Array.from(months)
+      .sort((a, b) => b.localeCompare(a))
+      .map((month) => {
+        const [year, monthNumber] = month.split("-").map(Number);
+        const label = new Date(year, monthNumber - 1, 1).toLocaleDateString("es-CL", { month: "long", year: "numeric" });
+        return { value: month, label: label.charAt(0).toUpperCase() + label.slice(1) };
+      });
+  }, [invoices]);
 
   const totals = useMemo(() => {
     return groupedSuppliers.reduce(
@@ -1047,14 +1067,29 @@ export default function Proveedores() {
               <CardTitle>Deudas con proveedores</CardTitle>
               <CardDescription>Saldo pendiente por proveedor. Haz clic en un proveedor para ver su estado de cuenta.</CardDescription>
             </div>
-            <div className="relative w-full max-w-sm">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-                placeholder="Buscar proveedor, RUT o folio..."
-                className="pl-10"
-              />
+            <div className="flex w-full flex-col gap-2 sm:flex-row lg:w-auto">
+              <Select value={issueMonthFilter} onValueChange={setIssueMonthFilter}>
+                <SelectTrigger className="w-full sm:w-[200px]">
+                  <SelectValue placeholder="Mes de emisión" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos los meses</SelectItem>
+                  {issueMonthOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <div className="relative w-full sm:w-[320px]">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder="Buscar proveedor, RUT o folio..."
+                  className="pl-10"
+                />
+              </div>
             </div>
           </div>
         </CardHeader>
@@ -1070,6 +1105,12 @@ export default function Proveedores() {
                 >
                   <span className="font-medium">{supplier.razon_social}</span>
                   <span className="flex shrink-0 items-center gap-2 text-sm">
+                    {issueMonthFilter !== "all" && (
+                      <span className="text-muted-foreground">
+                        {supplier.supplierInvoices.length} {supplier.supplierInvoices.length === 1 ? "factura" : "facturas"} • emitido{" "}
+                        {formatTreasuryCurrency(supplier.issuedTotal)} • saldo
+                      </span>
+                    )}
                     {supplier.dueSoon > 0 && <Badge className="bg-amber-100 text-amber-700 hover:bg-amber-100">{supplier.dueSoon} por vencer</Badge>}
                     <span className={supplier.outstanding > 0.01 ? "font-medium" : "text-muted-foreground"}>{formatTreasuryCurrency(supplier.outstanding)}</span>
                   </span>
