@@ -596,6 +596,7 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
         .select(BANK_MOVEMENT_SELECT)
         .eq("empresa_id", selectedEmpresaId)
         .eq("bank_account_id", selectedAccountId)
+        .is("archived_at", null)
         .order("fecha_movimiento", { ascending: false })
         .order("id_secuencial", { ascending: false });
       if (error) throw error;
@@ -1348,7 +1349,7 @@ export default function BankReconciliation({ view = "bank" }: { view?: "bank" | 
 
       const { error: movementError } = await supabase
         .from("movimientos_banco")
-        .update({ estado: "no_conciliado", tipo_conciliacion: null })
+        .update({ estado: "no_conciliado", tipo_conciliacion: null, numero_documento: null })
         .eq("id", txn.id)
         .eq("empresa_id", selectedEmpresaId);
       if (movementError) throw movementError;

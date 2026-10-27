@@ -86,6 +86,7 @@ export default function Dashboard() {
             .from("movimientos_banco")
             .select("id, fecha_movimiento, descripcion, monto, estado")
             .eq("empresa_id", selectedEmpresaId)
+            .is("archived_at", null)
             .order("fecha_movimiento", { ascending: false })
             .limit(6),
           supabase

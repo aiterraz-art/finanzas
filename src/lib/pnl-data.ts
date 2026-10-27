@@ -259,6 +259,7 @@ export const loadPnlData = async (empresaId: string, fromMonth: string, toMonth:
       .eq("empresa_id", empresaId)
       .lt("monto", 0)
       .neq("estado", "conciliado")
+      .is("archived_at", null)
       .gte("fecha_movimiento", fromDate)
       .lte("fecha_movimiento", toDate)
       .order("id", { ascending: true })
